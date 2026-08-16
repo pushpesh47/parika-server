@@ -1,0 +1,184 @@
+[project]
+name = "parika"
+version = "0.1.0"
+description = "Personal Adaptive Responsive Intelligence Kernel Assistant"
+readme = "README.md"
+requires-python = ">=3.14"
+
+dependencies = [
+    "psutil>=7.2.2",
+    "tomlkit>=0.15.1",
+    "feedparser>=6.0.13",
+    "pillow>=12.3.0",
+    "numpy>=2.5.1",
+    "pypdfium2>=5.12.1",
+    "langdetect>=1.0.9",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    # `httpx` backs FastAPI's `TestClient`/`ASGITransport`, used by
+    # tests/api/ and tests/server/ to exercise the Server Platform
+    # (Phase 3.5) without opening a real network socket. Only needed
+    # together with the `server` extra.
+    "httpx>=0.27",
+    # `qrcode`/`python-barcode` generate real, deterministic QR/
+    # barcode fixture images for tests/modules/vision/test_detectors.py
+    # -- test-fixture generation only, never imported by
+    # `parika/modules/vision/` itself (which only *decodes*, via the
+    # `vision` extra's `pyzbar`).
+    "qrcode>=8.0",
+    "python-barcode>=0.16",
+]
+# Coding Tool: multi-language symbol/import extraction beyond Python via
+# Tree-sitter. Optional and gracefully degrading - Python (stdlib `ast`) and
+# a generic text fallback always work with zero new dependency; see
+# docs/architecture/Developer_Intelligence_Platform_Design.md section 4.4.
+coding = [
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.612",
+]
+# Server Platform (Phase 3.5): the long-running Server Runtime
+# (`python -m parika.server`) and the `parika/api/` REST/WebSocket
+# surface. Optional, matching the `coding` extra's own precedent of
+# keeping the base install dependency-light - the existing embedded
+# CLI (`parika`/`python -m parika`) never requires this extra. See
+# docs/guides/Running.md section 12.
+server = [
+    "fastapi>=0.128",
+    "uvicorn[standard]>=0.35",
+    "pydantic>=2.9",
+    "websockets>=13",
+    "pyjwt>=2.9",
+]
+# OCR Module: deterministic image preprocessing/analysis (rotation/skew
+# correction, contrast/denoise/upscale, blur/quality/orientation
+# detection, lightweight table-region detection), PDF page rendering
+# plus text-layer extraction, and statistical language detection - all
+# performed without a model call. Optional and gracefully degrading,
+# following exactly the `coding` extra's precedent: `ocr.provider_extract_text`
+# (the Provider-backed model call) always works with zero new
+# dependency; only the deterministic pre/post-processing steps this
+# extra adds are skipped (never a crash) when it is not installed. See
+# `parika/modules/ocr/config.py` and docs/development/Module_Guide.md
+# section 18.4.
+ocr = [
+    "pillow>=11",
+    "numpy>=2",
+    "pypdfium2>=4",
+    "langdetect>=1.0.9",
+]
+# Document Module: native, deterministic parsing of Office Open XML
+# formats (DOCX/PPTX/XLSX) and richer HTML parsing. Optional and
+# gracefully degrading, following exactly the `ocr`/`coding` extras'
+# own precedent: `document.extract_text` and every text-native format
+# (TXT, Markdown, HTML via a stdlib fallback, CSV, JSON, XML) always
+# work with zero extra dependency; PDF text extraction is delegated
+# entirely to the existing `ocr` extra (never a new PDF dependency
+# here). Only `document.read_docx`/`document.read_pptx`/
+# `document.read_xlsx` (and any other Capability's DOCX/PPTX/XLSX
+# path) require this extra; `beautifulsoup4` is optional even within
+# it, for richer `document.read_html` (see
+# `parika/modules/document/config.py`).
+document = [
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    "beautifulsoup4>=4.12",
+]
+# Vision Module: deterministic face detection (Haar cascades),
+# classical GrabCut background segmentation, and ZBar-backed QR/
+# barcode decoding -- all performed without a model call. Optional
+# and gracefully degrading, following exactly the `ocr` extra's own
+# precedent: every Provider-backed `vision.*` Capability (description,
+# Q&A, object detection, scene/UI/chart/diagram analysis, comparison,
+# counting, classification, quality/anomaly narration, ...) always
+# works with zero new dependency; only `vision.detect_faces`/
+# `vision.remove_background` (opencv-python-headless) and
+# `vision.detect_qr_codes`/`vision.detect_barcodes` (pyzbar, plus the
+# system ZBar shared library) are skipped (never a crash) when this
+# extra is not installed. `opencv-python-headless` is pinned below
+# 5.0 because OpenCV 5.x removed the legacy `cv2.CascadeClassifier`
+# Haar-cascade API (and its bundled cascade XML data) this Module
+# relies on for face detection. See `parika/modules/vision/config.py`.
+vision = [
+    "opencv-python-headless>=4.8,<5",
+    "pyzbar>=0.1.9",
+]
+# Video Module: deterministic video container/frame decoding via
+# `cv2.VideoCapture` -- the same `opencv-python-headless` dependency the
+# `vision` extra already installs, reused rather than adding a second
+# video-decoding dependency (ffmpeg-python/PyAV/moviepy/imageio). Optional
+# and gracefully degrading, following exactly the `vision`/`ocr` extras' own
+# precedent: this Module's Provider-backed Capabilities (`video.describe_video`,
+# `video.answer_question`, ...) reuse OCR's/Vision's own Provider Capabilities
+# and always work with zero new dependency; only the deterministic frame-
+# decoding Capabilities (metadata, frame/keyframe/thumbnail extraction, scene/
+# motion/quality detection, ...) are skipped (never a crash) when this extra
+# is not installed. See `parika/modules/video/config.py`.
+video = [
+    "opencv-python-headless>=4.8,<5",
+]
+# GPU Telemetry: NVIDIA NVML bindings for `ResourceManager.get_gpu_info()`
+# (utilization, VRAM, temperature, power draw - see
+# docs/architecture/Core_Component_Responsibilities.md section 8).
+# Optional and gracefully degrading, following exactly the `ocr`/`vision`/
+# `video` extras' own precedent: PARIKA starts and runs identically with
+# or without this extra installed, and on any host without an NVIDIA GPU
+# (or driver) - `ResourceManager` reports `GPUInfo(status=UNKNOWN,
+# detected=False)` rather than raising when this extra is absent, NVML
+# fails to initialize, or `resources.gpu_telemetry_enabled` is `false`.
+# No other GPU vendor/backend is implemented; nothing in `GPUInfo`/
+# `GPUDeviceInfo` assumes NVIDIA hardware.
+gpu = [
+    "nvidia-ml-py>=12.560",
+]
+
+
+# Voice Module: local, on-device speech-to-text (`faster-whisper`) and
+# text-to-speech (`piper-tts`), supporting English and Hindi (see
+# `docs/architecture/adr/0002-voice-capability.md`). Optional and gracefully
+# degrading, following exactly the `ocr`/`vision`/`video`/`gpu` extras' own
+# precedent: PARIKA starts and runs identically with or without this extra
+# installed; `voice.speech_to_text`/`voice.text_to_speech` simply have no
+# compatible Provider model (never a crash) until it is installed and
+# configured (see `config/defaults.toml`'s `[providers.local_speech]`
+# section). Neither package is an LLM/reasoning provider -- both perform
+# speech recognition/synthesis only.
+#
+# Compatibility with this project's pinned `requires-python = ">=3.14"`,
+# verified before adding either dependency:
+# - `faster-whisper>=1.3` ships Python 3.14-compatible wheels for its
+#   `ctranslate2`/`av`/`onnxruntime`/`tokenizers` dependencies (SYSTRAN/
+#   faster-whisper#1439).
+# - `piper-tts` depends on `onnxruntime<2`; `onnxruntime>=1.24.1` ships
+#   official Python 3.14 wheels (Linux/Windows x86_64), which resolves the
+#   previous 3.14 installation blocker. `piper-tts` itself does not yet
+#   officially declare 3.14 in its classifiers -- treat as "verify on your
+#   platform before relying on it in production."
+# - License note: `piper-tts` is GPL-3.0-or-later, unlike PARIKA Core's own
+#   MIT license. It remains strictly optional (this extra), never a base
+#   dependency, so installing it is the operator's own explicit choice --
+#   exactly like any other optional extra here.
+voice = [
+    "faster-whisper>=1.2.1",
+    "piper-tts>=1.4",
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cudnn-cu12==9.*",
+]
+
+[project.scripts]
+parika = "parika.console.app:main"
+parika-server = "parika.server.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["parika*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

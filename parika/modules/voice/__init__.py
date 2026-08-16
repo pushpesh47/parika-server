@@ -1,0 +1,3 @@
+"""
+PARIKA Voice Module package.
+"""

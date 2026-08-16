@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+
+# Logs
+logs/
+
+# Runtime-generated data (Server Runtime, CLI, and Core managers write
+# here at startup/use - sessions, memory, knowledge, coding index,
+# experience, search cache, downloaded models, CLI history; all are
+# recreated automatically via mkdir(parents=True, exist_ok=True) on
+# first use, so none of it belongs in version control):
+data/*
+!data/.gitkeep
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Linting
+.ruff_cache/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# kilo
+.kilo/

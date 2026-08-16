@@ -1,0 +1,3 @@
+"""
+PARIKA Shell Module package.
+"""

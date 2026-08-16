@@ -1,0 +1,624 @@
+"""
+PARIKA Interfaces - Session
+
+Defines `InterfaceSession`, the reusable session-lifecycle and
+request-construction abstraction shared by every Interface.
+
+`InterfaceSession` owns:
+
+- Session lifecycle (identity, start time, conversation history).
+- Request parsing: turning free text into a `BrainRequest` via
+  `chat_capability.build_chat_goal()`.
+- Submitting that request to Brain and interpreting the resulting
+  `BrainResponse`/`GoalResult` into a small `ChatTurnResult` value
+  object.
+
+It contains no output formatting or rendering; that is owned by
+`parika.interfaces.formatting` and by each concrete Interface (e.g.
+the CLI's terminal renderer). It also contains no business logic:
+capability resolution, policy evaluation, provider/tool selection, and
+execution all remain owned by Brain, Planner, and the rest of Core,
+exactly as for any other Goal.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from parika.core.brain.brain_request import BrainRequest
+from parika.core.brain.brain_response import BrainResponse
+from parika.core.brain.context_engine import ContextBundle, load_context_engine_config
+from parika.core.provider_manager.chat_message import ChatMessage
+from parika.core.provider_manager.chat_result import ChatResult
+from parika.core.provider_manager.tool_spec import ToolSpec
+from parika.core.utilities.progress import ProgressEvent, ProgressStage
+
+from .chat_capability import (
+    assemble_context_messages,
+    assemble_conversation_messages,
+    assemble_session_retrieval_messages,
+    build_assistant_system_prompt,
+    build_chat_goal,
+    discover_tool_specs,
+)
+from .history import HistoryEntry, HistoryRole
+from .runtime import ParikaRuntime
+from .session_store import SessionNotFoundError, SessionSummary, SqliteSessionStore
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LastTurnDiagnostics:
+    """
+    Immutable snapshot of runtime-intelligence diagnostics for the
+    most recently submitted chat turn, displayed by the CLI's
+    `/status` command (Phase 1 Completion Specification section 18).
+    """
+
+    conversation_message_count: int = 0
+    conversation_tokens: int = 0
+    memory_hits: int = 0
+    knowledge_hits: int = 0
+    experience_success_rate: float | None = None
+    context_tokens: int = 0
+    advertised_tools: tuple[str, ...] = ()
+    selected_provider: str | None = None
+    selected_model: str | None = None
+    progress_trail: tuple[ProgressEvent, ...] = ()
+    """
+    Every `ProgressEvent` published on the generic `progress.*`
+    channels while this turn was being submitted (Phase 3.5b) --
+    `memory.search`, `knowledge.search`, and Brain's own
+    `brain.execution` tree, in publication order. Captured purely for
+    post-hoc/late diagnostics (e.g. a late `/status` inspection); the
+    live, real-time signal remains the `EventBus` publication itself,
+    which any subscriber (e.g. the Console) observes as it happens.
+    Empty when nothing was published (e.g. `Brain` was constructed
+    without an `event_bus`).
+    """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChatTurnResult:
+    """
+    Immutable outcome of submitting one chat turn to Brain.
+    """
+
+    brain_response: BrainResponse
+    """
+    Raw BrainResponse produced for this turn.
+    """
+
+    @property
+    def succeeded(self) -> bool:
+        """
+        Whether the turn completed successfully.
+        """
+
+        return self.brain_response.succeeded
+
+    @property
+    def chat_response(self) -> ChatResult | None:
+        """
+        The provider-independent `ChatResult` produced for this turn,
+        if any. Every Provider's driver is responsible for returning
+        one whenever it executes a `ChatRequest` (see
+        `parika.core.provider_manager.chat_request.ChatRequest`) --
+        this property never needs to know which concrete Provider
+        actually ran.
+        """
+
+        if not self.brain_response.results:
+            return None
+
+        goal_result = self.brain_response.results[0]
+
+        if goal_result.response is None:
+            return None
+
+        backend_response = goal_result.response.outputs.get("result")
+
+        if isinstance(backend_response, ChatResult):
+            return backend_response
+
+        return None
+
+    @property
+    def error_message(self) -> str | None:
+        """
+        Human-readable description of why the turn did not succeed,
+        or None if it succeeded.
+        """
+
+        if self.brain_response.planning_failure is not None:
+            return str(self.brain_response.planning_failure)
+
+        if not self.brain_response.results:
+            return None
+
+        goal_result = self.brain_response.results[0]
+
+        if goal_result.skipped:
+            return goal_result.skip_reason
+
+        if goal_result.failure is not None:
+            return str(goal_result.failure)
+
+        return None
+
+
+def _estimate_conversation_tokens(messages: "tuple[ChatMessage, ...] | list[ChatMessage]") -> int:
+    """
+    Same coarse `len(text) // 4` heuristic as
+    `context_engine.HeuristicTokenEstimator`, applied to the rolling
+    conversation history for `/status`'s "Conversation tokens"
+    diagnostic. Deliberately not importing Brain's private
+    context_engine class here -- this is Interfaces-layer
+    introspection, not Context Assembly itself.
+    """
+
+    total_characters = sum(len(message.content) for message in messages)
+
+    return max(0, total_characters // 4)
+
+
+def _build_last_turn_diagnostics(
+    *,
+    context_bundle: ContextBundle | None,
+    advertised_tools: tuple[ToolSpec, ...],
+    brain_response: BrainResponse,
+    conversation_tokens: int,
+    progress_trail: tuple[ProgressEvent, ...] = (),
+) -> LastTurnDiagnostics:
+    """
+    Build a `LastTurnDiagnostics` snapshot from this turn's
+    `ContextBundle` and `BrainResponse`. `selected_provider`/
+    `selected_model` are read from `TaskResponse.metadata`, populated
+    by `CapabilityExecutor` only for provider-backed capabilities (see
+    Phase 1 Completion Specification section 18).
+    """
+
+    selected_provider: str | None = None
+    selected_model: str | None = None
+
+    if brain_response.results:
+        response = brain_response.results[0].response
+
+        if response is not None:
+            selected_provider = response.metadata.get("provider_id")
+            selected_model = response.metadata.get("model_id")
+
+    return LastTurnDiagnostics(
+        conversation_message_count=(
+            context_bundle.conversation_message_count if context_bundle is not None else 0
+        ),
+        conversation_tokens=conversation_tokens,
+        memory_hits=len(context_bundle.memories) if context_bundle is not None else 0,
+        knowledge_hits=len(context_bundle.knowledge) if context_bundle is not None else 0,
+        experience_success_rate=(
+            context_bundle.experience_success_rate if context_bundle is not None else None
+        ),
+        context_tokens=context_bundle.estimated_tokens if context_bundle is not None else 0,
+        advertised_tools=tuple(spec.name for spec in advertised_tools),
+        selected_provider=selected_provider,
+        selected_model=selected_model,
+        progress_trail=progress_trail,
+    )
+
+
+class _SystemPromptNotProvided:
+    """
+    Private sentinel type used only as `InterfaceSession.__init__()`'s
+    `system_prompt` default value.
+
+    Distinguishes "the caller omitted `system_prompt` entirely" (this
+    sentinel) from an explicitly passed `system_prompt=None`, which
+    must continue to mean "seed no system prompt at all" -- existing,
+    test-verified behavior that predates Assistant Identity (see
+    `tests/interfaces/test_session.py` and
+    `tests/interfaces/test_session_persistence.py`). Using `None`
+    itself as the default would make these two cases
+    indistinguishable and silently change that existing contract.
+    """
+
+
+_SYSTEM_PROMPT_NOT_PROVIDED = _SystemPromptNotProvided()
+
+
+class InterfaceSession:
+    """
+    A single interactive session against a `ParikaRuntime`.
+
+    Maintains rolling chat history (as provider-independent
+    `ChatMessage` instances, fed back to the model on every turn for
+    conversational continuity) and a separate, display-oriented
+    `HistoryEntry` log used by slash commands such as `/history`.
+    """
+
+    def __init__(
+        self,
+        runtime: ParikaRuntime,
+        *,
+        session_id: str | None = None,
+        system_prompt: (
+            str | None | _SystemPromptNotProvided
+        ) = _SYSTEM_PROMPT_NOT_PROVIDED,
+        session_store: SqliteSessionStore | None = None,
+    ) -> None:
+        """
+        Initialize the session.
+
+        Args:
+            runtime:
+                Runtime this session submits requests through.
+
+            session_id:
+                Optional explicit session identifier. A random one is
+                generated when omitted.
+
+            system_prompt:
+                Optional system prompt seeded as the first chat
+                message. Omit this argument entirely to seed PARIKA's
+                default Assistant Identity prompt, built from
+                `runtime.configuration`'s `[assistant]` section (see
+                `chat_capability.build_assistant_system_prompt()`).
+                Pass an explicit string to seed that text instead.
+                Pass `None` explicitly to start with no system prompt
+                at all -- unchanged, pre-existing behavior.
+
+            session_store:
+                Optional SqliteSessionStore. Defaults to None, in which
+                case this session behaves exactly as before this
+                milestone (purely in-memory, no persistence). When
+                supplied, every turn is additionally persisted, and
+                `save()`/`load()`/`list_sessions()` become usable. See
+                docs/architecture/Intelligence_Foundation_Design.md
+                section 8.
+        """
+
+        self._runtime = runtime
+        self.id = session_id or uuid4().hex
+        self.started_at = datetime.now(UTC)
+
+        self._messages: list[ChatMessage] = []
+
+        resolved_system_prompt = (
+            build_assistant_system_prompt(runtime.configuration)
+            if isinstance(system_prompt, _SystemPromptNotProvided)
+            else system_prompt
+        )
+
+        if resolved_system_prompt:
+            self._messages.append(
+                ChatMessage(role="system", content=resolved_system_prompt)
+            )
+
+        self._history: list[HistoryEntry] = []
+        self._session_store = session_store
+        self._last_turn_diagnostics: LastTurnDiagnostics | None = None
+
+        if self._session_store is not None:
+            self._session_store.ensure_session(self.id)
+
+    @property
+    def runtime(self) -> ParikaRuntime:
+        """
+        The runtime this session is bound to.
+        """
+
+        return self._runtime
+
+    @property
+    def session_store(self) -> SqliteSessionStore | None:
+        """
+        The SqliteSessionStore this session persists through, or None
+        if this session is purely in-memory (the default).
+        """
+
+        return self._session_store
+
+    @property
+    def last_turn_diagnostics(self) -> LastTurnDiagnostics | None:
+        """
+        Runtime-intelligence diagnostics for the most recently
+        submitted chat turn, or None before any turn has been
+        submitted. See `/status`'s use of this in
+        `commands/builtin.py`.
+        """
+
+        return self._last_turn_diagnostics
+
+    def history(self) -> tuple[HistoryEntry, ...]:
+        """
+        Return every recorded history entry, oldest first.
+        """
+
+        return tuple(self._history)
+
+    def record(self, role: HistoryRole, text: str) -> None:
+        """
+        Record a display-oriented history entry.
+
+        Used by slash-command handlers to log their own invocations
+        without going through `submit_text()`.
+        """
+
+        self._history.append(HistoryEntry(role=role, text=text))
+
+    def clear(self) -> None:
+        """
+        Clear conversation and display history.
+
+        Any system prompt seeded at construction time is preserved so
+        the model's behavior remains consistent after clearing.
+        """
+
+        self._messages = [
+            message for message in self._messages if message.role == "system"
+        ]
+        self._history.clear()
+
+    def submit_text(
+        self,
+        text: str,
+        *,
+        on_token: Callable[[str], None] | None = None,
+    ) -> ChatTurnResult:
+        """
+        Submit free text as one chat turn.
+
+        Builds a `BrainRequest` targeting the `chat.respond`
+        Capability and hands it to `Brain.handle()`. On success, the
+        model's reply is appended to the rolling conversation history
+        so subsequent turns retain context.
+
+        Args:
+            text:
+                User-authored message text.
+
+            on_token:
+                Optional callback invoked with each streamed content
+                fragment of the model's final answer.
+
+        Returns:
+            The outcome of this turn.
+        """
+
+        self._history.append(HistoryEntry(role=HistoryRole.USER, text=text))
+        self._messages.append(ChatMessage(role="user", content=text))
+
+        if self._session_store is not None:
+            self._session_store.append_message(self.id, role="user", content=text)
+
+        # Execution progress diagnostics (Phase 3.5b): temporarily
+        # subscribe to the generic progress.* channels for the
+        # duration of this turn so LastTurnDiagnostics.progress_trail
+        # can offer a post-hoc replay (e.g. a late `/status`
+        # inspection). This never affects live delivery -- any
+        # subscriber already watching the EventBus (e.g. the Console)
+        # observes each ProgressEvent as it happens, independent of
+        # this collection. See `memory.search`/`knowledge.search`
+        # (self-reported by MemoryManager/KnowledgeManager) and
+        # Brain's own `brain.execution` tree.
+        progress_trail: list[ProgressEvent] = []
+
+        def _collect_progress(event: object) -> None:
+            if isinstance(event, ProgressEvent):
+                progress_trail.append(event)
+
+        for stage in ProgressStage:
+            self._runtime.event_bus.subscribe(
+                f"progress.{stage.value}", _collect_progress
+            )
+
+        try:
+            return self._submit_text(text, on_token=on_token, progress_trail=progress_trail)
+
+        finally:
+            for stage in ProgressStage:
+                self._runtime.event_bus.unsubscribe(
+                    f"progress.{stage.value}", _collect_progress
+                )
+
+    def _submit_text(
+        self,
+        text: str,
+        *,
+        on_token: Callable[[str], None] | None,
+        progress_trail: list[ProgressEvent],
+    ) -> ChatTurnResult:
+        # Automatic Capability Discovery (AI Context Engineering):
+        # advertise every currently enabled Capability, discovered
+        # from CapabilityRegistry with no hardcoded list -- see
+        # chat_capability.discover_tool_specs(), which also applies
+        # the two fixed-scope memory-authorization security gates
+        # (never capability routing). Relevance judgment for an
+        # ordinary Capability is left entirely to the model's own
+        # native tool-calling reasoning.
+        tools = discover_tool_specs(self._runtime, text=text)
+
+        # Context Assembly: automatically retrieve relevant Memory/
+        # Knowledge context for this turn and inject it immediately
+        # before the newest user message -- never mutates the rolling
+        # `self._messages` history itself, since context is
+        # re-assembled fresh every turn (Phase 1 Completion
+        # Specification sections 3, 20-21).
+        context_messages, context_bundle = assemble_context_messages(
+            self._runtime,
+            text=text,
+            session_id=self.id,
+            conversation_message_count=len(self._messages),
+        )
+
+        # Session Retrieval: automatically retrieve read-only excerpts
+        # from previously saved sessions, but only for a turn
+        # explicitly asking about past/previous conversations (Phase:
+        # PARIKA Memory & Session Retrieval Finalization, Bugs #4/#5/
+        # #6/#7/#8) -- never every turn, unlike Memory/Knowledge
+        # Context Assembly above, and never mutating
+        # `self._messages`, exactly like `context_messages`.
+        #
+        # `token_budget` is what remains of this turn's Runtime
+        # Context Budget after Memory/Knowledge Context Assembly
+        # already spent `context_bundle.estimated_tokens` of it --
+        # Session Retrieval never uses a fixed excerpt count
+        # independent of that budget (Phase A.5).
+        session_token_budget = load_context_engine_config(
+            self._runtime.configuration
+        ).usable_tokens
+        already_used_tokens = (
+            context_bundle.estimated_tokens if context_bundle is not None else 0
+        )
+
+        session_messages = assemble_session_retrieval_messages(
+            text=text,
+            session_store=self._session_store,
+            current_session_id=self.id,
+            token_budget=max(0, session_token_budget - already_used_tokens),
+        )
+
+        injected_messages = context_messages + session_messages
+
+        # Conversation Assembly (AI Context Engineering): splice
+        # injected context into the right position relative to the
+        # rolling history -- never mutates `self._messages` itself,
+        # since context is re-assembled fresh every turn.
+        effective_messages = assemble_conversation_messages(
+            tuple(self._messages), injected_messages
+        )
+
+        goal = build_chat_goal(
+            messages=effective_messages,
+            tools=tools,
+            on_token=on_token,
+            latest_message=text,
+            runtime=self._runtime,
+        )
+
+        brain_response = self._runtime.brain.handle(
+            BrainRequest(goals=(goal,))
+        )
+
+        result = ChatTurnResult(brain_response=brain_response)
+
+        self._last_turn_diagnostics = _build_last_turn_diagnostics(
+            context_bundle=context_bundle,
+            advertised_tools=tools,
+            brain_response=brain_response,
+            conversation_tokens=_estimate_conversation_tokens(self._messages),
+            progress_trail=tuple(progress_trail),
+        )
+
+        if result.succeeded and result.chat_response is not None:
+            self._messages.append(result.chat_response.message)
+            self._history.append(
+                HistoryEntry(
+                    role=HistoryRole.ASSISTANT,
+                    text=result.chat_response.message.content,
+                )
+            )
+
+            if self._session_store is not None:
+                self._session_store.append_message(
+                    self.id, role="assistant", content=result.chat_response.message.content
+                )
+        else:
+            error_text = result.error_message or "The request failed."
+
+            self._history.append(
+                HistoryEntry(role=HistoryRole.ERROR, text=error_text)
+            )
+
+            if self._session_store is not None:
+                self._session_store.append_message(self.id, role="error", content=error_text)
+
+        return result
+
+    def save(self) -> None:
+        """
+        Persist a title (derived deterministically, if not already
+        set).
+
+        A no-op if no `session_store` was supplied at construction
+        time. Never calls an LLM: title derivation is a simple,
+        deterministic truncation of the first user message. Richer
+        abstractive summarization (a real `chat.summarize` Goal through
+        `Brain.handle()`) is a documented future enhancement, not
+        implemented in this milestone -- see
+        docs/architecture/Intelligence_Foundation_Design.md section
+        8.4.
+
+        Deliberately does not scan chat text for stated preferences
+        and does not write to MemoryManager on the user's behalf:
+        permanent memory must only ever be created through the
+        `memory.remember` Capability (the native `memory_remember`
+        tool call a model makes only when the user explicitly asks to
+        remember/save/store something), never as a side effect of
+        ordinary conversational text -- see the PARIKA Memory
+        Subsystem Refactor's "Strictly Explicit Memory" requirement.
+        An earlier version of this method used
+        `preference_detection.detect_preferences()` to auto-record any
+        matched preference statement (e.g. "I prefer dark mode") as a
+        SESSION-scoped Memory unconditionally; that behavior has been
+        removed because it created memories the user never explicitly
+        requested and bypassed `MemoryManager.remember()`'s
+        duplicate-detection entirely (a plain `register()` call).
+        """
+
+        if self._session_store is None:
+            return
+
+        existing = self._session_store.get_session(self.id)
+
+        if existing is not None and existing.title is None:
+            first_user_entry = next(
+                (e for e in self._history if e.role is HistoryRole.USER), None
+            )
+
+            if first_user_entry is not None:
+                title = first_user_entry.text.strip().splitlines()[0][:80]
+                self._session_store.set_title(self.id, title)
+
+    @classmethod
+    def load(
+        cls,
+        session_id: str,
+        runtime: ParikaRuntime,
+        session_store: SqliteSessionStore,
+    ) -> "InterfaceSession":
+        """
+        Restore a previously saved session's messages into a new
+        `InterfaceSession`.
+
+        Raises:
+            SessionNotFoundError:
+                If `session_id` has no stored session.
+        """
+
+        if session_store.get_session(session_id) is None:
+            raise SessionNotFoundError(f"Session '{session_id}' was not found.")
+
+        session = cls(runtime, session_id=session_id, session_store=session_store)
+
+        for message in session_store.get_messages(session_id):
+            if message.role == "system":
+                continue
+
+            session._history.append(
+                HistoryEntry(role=HistoryRole(message.role), text=message.content)
+            )
+
+            if message.role in ("user", "assistant"):
+                session._messages.append(
+                    ChatMessage(role=message.role, content=message.content)
+                )
+
+        return session
+
+    @staticmethod
+    def list_sessions(session_store: SqliteSessionStore) -> tuple[SessionSummary, ...]:
+        """Return every stored session's metadata, most recently updated first."""
+
+        return session_store.list_sessions()

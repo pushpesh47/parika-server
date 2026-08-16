@@ -1,0 +1,1016 @@
+###############################################################################
+# PARIKA Default Configuration
+#
+# This file contains the default configuration for PARIKA.
+#
+# Do not modify this file unless changing PARIKA's built-in defaults.
+# User-specific settings should be placed in higher-precedence configuration
+# files.
+###############################################################################
+
+[application]
+name = "PARIKA"
+version = "0.3.05-alpha"
+environment = "production"
+
+[assistant]
+name = "PARIKA"
+full_name = "Personal Adaptive Responsive Intelligence Kernel Assistant"
+nick_name = "PARI"
+creator = "Pushpesh"
+organization = "Independent Developer"
+purpose = "To provide a modular, adaptive, and extensible intelligence kernel capable of understanding, reasoning, learning, remembering, planning, executing tasks, and orchestrating intelligent capabilities."
+description = "PARIKA is a modular intelligence kernel that continuously understands context, reasons intelligently, learns from interactions, builds and retrieves knowledge, maintains long-term memory, plans and executes complex tasks, and integrates extensible capabilities to provide a unified and continuously evolving intelligence."
+website = ""
+repository = ""
+license = "MIT"
+
+
+###############################################################################
+# Routing Model Selection Strategy
+#
+# Controls only how Planner selects the ROUTING model -- the model that
+# receives the outer chat request, understands it, decides tool/capability
+# calls, and recommends worker models (see
+# docs/architecture/Model_Selection_Framework.md section 14). It has no
+# effect on worker model selection, which always continues to use
+# [model_selection] above, unchanged.
+#
+# "auto" (default): the routing model is selected exactly like any other
+#   model, through the [model_selection] scoring pipeline above. Nothing
+#   changes from today's behavior.
+# "fixed": Planner skips scoring for the routing model and uses fixed_model
+#   directly, to minimize routing latency for small/simple requests. Worker
+#   model selection is completely unaffected either way.
+#
+# The routing model to use when mode = "fixed", e.g. "qwen3:8b". Accepts
+# either a bare model id (matched against any registered provider) or a
+# "provider_id/model_id" pair (e.g. "provider.ollama/qwen3:8b") to
+# disambiguate when more than one provider could expose the same model id.
+# If the configured model is not installed, is unavailable, or its provider
+# is offline, Planner logs a warning and automatically falls back to
+# mode = "auto" for that request rather than failing.
+#
+# Whether the fixed routing model should think/reason (RequestOptions
+# .reasoning) when mode = "fixed", instead of the automatic,
+# reasoning-level-derived thinking mode every other model still uses. Set to
+# false (with a small, fast model such as qwen3:8b) for the fastest possible
+# routing latency. Has no effect when mode = "auto".
+###############################################################################
+
+[routing_model]
+mode = "fixed"
+fixed_model = "qwen3.5:4b"
+fixed_thinking = false
+
+[logging]
+level = "DEBUG"
+console = false
+directory = "logs"
+file = "parika.log"
+
+[data]
+directory = "data"
+
+[plugins]
+directory = "plugins"
+autoload = true
+
+[modules]
+autoload = true
+
+###############################################################################
+# Resource Manager
+#
+# Controls on-demand system/hardware telemetry collection (CPU, memory,
+# disk/storage, GPU, temperature, network) exposed through
+# `ResourceManager.get_resource_snapshot()`, `GET /api/v1/status`, and the
+# `/status` CLI command. ResourceManager remains purely on-demand - these
+# flags only gate which probes run on each request; they never enable a
+# background poller, a cache, or an EventBus publication.
+###############################################################################
+
+[resources]
+gpu_telemetry_enabled = true
+temperature_telemetry_enabled = true
+network_interfaces_enabled = true
+recommended_client_poll_interval_seconds = 5.0
+
+###############################################################################
+# Intelligent Model Selection
+#
+# Tunes how Planner scores and selects a Provider model for capabilities
+# routed to the PROVIDER execution backend (see
+# docs/architecture/Model_Selection_Framework.md). Every value here may be
+# freely edited without any code change; no provider, model name, or score
+# is hardcoded anywhere in Planner.
+###############################################################################
+
+[model_selection]
+default_strategy = "weighted"
+fallback_strategy = "highest_score"
+allow_provider_fallback = true
+allow_model_fallback = true
+enable_dynamic_latency_learning = true
+enable_dynamic_performance_learning = true
+log_decision = true
+
+# Relative importance of each scoring dimension. Values are relative to one
+# another, not normalized to any fixed range; a rule with no matching weight
+# key contributes 0 rather than raising an error.
+[model_selection.weights]
+latency = 40
+reasoning = 25
+tool_calling = 20
+context_window = 10
+cost = 5
+# Opt-in: rewards a provider/model with a higher historical success rate for
+# this Goal's capability (see ExperienceRule). Defaults to 0 (disabled) until
+# an operator has enough recorded Experience data to trust it.
+experience = 0
+
+# Boolean preferences that add a small bonus on top of the weighted score.
+[model_selection.preferences]
+prefer_local = true
+prefer_streaming = true
+prefer_healthier_provider = true
+prefer_lower_latency = true
+prefer_larger_context = false
+
+# Maps each ExecutionRequirements.reasoning_level to a thinking mode
+# ("off" | "auto" | "on"). Providers that support a reasoning/thinking
+# toggle receive this as a generic preference (RequestOptions.reasoning);
+# providers that do not support it simply ignore it.
+[model_selection.reasoning]
+simple = "off"
+normal = "auto"
+complex = "on"
+
+
+###############################################################################
+# API / Server Platform
+#
+# `python -m parika.server` reads this section to build the Server
+# Runtime's FastAPI application - see docs/guides/Running.md section 12.
+#
+# [api.auth].mode selects the authentication backend with no code change
+# required to switch between them (docs section 10.5):
+#   "none"    - Local Development (default). Every request is authenticated
+#               unconditionally. Never use this for a LAN/Internet-facing
+#               deployment.
+#   "api_key" - LAN. `api_keys` holds already-hashed values (never
+#               plaintext) produced by
+#               `parika.api.auth.configure_hashed_api_keys()`.
+#   "jwt"     - Internet. `jwt_secret` must be set (sourced from an
+#               environment/runtime configuration layer in production,
+#               never committed here) and is used to sign/verify tokens.
+###############################################################################
+
+[api]
+enabled = true
+# Bind address for the Server Runtime's HTTP/WebSocket listener (read
+# by `parika/server/__main__.py`, passed straight to `uvicorn.run()` -
+# never hardcoded in Python). "127.0.0.1" (the default) is
+# loopback-only: no other device on the network can reach the API,
+# regardless of `[api.cors]` below. Setting this to "0.0.0.0" makes
+# the API listen on every network interface, e.g. for a LAN Web
+# Client served by Apache on another machine - this is an explicit
+# operator choice, never a silent default change, and should be paired
+# with `[api.auth].mode = "api_key"` (see below) and
+# `[api.cors].allow_lan_origin_regex` rather than left at
+# `[api.auth].mode = "none"`. Prefer setting this per-machine in
+# config/installation.toml rather than editing this file.
+host = "0.0.0.0"
+port = 2026
+# Whether `GET /api/v1/status` includes the host machine's hostname in
+# its `system`/`network` telemetry groups. Defaults to `false` because,
+# unlike the `/status` CLI command (already running on the user's own
+# machine), the REST API may be reachable from other devices on a LAN
+# or the Internet - the hostname is redacted (reported as `null`)
+# rather than exposed by default.
+expose_hostname = false
+
+[api.auth]
+# "none" is safe only while `[api].host = "127.0.0.1"` (loopback-only).
+# Switch to "api_key" (see the `[api.auth].mode` docstring above the
+# `[api]` section's header comment / docs/guides/Running.md section
+# 12.5) before setting `[api].host = "0.0.0.0"` for LAN access.
+mode = "none"
+api_keys = []
+jwt_secret = ""
+jwt_expiry_seconds = 3600
+
+[api.cors]
+allow_origins = []
+allow_origin_regex = "http://(127\\.0\\.0\\.1|localhost)(?::\\d+)?"
+# Additional origin pattern for a LAN Web Client, e.g. Apache serving
+# it at http://192.168.1.100/parika-web/ (Origin: http://192.168.1.100)
+# or http://192.168.1.100:8080/. Empty (the default) disables LAN
+# origin matching entirely; when set, it is combined with (never
+# replaces) `allow_origin_regex` above, so localhost/127.0.0.1 access
+# keeps working unchanged. Never use "*"/a broad subnet wildcard -
+# configure the actual LAN IP the Web Client is served from. Prefer
+# setting this per-machine in config/installation.toml, e.g.:
+#   allow_lan_origin_regex = "http://192\\.168\\.1\\.100(?::\\d+)?"
+allow_lan_origin_regex = ""
+
+[api.rate_limit]
+enabled = false
+requests_per_minute = 600000
+
+[providers.ollama]
+enabled = true
+base_url = "http://127.0.0.1:11434"
+connect_timeout_seconds = 120.0
+request_timeout_seconds = 600000.0
+max_tool_iterations = 5
+default_model = "qwen3-coder-next:latest"
+
+###############################################################################
+# ComfyUI Provider
+#
+# Registers ComfyUI as a normal PARIKA provider for local, installed-model
+# image/video generation (`image.generate`, `image.edit`, `video.generate`,
+# `video.generate_from_image`, `video.edit` -- see
+# parika/modules/generation/). ComfyUI is treated purely as a local HTTP
+# service: `base_url` points at an already-running ComfyUI server, and the
+# `*_diffusion_model`/`*_text_encoder`/`*_vae` keys name the model files
+# (relative to ComfyUI's own `models/` subfolders) this provider expects to
+# find installed there -- never absolute filesystem paths. Model discovery
+# (`GET /models/diffusion_models`) is authoritative: a configured model that
+# is not actually installed is simply not offered to Model Selection, rather
+# than causing an error. `poll_interval_seconds`/`poll_timeout_seconds` bound
+# how long this provider waits for a submitted generation to complete;
+# video generation can take substantially longer than image generation, so
+# `poll_timeout_seconds` is deliberately generous.
+#
+# `video_t2v_weight_dtype`/`video_vace_weight_dtype` independently configure
+# the `UNETLoader` loading precision ("weight_dtype") used for
+# `video_t2v_diffusion_model`/`video_vace_diffusion_model`, respectively.
+# The dtype is never inferred from the model filename (a filename containing
+# "fp8"/"fp16"/"bf16" is not authoritative); if omitted, it defaults to
+# `"default"` (load the checkpoint at its own stored precision -- today's
+# unchanged behavior). Supported values are ComfyUI's native `UNETLoader`
+# choices: "default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2". This
+# lets an operator switch between compatible models (e.g. the FP8-scaled
+# low-VRAM VACE checkpoint below and the original FP16 VACE checkpoint)
+# purely through configuration, with no code change.
+#
+# `video_t2v_loader`/`video_vace_loader` independently configure which
+# ComfyUI node actually loads `video_t2v_diffusion_model`/
+# `video_vace_diffusion_model`: "native" (ComfyUI's own `UNETLoader`,
+# today's only behavior) or "gguf" (the ComfyUI-GGUF custom node's
+# `UnetLoaderGGUF` -- https://github.com/city96/ComfyUI-GGUF -- required
+# for `.gguf`-quantized checkpoints, which `UNETLoader` cannot load). This
+# is never inferred from the filename's extension either; a `.gguf` file
+# configured with loader="native" (or a `.safetensors` file configured
+# with loader="gguf") is not silently corrected, it fails validation. The
+# GGUF loader has no `weight_dtype` input (a GGUF checkpoint's
+# quantization is already fixed by the file itself), so the paired
+# `*_weight_dtype` key must be left at "default" whenever the loader is
+# "gguf". GGUF checkpoints must additionally be installed where
+# ComfyUI-GGUF looks for them (ComfyUI's `models/unet/` directory) and
+# ComfyUI-GGUF's custom node package must actually be installed -- model
+# discovery simply does not offer a video model whose configured loader's
+# custom node/listing is unavailable, exactly like an uninstalled
+# checkpoint file.
+###############################################################################
+
+[providers.comfyui]
+enabled = true
+base_url = "http://127.0.0.1:8188"
+connect_timeout_seconds = 10.0
+request_timeout_seconds = 600000.0
+poll_interval_seconds = 2.0
+poll_timeout_seconds = 600000.0
+image_diffusion_model = "qwen-image/qwen_image_fp8_e4m3fn.safetensors"
+image_text_encoder = "qwen/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+image_vae = "qwen-image/qwen_image_vae.safetensors"
+video_t2v_diffusion_model = "Wan2.1/wan2.1_t2v_1.3B_bf16.safetensors"
+video_t2v_loader = "native"
+video_t2v_weight_dtype = "default"
+
+# Active: native FP8-scaled VACE checkpoint (low VRAM).
+video_vace_diffusion_model = "wan2.1_vace_1.3B_fp8_scaled.safetensors"
+video_vace_loader = "native"
+video_vace_weight_dtype = "fp8_e4m3fn"
+
+# Alternative: original native FP16 VACE checkpoint (more VRAM, no
+# precision loss). Switch to this by uncommenting these three lines and
+# commenting out the three "Active" lines above -- no code change.
+# video_vace_diffusion_model = "wan2.1_vace_1.3B_fp16.safetensors"
+# video_vace_loader = "native"
+# video_vace_weight_dtype = "default"
+
+# Alternative: GGUF-quantized VACE checkpoint (smallest file/VRAM
+# footprint), loaded through the ComfyUI-GGUF custom node's
+# `UnetLoaderGGUF` instead of `UNETLoader`. Requires ComfyUI-GGUF
+# (https://github.com/city96/ComfyUI-GGUF) to be installed and the
+# `.gguf` file placed in ComfyUI's `models/unet/` directory.
+# `video_vace_weight_dtype` has no effect for this loader and must stay
+# "default" (UnetLoaderGGUF has no weight_dtype input). Switch to this by
+# uncommenting these three lines and commenting out the three "Active"
+# lines above -- no code change.
+# video_vace_diffusion_model = "wan2.1-vace-1.3b-q4_k_m.gguf"
+# video_vace_loader = "gguf"
+# video_vace_weight_dtype = "default"
+
+video_text_encoder = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+video_vae = "wan_2.1_vae.safetensors"
+
+###############################################################################
+# Generation Module
+#
+# `output_directory` is where a new artifact file is written (relative to
+# `[workspace].default_workspace`) when a caller does not supply an explicit
+# `output_path`.
+###############################################################################
+
+[generation]
+enabled = true
+output_directory = "generated"
+
+###############################################################################
+# Local Speech Provider
+#
+# Local, on-device speech-to-text/text-to-speech engines backing the Voice
+# Module's `voice.provider_speech_to_text`/`voice.provider_text_to_speech`
+# Capabilities. Every field here is engine-selection/model-selection/device
+# configuration -- never hardcoded in code; see
+# `parika/providers/local_speech/config.py`.
+#
+# STT (`stt_*`): `stt_engine` currently supports only `"faster_whisper"`.
+# `stt_model_size` is any faster-whisper model id (`tiny`, `base`, `small`,
+# `medium`, `large-v3`, ...) or a local CTranslate2 model directory; the model
+# is multilingual and recognizes English, Hindi, and every other language the
+# selected checkpoint supports -- do NOT use a `.en`-suffixed (English-only)
+# checkpoint if Hindi recognition is wanted. `stt_default_language` is the
+# STT language hint used when a request supplies none (empty string = auto-
+# detect). `stt_device`/`tts_device` accept `"auto"` (tries GPU, then
+# gracefully falls back to CPU), `"cpu"`, or `"cuda"`.
+#
+# TTS (`tts_*`): `tts_engine` currently supports only `"piper"`. Two
+# independent voice "slots" are configured -- English (`tts_voice`/
+# `tts_model_path`/`tts_config_path`) and Hindi (`tts_hindi_voice`/
+# `tts_hindi_model_path`/`tts_hindi_config_path`) -- so both languages can
+# have their own dedicated Piper voice model. `tts_voice`/`tts_hindi_voice`
+# are human-readable labels only; `tts_model_path`/`tts_hindi_model_path`
+# must each point to an installed Piper `.onnx` voice model file for that
+# language's text-to-speech to become available (an unset/missing path
+# simply leaves that language's text-to-speech unavailable -- never a
+# crash; the *other* language, if configured, is unaffected).
+#
+# Indian female voice policy (see `docs/architecture/adr/
+# 0002-voice-capability.md`'s language-model decision for the full
+# investigation): `hi_IN-priyamvada-medium` (upstream `rhasspy/piper-voices`)
+# is a real, confirmed-female Hindi/India voice -- genuinely Indian, Hindi,
+# and female. Piper's official catalog has no dedicated Indian-English
+# (`en_IN`) voice at all; `en_US-amy-medium` (also upstream, confirmed
+# female) is used as the closest available substitute for English -- this
+# is a real, documented limitation, not a fabricated "Indian English" voice.
+# `tts_length_scale`/`tts_noise_scale`/`tts_noise_w`/`tts_device` are shared
+# synthesis/placement tuning applied to whichever voice is actually used.
+###############################################################################
+
+[providers.local_speech]
+enabled = true
+
+stt_engine = "faster_whisper"
+stt_model_size = "small"
+stt_device = "auto"
+stt_compute_type = "default"
+stt_default_language = ""
+stt_model_directory = ""
+stt_beam_size = 5
+
+tts_engine = "piper"
+tts_voice = "en_US-amy-medium"
+tts_model_path = "/mnt/dev/python/parika/models/voice/en_US-amy-medium/en_US-amy-medium.onnx"
+tts_config_path = ""
+tts_device = "auto"
+tts_sample_rate = 22050
+tts_length_scale = 1.0
+tts_noise_scale = 0.667
+tts_noise_w = 0.8
+
+tts_hindi_voice = "hi_IN-priyamvada-medium"
+tts_hindi_model_path = "/mnt/dev/python/parika/models/voice/hi_IN-priyamvada-medium/hi_IN-priyamvada-medium.onnx"
+tts_hindi_config_path = ""
+
+###############################################################################
+# Voice Module
+#
+# `tts_chunk_max_characters` bounds how large a text-to-speech synthesis
+# chunk is (see `parika/modules/voice/text_chunking.py`) -- the mechanism
+# that makes "Stop Speaking" take effect mid-response rather than only after
+# an entire response has already finished synthesizing. STT/TTS engine
+# selection, model paths, device placement, and synthesis tuning all live in
+# `[providers.local_speech]` above, not here.
+#
+# `input_language`/`output_language` (see `parika/modules/voice/language.py`)
+# are the *initial* Voice language preference, seeding the shared, in-memory
+# `VoiceLanguagePreferenceStore` at startup:
+#   - `input_language`: `"auto"` (detect English/Hindi from speech itself --
+#     never a Unicode-script heuristic, never the chat model guessing),
+#     `"en"`, or `"hi"`.
+#   - `output_language`: `"follow_input"` (speak whatever language was most
+#     recently used/detected on input), `"en"`, or `"hi"`.
+# A caller may change the *current* preference afterwards through
+# `GET`/`PUT /api/v1/voice/settings` without touching this file.
+###############################################################################
+
+[voice]
+enabled = true
+tts_chunk_max_characters = 280
+input_language = "auto"
+output_language = "follow_input"
+
+###############################################################################
+# Media
+#
+# Provider-independent media intent/resolution/control -- see
+# `docs/architecture/adr/0004-media-capability.md`. PARIKA never plays
+# audio/video itself; actual playback is performed by a separate Web
+# Client connected over `WS /api/v1/ws/media/{client_id}`.
+#
+# `allowed_local_roots` is empty by default: `media.play` with a local
+# filesystem path is disabled until at least one trusted root
+# directory is listed here (e.g. ["/home/user/Music"]) -- see
+# `parika/tools/media/security.py`'s module docstring for why this is
+# deliberately narrower than `[filesystem]`'s own default-open reads.
+# `youtube_search_enabled` controls whether a free-text `media.play`
+# query (e.g. "play Imagine Dragons Believer") may fall back to the
+# existing `web.search` Capability to find a matching YouTube video;
+# disabling it still leaves local-path, direct-URL, and YouTube-URL
+# resolution available.
+###############################################################################
+
+[media]
+enabled = true
+allowed_local_roots = []
+youtube_search_enabled = true
+
+###############################################################################
+# Web Search
+#
+# Selects which search provider(s) the Web Search Tool uses and the order
+# to fail over between them. `default_provider` is tried first; if it
+# errors, times out, is served an anti-bot/CAPTCHA challenge, returns an
+# HTTP error, or returns a malformed response, each remaining name in
+# `provider_order` is tried in turn until one succeeds. `provider_order` is
+# ordered for AI-quality search results, not popularity. Providers that
+# require their own configuration (currently only `google_cse`) are
+# automatically skipped - never attempted - until configured; see
+# parika/tools/web_search/provider_registry.py for how to register a brand
+# new provider - no other code needs to change.
+###############################################################################
+
+[web_search]
+enabled = true
+default_provider = "parallel_mcp"
+provider_order = [
+    "parallel_mcp",
+    "bing",
+    "mojeek",
+    "qwant",
+    "duckduckgo",
+    "google",
+    "google_cse",
+]
+
+# Result selection and ranking. WebSearchToolDriver requests
+# `candidate_pool_size` results from the configured provider (always at
+# least the caller's own requested count), ranks them by relevance to the
+# query when `ranking_enabled` is true, then returns up to
+# `default_max_results` (or the caller's own explicit `max_results`) of the
+# best-ranked results - never just the provider's raw first N (see
+# parika/tools/web_search/ranking.py).
+default_max_results = 10
+candidate_pool_size = 20
+ranking_enabled = true
+ranking_title_weight = 2.0
+ranking_snippet_weight = 1.0
+ranking_position_decay = 0.01
+
+# Deduplication removes exact-URL and same-domain near-duplicate
+# results from the candidate pool before ranking (see
+# parika/tools/web_search/dedup.py).
+dedup_enabled = true
+dedup_title_similarity_threshold = 0.92
+
+# Query normalization and result validation. WebSearchToolDriver rewrites a
+# small set of recognized ambiguous/search-unfriendly query phrasings (e.g.
+# "current prime minister" -> "incumbent prime minister") before dispatch,
+# then computes a heuristic confidence score for the ranked candidate pool.
+# Below `validation_min_confidence`, the search is retried once with a
+# further-rewritten query before falling back to a graceful,
+# low-confidence-annotated response rather than failing outright (see
+# parika/tools/web_search/query_normalizer.py and validation.py).
+validation_enabled = true
+validation_min_confidence = 0.15
+validation_max_retries = 1
+validation_title_weight = 0.5
+validation_snippet_weight = 0.3
+validation_url_weight = 0.2
+
+# Caches the ranked (pre-page-fetch) candidate pool per normalized query,
+# keyed by backend identity, for cache_ttl_seconds (see
+# parika/tools/web_search/cache.py). A full kill switch requiring no code
+# change, following the same convention as ranking_enabled/dedup_enabled.
+cache_enabled = true
+cache_ttl_seconds = 900.0
+cache_max_entries = 500
+
+# Only providers that require additional configuration get their own
+# section here. google, bing, duckduckgo, mojeek, and qwant need none and
+# are always considered available. Subtables must come after every plain
+# `[web_search]` key above - TOML would otherwise nest those keys under
+# this subtable instead of `[web_search]` itself.
+
+[web_search.google_cse]
+api_key = ""
+search_engine_id = ""
+
+###############################################################################
+# Workspace
+#
+# `default_workspace` names the one directory PARIKA always trusts, without
+# ever needing to be listed explicitly in `[filesystem].trusted_workspaces`
+# below. Read through by both the Filesystem Tool and the Shell Tool's
+# default working directory (see
+# parika/core/permission_manager/workspace_permission_manager.py). Relative
+# to the PARIKA project root; set to "" to disable the automatic default
+# entirely.
+###############################################################################
+
+[workspace]
+default_workspace = "data"
+
+###############################################################################
+# Filesystem
+#
+# Reading, searching, and inspecting files (read/list/search/walk/info/
+# permissions/exists/watch, and copy's source) is always allowed on any
+# resolvable host path, unconditionally - PARIKA may read any file on the
+# operating system. Only write/mkdir/copy-destination/move/delete remain
+# confined: instantly allowed inside a trusted workspace
+# (`[workspace].default_workspace` plus every entry in
+# `trusted_workspaces` below), or delegated to the shared
+# WorkspacePermissionManager otherwise, which interactively asks for one of
+# Allow once / Allow for this session / Always trust this workspace / Deny
+# (see docs/architecture/Core_Component_Responsibilities.md section 25).
+# `trusted_workspaces` replaces the deprecated `allowed_roots` key, which is
+# still read as a fallback alias when `trusted_workspaces` is entirely
+# absent, so existing installations keep working unchanged. Relative
+# entries are resolved against the PARIKA project root. `allow_write` and
+# `allow_delete` additionally gate mutating and destructive operations
+# (including move, which deletes its source) independently of workspace
+# trust.
+###############################################################################
+
+[filesystem]
+enabled = true
+trusted_workspaces = []
+allow_write = true
+allow_delete = false
+default_search_recursive = true
+max_walk_entries = 5000
+watch_poll_interval_seconds = 1.0
+watch_max_duration_seconds = 10.0
+
+
+[security]
+allow_shell_commands = true
+
+###############################################################################
+# Shell
+#
+# `enabled = false` by default - the Shell Module registers no Capabilities
+# or Tools at all until explicitly opted into (falls back to the pre-
+# existing `[security].allow_shell_commands` when `[shell]` is absent from
+# every configuration layer entirely). Every `shell.execute`/
+# `shell.background` call asks the same shared WorkspacePermissionManager
+# the Filesystem Tool uses for `Execute` permission on the command's working
+# directory - the Shell Tool never implements its own permission logic (see
+# docs/development/Tool_Guide.md section 22).
+###############################################################################
+
+[shell]
+enabled = true
+default_timeout_seconds = 30.0
+max_timeout_seconds = 300.0
+max_background_processes = 20
+output_buffer_max_bytes = 65536
+kill_grace_period_seconds = 5.0
+allow_shell_string = true
+inherit_environment = true
+
+###############################################################################
+# Weather
+#
+# Uses Open-Meteo (https://open-meteo.com) - free, no API key required.
+###############################################################################
+
+[weather]
+enabled = true
+units = "metric"
+request_timeout_seconds = 10.0
+max_attempts = 3
+backoff_seconds = 0.5
+default_forecast_days = 5
+
+###############################################################################
+# Currency
+#
+# `default_provider` is tried first; on failure, each remaining name in
+# `provider_order` is tried in turn. Frankfurter (open-source,
+# self-hostable, ECB-anchored) is primary; open.er-api.com (wider,
+# closed-source coverage) is an automatic failover only. Both are free and
+# require no API key. See provider_registry.py to register a new provider.
+###############################################################################
+
+[currency]
+enabled = true
+default_provider = "frankfurter"
+provider_order = ["frankfurter", "open_er_api"]
+request_timeout_seconds = 10.0
+max_attempts = 3
+backoff_seconds = 0.5
+
+###############################################################################
+# Expense Management
+#
+# Personal expense tracking: `expense.add_expense`/`get_expense`/
+# `list_expenses`/`update_expense`/`remove_expense`/`summarize_expenses`/
+# `compare_periods`. `default_currency` is used whenever a request omits one.
+# `categories` is a suggested, extensible taxonomy only -- any category
+# string is still accepted and stored as-is (see
+# parika/tools/expense/model.py).
+###############################################################################
+
+[expense]
+enabled = true
+default_currency = "INR"
+categories = [
+    "Food",
+    "Groceries",
+    "Medicine",
+    "Transport",
+    "Travel",
+    "Shopping",
+    "Bills",
+    "Education",
+    "Investment",
+    "Personal",
+    "Household",
+    "Other",
+]
+default_list_limit = 500
+max_list_results = 2000
+default_largest_count = 55
+
+###############################################################################
+# News
+#
+# `news.latest` and `news.topic` aggregate curated, no-API-key RSS/Atom
+# feeds via `feedparser`. `news.search`, and any `news.topic` topic with no
+# configured feed, fall back to Google News' public RSS search endpoint -
+# still no API key. Feed lists below are fully operator-overridable.
+###############################################################################
+
+[news]
+enabled = true
+default_max_results = 10
+feed_timeout_seconds = 10.0
+max_attempts = 3
+backoff_seconds = 0.5
+
+latest_feeds = [
+    "https://feeds.bbci.co.uk/news/rss.xml",
+    "https://www.npr.org/rss/rss.php?id=1001",
+]
+
+[news.feeds]
+world = ["https://feeds.bbci.co.uk/news/world/rss.xml"]
+business = ["https://feeds.bbci.co.uk/news/business/rss.xml"]
+technology = ["https://feeds.bbci.co.uk/news/technology/rss.xml"]
+science = ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"]
+health = ["https://feeds.bbci.co.uk/news/health/rss.xml"]
+politics = ["https://feeds.bbci.co.uk/news/politics/rss.xml"]
+sports = ["https://feeds.bbci.co.uk/sport/rss.xml"]
+entertainment = ["https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"]
+
+# PARIKA Console (parika/console/) -- PARIKA's native, in-process
+# administration console. This config namespace intentionally keeps
+# its historical "interfaces.cli" key for backward compatibility even
+# though the package itself lives at parika/console/. The Console is
+# not an external client of the REST/WebSocket API layer and never
+# will be -- see docs/architecture/PARIKA_Architecture_Specification_v1.0.md
+# ("PARIKA Console" section) for the distinction between the Console
+# and future external clients (Desktop, Web, Android, iOS, Voice, a
+# future CLI client), which communicate exclusively through /api/v1.
+[interfaces.cli]
+prompt = "\u276f"  # ❯
+banner = "PARIKA"
+markdown = true
+color = true
+stream = true
+history_file = "data/cli_history"
+history_size = 1000
+# Whether to render real execution-progress events (Phase 3.5b) live
+# -- Searching Memory/Knowledge, Thinking/Planning, Executing
+# Capability, Calling Tool, etc. -- in place of no progress indication
+# at all.
+progress = true
+# Which rendering mode to use when `progress` is enabled. False
+# (default, "Normal Mode") renders a single, transient spinner status
+# line -- see parika/console/spinner_view.py. True ("Debug Mode")
+# renders the previous, fully verbose, one-line-per-event output --
+# see parika/console/progress_view.py. Overridable per run with
+# `--debug`. Purely a rendering choice; has no effect on execution.
+debug = false
+# Which footer to render after a chat turn's answer describing any
+# tools/capabilities that turn used -- see
+# parika/console/tool_footer.py. One of:
+#   "none"  -- never render a footer; only the answer is shown.
+#   "smart" -- (default) a footer only when at least one tool was
+#              actually used, with friendly names (e.g. "Vision",
+#              "Web Search"), never internal capability/tool/provider
+#              IDs.
+#   "debug" -- the fully detailed, developer-facing footer (tool call
+#              name and per-invocation outcome), unchanged.
+# Purely a rendering choice; has no effect on execution.
+tool_footer_mode = "smart"
+
+
+
+###############################################################################
+# Memory
+#
+# Retrieval scoring weights for MemoryManager.search()/remember() (see
+# parika/core/memory_manager/retrieval.py and the Phase 1 Completion
+# Specification, section 4). Every signal is deterministic and lexical
+# (SQLite FTS5 bm25() relevance, recency decay, caller-supplied importance,
+# access frequency, confidence) -- never semantic or embedding-based.
+###############################################################################
+
+[memory]
+relevance_weight = 1.0
+recency_weight = 0.5
+importance_weight = 0.5
+frequency_weight = 0.25
+confidence_weight = 0.5
+recency_half_life_seconds = 86400.0
+candidate_pool_multiplier = 5
+
+###############################################################################
+# Context Engine
+#
+# Brain's context_engine subpackage assembles a token-budget-aware
+# ContextBundle from MemoryManager/KnowledgeManager search results before a
+# chat Goal is submitted to Planner, and Compaction (`compact()`) fits
+# conversation history into the same budget. Every prompt-context consumer
+# (Context Assembly's Memory/Knowledge packing, Compaction's turn retention,
+# and Session Retrieval's previous-session excerpts) uses as much relevant
+# content as fits within the token budget below -- there is no fixed
+# entry/turn count independent of that budget (Phase A.5).
+#
+# This same section is also the single source of Runtime Context Budget
+# configuration (see docs/architecture/PARIKA_Decision_Flow.md section 4.4):
+# once Planner selects a Provider model, `default_context_window_tokens`
+# becomes the configurable ceiling applied on top of that model's own
+# advertised context window (never a hard-coded replacement for it),
+# `reserved_for_response_tokens` is held back for the model's response, and
+# `safety_reserve_tokens` is additional headroom held back to absorb
+# token-estimation error. Planner passes the resulting effective context
+# window to the Provider, which alone translates it into its own
+# provider-specific request parameter (e.g. Ollama's `num_ctx`).
+#
+# `default_context_window_tokens` acts as a default ceiling, not an
+# unconditional cap: when AI Context Engineering's Prompt Engineering
+# responsibility has measured the complete assembled prompt for this
+# request (`RequestOptions.estimated_prompt_tokens`, set by
+# `interfaces/ai_context/goal_builder.py`), Planner grows the effective
+# context window just enough to cover that measured size, still never
+# exceeding the selected model's own true advertised context window. This
+# is what prevents a Provider's context window from silently truncating
+# prompt content (Assistant Identity, Behavior, Tool Descriptions, Worker
+# Inventory, etc.) that AI Context Engineering already decided belongs in
+# the request -- never an arbitrary buffer, never a hardcoded token value.
+#
+# Before a model has been selected (Context Assembly and Compaction both
+# run before Planner does), `default_context_window_tokens` also serves as
+# the config-driven ceiling `TokenBudget` uses -- Brain does not yet know
+# which model Planner will select. This is the one context-window input
+# that is genuinely required here and cannot itself be replaced by the
+# post-selection Runtime Context Budget, since it is one of that budget's
+# own inputs; `reserved_for_response_tokens`/`safety_reserve_tokens` are
+# likewise inputs PARIKA itself owns, not fixed-count prompt limits.
+###############################################################################
+
+[context_engine]
+default_context_window_tokens = 8192
+reserved_for_response_tokens = 1024
+safety_reserve_tokens = 256
+warning_threshold = 0.8
+
+[ai]
+default_provider = ""
+default_model = ""
+temperature = 0.7
+
+###############################################################################
+# Progress Reporting
+#
+# Generic, ecosystem-wide progress events (see
+# docs/architecture/Developer_Intelligence_Platform_Design.md Addendum A/B).
+# Published through the existing EventBus; disabling this only stops the
+# ProgressReporter helper from publishing - it never disables EventBus itself
+# or any other event any component already publishes today (task.*,
+# capability.execution.*, tool.*, ...).
+###############################################################################
+
+[progress]
+enabled = true
+generic_channel_enabled = true
+
+###############################################################################
+# Coding Tool
+#
+# Semantic source-code understanding: parsing, symbol indexing, search,
+# cross-reference/call-hierarchy analysis, rename/refactor planning, patch
+# generation, documentation drafting, formatting/linting (delegated to the
+# Shell Tool), complexity, duplicate, and dead-code detection. Never a
+# filesystem tool - mutation is always performed by the existing Filesystem
+# Tool, invoked by the caller (typically the Coding Agent).
+#
+# `tree_sitter_enabled` is auto-detected: it has no effect unless the
+# optional `coding` dependency group (tree-sitter, tree-sitter-language-pack)
+# is actually installed - Python (stdlib `ast`) and a generic text fallback
+# always work with zero new dependency for every other language. See
+# docs/architecture/Developer_Intelligence_Platform_Design.md section 4.
+###############################################################################
+
+[coding]
+enabled = true
+tree_sitter_enabled = true
+max_file_size_bytes = 2000000
+index_database = "coding_index.sqlite3"
+
+# One argv-form command per language; the target file path is appended
+# automatically. Empty/absent = coding.format/coding.lint report a clear
+# "not configured" error for that language rather than a crash.
+[coding.formatters]
+python = ["ruff", "format"]
+
+[coding.linters]
+python = ["ruff", "check", "--output-format=json"]
+
+###############################################################################
+# Repository Intelligence
+#
+# Workspace Understanding, Repository Understanding, and Project Indexing:
+# discovers repositories/projects beneath a workspace root, README
+# understanding (via the existing Document Knowledge Engine), read-only Git
+# metadata (via the existing Shell Tool - Git is never used to modify a
+# repository), and Project Awareness (framework/package manager/build
+# system/test framework/linter/formatter detection). Extends
+# KnowledgeManager's already-existing REPOSITORY/WORKSPACE source kinds - no
+# Core change. See
+# docs/architecture/Developer_Intelligence_Platform_Design.md sections 5-7.
+###############################################################################
+
+[repository_intelligence]
+enabled = true
+ignored_directories = [
+    ".git", "node_modules", ".venv", "venv", "__pycache__",
+    ".mypy_cache", ".pytest_cache", "dist", "build", "target",
+]
+git_recent_commits_limit = 20
+
+###############################################################################
+# Coding Agent
+#
+# `coding.execute_task` is a pure orchestrator over Planner/Brain/the Coding
+# Tool/the Filesystem Tool/the Shell Tool - it never implements filesystem
+# logic, shell execution, or indexing itself. Internally pluggable: multiple
+# CodingAgent implementations may be registered without changing this
+# Capability's public shape (`default_agent` is the fallback when neither an
+# explicit `agent` argument nor any registered agent's own applicability
+# check matches). See
+# docs/architecture/Developer_Intelligence_Platform_Design.md section 8 and
+# Addendum A section A.3.2.
+###############################################################################
+
+[coding_agent]
+enabled = true
+default_max_depth = 3
+require_test_run = false
+allowed_write_roots = []
+default_agent = "standard"
+
+###############################################################################
+# OCR
+#
+# `ocr.extract_text`/`ocr.provider_extract_text` always work with zero extra dependency
+# (unchanged from before this section existed). `preprocessing_enabled` and
+# every deterministic Capability below it (`ocr.detect_orientation`,
+# `ocr.detect_quality`, table-region detection inside `ocr.extract_table`,
+# and `ocr.extract_text`'s own opt-in `preprocess`/`region` arguments)
+# additionally require the optional `ocr` dependency group (Pillow, numpy,
+# pypdfium2, langdetect - see pyproject.toml) to be installed; auto-detected
+# at runtime and gracefully skipped - never a crash - when it is not,
+# exactly like `coding.tree_sitter_enabled` (see
+# parika/modules/ocr/config.py).
+###############################################################################
+
+[ocr]
+enabled = true
+preprocessing_enabled = true
+language_detection_enabled = true
+# Maximum skew angle (degrees) `ocr.extract_text`'s opt-in `preprocess`
+# argument and PDF page recognition will search/correct for.
+max_deskew_angle_degrees = 15.0
+# Below this pixel dimension (shorter side), an image is treated as
+# low-resolution by `ocr.detect_quality` and upscaled by preprocessing.
+low_resolution_min_dimension = 1000
+# Laplacian-variance cutoff below which `ocr.detect_quality`/preprocessing
+# consider an image blurry. Empirical, not universal - tune per corpus.
+blur_variance_threshold = 100.0
+# Quality score (see ocr.detect_quality) at/above which a document image
+# is considered acceptable for recognition.
+quality_score_minimum = 0.5
+# DPI used to render scanned/image-only PDF pages before recognition.
+pdf_render_dpi = 200
+# A PDF page's own text layer shorter than this many characters is treated
+# as "no usable text layer" (a scanned/image-only page), triggering the
+# image-recognition path instead of the zero-cost text-layer path.
+pdf_min_text_layer_chars = 20
+
+###############################################################################
+# Document
+#
+# PARIKA's single entry point for document processing. `document.extract_text`
+# and every text-native format (TXT, Markdown, HTML, CSV, JSON, XML) always
+# work with zero extra dependency; PDF text extraction is delegated entirely
+# to the `ocr.extract_text` Capability above (never duplicated). Reading
+# DOCX/PPTX/XLSX files additionally requires the optional `document`
+# dependency group (python-docx, python-pptx, openpyxl - see pyproject.toml);
+# auto-detected at runtime and reported via a typed exception - never a
+# crash - when it is not installed (see parika/modules/document/config.py).
+###############################################################################
+
+[document]
+enabled = true
+# Maximum bibliography/citation entries `document.extract_references` returns.
+max_reference_candidates = 200
+# Maximum ranked terms `document.extract_keywords` returns.
+max_keywords = 15
+# Characters of surrounding context `document.search` includes around each match.
+search_context_chars = 80
+
+###############################################################################
+# Video
+#
+# Builds on top of the existing OCR/Vision/Document Modules rather than
+# duplicating any of their implementations (see parika/modules/video/engine.py).
+# Deterministic frame decoding (`video.extract_metadata`, `video.extract_frames`,
+# scene/motion/quality detection, ...) additionally requires the optional
+# `video` dependency group (opencv-python-headless, shared with the `vision`
+# extra - see pyproject.toml); auto-detected at runtime and reported via a
+# typed exception - never a crash - when it is not installed (see
+# parika/modules/video/config.py).
+###############################################################################
+
+[video]
+enabled = true
+# Hard upper bound on frames sampled/decoded by any single `video.*` Tool call.
+max_sample_frames = 64
+# Default frame budgets for the Provider-backed video-understanding Capabilities.
+describe_frame_count = 6
+summarize_frame_count = 10
+answer_question_frame_count = 6
+classify_frame_count = 4
+# Target sampled-frames-per-second for the denser sampling strategy used by
+# scene/shot/motion/tracking Capabilities.
+dense_sample_target_fps = 2.0
+# Default width (seconds) of the focus window sampled around an explicit
+# timestamp for `video.answer_question`/`video.describe_video`/`video.summarize_video`.
+focus_window_seconds = 6.0
+# Blended perceptual-hash/histogram/pixel change-score (0-1) above which two
+# consecutive sampled frames are considered a shot/scene boundary.
+scene_change_threshold = 0.35
+# Laplacian-variance cutoff below which a frame is considered blurry.
+blur_variance_threshold = 100.0
+# Mean grayscale brightness (0-255) below which a frame is considered black.
+black_frame_brightness_threshold = 16.0
+# Per-pixel intensity delta threshold for `video.detect_motion`'s frame differencing.
+motion_pixel_threshold = 25
+# Changed-pixel ratio required for `video.detect_motion` to flag motion.
+motion_area_ratio_threshold = 0.01
+# Minimum static-segment duration (seconds) for `video.detect_slides` to flag a slide.
+min_slide_duration_seconds = 2.0
+# Default `video.extract_thumbnails` contact-sheet grid/cell dimensions.
+thumbnail_columns = 4
+thumbnail_rows = 4
+thumbnail_cell_width = 240

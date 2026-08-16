@@ -1,0 +1,3 @@
+"""
+PARIKA Generation Module package.
+"""

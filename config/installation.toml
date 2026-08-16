@@ -1,0 +1,21 @@
+###############################################################################
+# PARIKA Installation Configuration
+#
+# Machine-specific settings.
+# These values are common to every workspace on this installation.
+###############################################################################
+
+# Example: expose the API to other devices on the LAN (see
+# docs/guides/Running.md section 12.2/12.6 and config/defaults.toml's
+# `[api]`/`[api.cors]` comments). Disabled by default - uncomment and
+# fill in this machine's actual LAN IP to enable.
+#
+# [api]
+# host = "0.0.0.0"
+#
+# [api.auth]
+# mode = "api_key"
+# api_keys = []  # hashed values only, see docs/guides/Running.md 12.5
+#
+# [api.cors]
+# allow_lan_origin_regex = "http://192\\.168\\.1\\.100(?::\\d+)?"
