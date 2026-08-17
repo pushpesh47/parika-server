@@ -496,6 +496,120 @@ class TestAPIConcurrency:
         
         core_thread.join(timeout=self.CORE_BUSY_DURATION + 2.0)
 
+    def test_weather_endpoint_during_core_busy(self, monkeypatch):
+        """Test /api/v1/weather while Core is busy."""
+        import threading
+        
+        # Mock the weather service to return a fixed response
+        from parika.tools.weather.service import WeatherService
+        
+        mock_response = {
+            "location": {"name": "12.9700, 77.5900", "latitude": 12.97, "longitude": 77.59, "timezone": "Asia/Kolkata"},
+            "current": {"temperature_c": 28.5, "feels_like_c": 30.1, "condition": "Mainly clear", "weather_code": 1, "icon": "partly-cloudy-day", "is_day": True, "humidity_percent": 60, "precipitation_mm": 0.0, "wind_speed_kmh": 10.2, "wind_direction_degrees": 180, "wind_gusts_kmh": 15.5, "cloud_cover_percent": 20, "pressure_hpa": 1013.25, "visibility_m": 10000, "observed_at": "2026-07-30T12:00"},
+            "forecast": [],
+            "metadata": {"fetched_at": "2026-07-30T12:00:00+00:00", "cached_at": "2026-07-30T12:00:00+00:00", "cache_expires_at": "2026-07-30T12:20:00+00:00", "cache_status": "fresh", "cache_ttl_seconds": 1200},
+        }
+        
+        async def mock_get_weather(self, lat, lon):
+            return mock_response
+        
+        monkeypatch.setattr(WeatherService, "get_weather", mock_get_weather)
+        
+        core_result = {}
+        
+        def run_core_operation():
+            core_result["response"] = self._execute_slow_operation(self.CORE_BUSY_DURATION)
+        
+        core_thread = threading.Thread(target=run_core_operation)
+        core_thread.start()
+        time.sleep(0.5)
+        
+        start = time.time()
+        response = self._make_request(
+            "GET",
+            "/api/v1/weather",
+            params={"latitude": 12.97, "longitude": 77.59},
+        )
+        elapsed = time.time() - start
+        
+        # Weather API should remain responsive (not go through Core)
+        assert response["status_code"] == 200, f"Weather endpoint failed: {response}"
+        assert "location" in response["json"]
+        assert "current" in response["json"]
+        assert "forecast" in response["json"]
+        assert "metadata" in response["json"]
+        assert elapsed < self.API_TIMEOUT, f"Weather endpoint took too long: {elapsed}s"
+        
+        core_thread.join(timeout=self.CORE_BUSY_DURATION + 2.0)
+
+    def test_multiple_weather_requests_concurrent_during_core_busy(self, monkeypatch):
+        """Test multiple concurrent weather requests while Core is busy."""
+        import threading
+        
+        # Mock the weather service
+        from parika.tools.weather.service import WeatherService
+        
+        mock_response = {
+            "location": {"name": "12.9700, 77.5900", "latitude": 12.97, "longitude": 77.59, "timezone": "Asia/Kolkata"},
+            "current": {"temperature_c": 28.5, "feels_like_c": 30.1, "condition": "Mainly clear", "weather_code": 1, "icon": "partly-cloudy-day", "is_day": True, "humidity_percent": 60, "precipitation_mm": 0.0, "wind_speed_kmh": 10.2, "wind_direction_degrees": 180, "wind_gusts_kmh": 15.5, "cloud_cover_percent": 20, "pressure_hpa": 1013.25, "visibility_m": 10000, "observed_at": "2026-07-30T12:00"},
+            "forecast": [],
+            "metadata": {"fetched_at": "2026-07-30T12:00:00+00:00", "cached_at": "2026-07-30T12:00:00+00:00", "cache_expires_at": "2026-07-30T12:20:00+00:00", "cache_status": "fresh", "cache_ttl_seconds": 1200},
+        }
+        
+        async def mock_get_weather(self, lat, lon):
+            return mock_response
+        
+        monkeypatch.setattr(WeatherService, "get_weather", mock_get_weather)
+        
+        core_result = {}
+        
+        def run_core_operation():
+            core_result["response"] = self._execute_slow_operation(self.CORE_BUSY_DURATION)
+        
+        core_thread = threading.Thread(target=run_core_operation)
+        core_thread.start()
+        time.sleep(0.5)
+        
+        # Test multiple concurrent weather requests
+        results = {}
+        
+        def test_weather_request(lat, lon, key):
+            start = time.time()
+            response = self._make_request(
+                "GET",
+                "/api/v1/weather",
+                params={"latitude": lat, "longitude": lon},
+            )
+            results[key] = {
+                "response": response,
+                "elapsed": time.time() - start,
+            }
+        
+        threads = []
+        locations = [
+            (12.97, 77.59, "bengaluru"),
+            (28.61, 77.21, "delhi"),
+            (19.07, 72.88, "mumbai"),
+            (13.08, 80.27, "chennai"),
+            (22.57, 88.36, "kolkata"),
+        ]
+        
+        for lat, lon, key in locations:
+            t = threading.Thread(target=test_weather_request, args=(lat, lon, key))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join(timeout=self.API_TIMEOUT * 2)
+        
+        # Verify all succeeded
+        for key, result in results.items():
+            assert result["response"]["status_code"] == 200, f"Failed: {key} -> {result['response']}"
+            assert result["elapsed"] < self.API_TIMEOUT, f"Too slow: {key} took {result['elapsed']}s"
+            assert "location" in result["response"]["json"]
+        
+        core_thread.join(timeout=self.CORE_BUSY_DURATION + 2.0)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])

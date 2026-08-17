@@ -35,6 +35,7 @@ from parika.interfaces.runtime import (
     build_default_runtime,
     shutdown_runtime,
 )
+from parika.tools.weather.cache import WeatherCache
 
 from .config import ApiCorsSettings, load_server_settings
 from parika.interfaces.session_store import SqliteSessionStore
@@ -118,6 +119,20 @@ def create_app(
             },
         )
 
+        # Create shared WeatherCache for the direct Weather API
+        # This cache must be shared across all requests to prevent stampedes
+        data_directory = getattr(runtime.configuration, "_data_directory_override", None)
+        if data_directory is not None:
+            data_directory = Path(data_directory)
+        else:
+            data_directory = runtime.configuration.get_project_root() / runtime.configuration.get("data.directory", "data")
+        
+        cache_database_path = data_directory / "weather_cache.sqlite3"
+        cache_ttl_seconds = float(runtime.configuration.get("weather.cache_ttl_seconds", 1200.0))
+        
+        weather_cache = WeatherCache(cache_database_path, ttl_seconds=cache_ttl_seconds)
+        weather_cache.initialize()
+
         # Store references in app.state - but note that the actual Core resources
         # are owned by the CoreExecutionOwner's worker thread
         app.state.core_execution_owner = core_execution_owner
@@ -126,6 +141,7 @@ def create_app(
         app.state.session_store = session_store  # For backward compatibility and read-only access
         app.state.auth_backend = auth_backend
         app.state.server_settings = settings
+        app.state.weather_cache = weather_cache  # Shared cache for Weather API
 
         try:
             yield
@@ -133,10 +149,13 @@ def create_app(
         finally:
             # Shutdown the CoreExecutionOwner and its worker thread
             core_execution_owner.shutdown()
+            # Shutdown shared WeatherCache
+            weather_cache.shutdown()
             app.state.core_execution_owner = None
             app.state.runtime = None
             app.state.router = None
             app.state.session_store = None
+            app.state.weather_cache = None
 
     app = FastAPI(
         title="PARIKA Server",

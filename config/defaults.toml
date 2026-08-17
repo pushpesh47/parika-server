@@ -619,6 +619,12 @@ max_attempts = 3
 backoff_seconds = 0.5
 default_forecast_days = 5
 
+# Cache TTL for the direct Weather API (seconds). Default 1200 = 20 minutes.
+# The direct Weather API caches normalized provider responses so that
+# Web Client polling (e.g. every 5 seconds) does not trigger an external
+# provider request on every poll.
+cache_ttl_seconds = 1200
+
 ###############################################################################
 # Currency
 #

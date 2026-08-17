@@ -1326,6 +1326,96 @@
           }
         }
       }
+    },
+    "/api/v1/weather": {
+      "get": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Get Weather",
+        "description": "Get current weather and short forecast for coordinates.\n\nReturns structured weather data suitable for a dashboard/card UI.\nCached for 20 minutes (configurable) to support 5-second Web Client polling\nwithout hitting the external provider on every request.\n\nThis endpoint does NOT go through CoreExecutionOwner and remains\nresponsive while Core is performing long-running operations.\n\nQuery Parameters:\n    latitude: Latitude in decimal degrees (-90 to 90)\n    longitude: Longitude in decimal degrees (-180 to 180)\n\nResponse:\n    location: Resolved location info (name, coordinates, timezone)\n    current: Current weather conditions (temperature, condition, wind, etc.)\n    forecast: Daily forecast for next 5 days\n    metadata: Cache info (fetched_at, cache_status, cache_expires_at)\n\nCache Behavior:\n    - Cache TTL: 20 minutes (1200 seconds) by default, configurable via [weather].cache_ttl_seconds\n    - Cache key: Normalized coordinates (4 decimal places ~11m precision)\n    - Stampede prevention: Concurrent requests after expiry trigger only one provider fetch\n    - Web Client may poll every 5 seconds; provider called at most once per TTL window\n\nErrors:\n    400: Invalid latitude/longitude\n    401: Authentication required (per [api.auth].mode)\n    500: Provider unavailable or malformed response\n",
+        "operationId": "get_weather_api_v1_weather_get",
+        "parameters": [
+          {
+            "name": "latitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "minimum": -90,
+              "maximum": 90,
+              "title": "Latitude",
+              "description": "Latitude in decimal degrees"
+            }
+          },
+          {
+            "name": "longitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "minimum": -180,
+              "maximum": 180,
+              "title": "Longitude",
+              "description": "Longitude in decimal degrees"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid latitude/longitude",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Provider unavailable or malformed response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3622,6 +3712,460 @@
           "text"
         ],
         "title": "VoiceTranscribeResponseBody"
+      },
+      "WeatherLocation": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "title": "Longitude"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "latitude",
+          "longitude",
+          "timezone"
+        ],
+        "title": "WeatherLocation"
+      },
+      "WeatherCurrent": {
+        "properties": {
+          "temperature_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature C"
+          },
+          "feels_like_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feels Like C"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "weather_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weather Code"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon"
+          },
+          "is_day": {
+            "type": "boolean",
+            "title": "Is Day"
+          },
+          "humidity_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Humidity Percent"
+          },
+          "precipitation_mm": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitation Mm"
+          },
+          "rain_mm": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rain Mm"
+          },
+          "showers_mm": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Showers Mm"
+          },
+          "snowfall_mm": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snowfall Mm"
+          },
+          "wind_speed_kmh": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wind Speed Kmh"
+          },
+          "wind_direction_degrees": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wind Direction Degrees"
+          },
+          "wind_gusts_kmh": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wind Gusts Kmh"
+          },
+          "cloud_cover_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Cover Percent"
+          },
+          "pressure_hpa": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pressure Hpa"
+          },
+          "visibility_m": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visibility M"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "is_day"
+        ],
+        "title": "WeatherCurrent"
+      },
+      "WeatherForecastDay": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "weather_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weather Code"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon"
+          },
+          "temperature_max_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Max C"
+          },
+          "temperature_min_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Min C"
+          },
+          "feels_like_max_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feels Like Max C"
+          },
+          "feels_like_min_c": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feels Like Min C"
+          },
+          "precipitation_probability_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitation Probability Percent"
+          },
+          "precipitation_sum_mm": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitation Sum Mm"
+          },
+          "sunrise": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sunrise"
+          },
+          "sunset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sunset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date"
+        ],
+        "title": "WeatherForecastDay"
+      },
+      "WeatherMetadata": {
+        "properties": {
+          "fetched_at": {
+            "type": "string",
+            "title": "Fetched At"
+          },
+          "cached_at": {
+            "type": "string",
+            "title": "Cached At"
+          },
+          "cache_expires_at": {
+            "type": "string",
+            "title": "Cache Expires At"
+          },
+          "cache_status": {
+            "type": "string",
+            "pattern": "^(fresh|fetched)$",
+            "title": "Cache Status"
+          },
+          "cache_ttl_seconds": {
+            "type": "integer",
+            "title": "Cache Ttl Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fetched_at",
+          "cached_at",
+          "cache_expires_at",
+          "cache_status",
+          "cache_ttl_seconds"
+        ],
+        "title": "WeatherMetadata"
+      },
+      "WeatherResponse": {
+        "properties": {
+          "location": {
+            "$ref": "#/components/schemas/WeatherLocation"
+          },
+          "current": {
+            "$ref": "#/components/schemas/WeatherCurrent"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherForecastDay"
+            },
+            "type": "array",
+            "title": "Forecast"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/WeatherMetadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "location",
+          "current",
+          "forecast",
+          "metadata"
+        ],
+        "title": "WeatherResponse"
+      },
+      "WeatherErrorResponse": {
+        "properties": {
+          "error": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "WeatherErrorResponse"
       }
     }
   }

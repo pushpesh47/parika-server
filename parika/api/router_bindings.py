@@ -37,6 +37,7 @@ from .handlers import (
     status,
     tools,
     voice,
+    weather,
 )
 
 
@@ -249,6 +250,12 @@ def register_router_bindings(
             # High-frequency status/health-monitoring polling target --
             # see `Route.log_dispatch`'s own docstring.
             log_dispatch=False,
+        ),
+        Route(
+            id="weather.get",
+            matcher=lambda request: isinstance(request, requests.WeatherRequest),
+            handler=lambda request: weather.handle_weather(runtime, request),
+            description="Get structured weather data for coordinates.",
         ),
     )
 

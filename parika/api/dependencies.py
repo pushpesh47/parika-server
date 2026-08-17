@@ -19,6 +19,10 @@ API-owned Expense dependencies:
 These create independent ExpenseService/ExpenseStorage instances with
 their own SQLite connections for the direct Expense API path, which
 must not go through CoreExecutionOwner.
+
+API-owned Weather dependencies:
+These create independent WeatherService/WeatherCache instances for the
+direct Weather API path, which must not go through CoreExecutionOwner.
 """
 from __future__ import annotations
 
@@ -37,6 +41,8 @@ from parika.interfaces.runtime import ParikaRuntime
 from parika.tools.expense.config import load_expense_config
 from parika.tools.expense.service import ExpenseService
 from parika.tools.expense.storage import ExpenseStorage
+from parika.tools.weather.cache import WeatherCache
+from parika.tools.weather.service import WeatherService
 
 
 def get_core_execution_owner(request: Request) -> CoreExecutionOwner:
@@ -122,3 +128,40 @@ def get_expense_service(request: Request) -> Generator[ExpenseService, None, Non
         yield service
     finally:
         storage.shutdown()
+
+
+def get_weather_service(request: Request) -> Generator[WeatherService, None, None]:
+    """
+    FastAPI generator dependency for API-owned WeatherService.
+
+    Uses the SHARED WeatherCache (created at app startup and stored in
+    app.state.weather_cache) for the direct Weather API path, which must
+    not go through CoreExecutionOwner.
+
+    The cache is initialized at app startup and shut down at app shutdown.
+    """
+    # Get configuration from runtime
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is not None and hasattr(runtime, "configuration"):
+        configuration = runtime.configuration
+    else:
+        configuration = Configuration()
+        configuration.load()
+
+    # Get the SHARED weather cache from app.state
+    weather_cache = getattr(request.app.state, "weather_cache", None)
+    if weather_cache is None:
+        raise RuntimeError("Weather cache not initialized")
+
+    logger = Logger(configuration).get_logger("parika.api.weather")
+    service = WeatherService(
+        configuration=configuration,
+        logger=Logger(configuration),
+        cache=weather_cache,
+    )
+
+    try:
+        yield service
+    finally:
+        # Do NOT shutdown the shared cache here - it's managed by app lifespan
+        pass

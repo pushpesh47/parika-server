@@ -18,6 +18,7 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BACKOFF_SECONDS = 0.5
 DEFAULT_FORECAST_DAYS = 5
+DEFAULT_CACHE_TTL_SECONDS = 1200.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -34,6 +35,7 @@ class WeatherToolConfig:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     backoff_seconds: float = DEFAULT_BACKOFF_SECONDS
     default_forecast_days: int = DEFAULT_FORECAST_DAYS
+    cache_ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS
 
 
 def load_weather_config(
@@ -71,6 +73,11 @@ def load_weather_config(
         default_forecast_days=int(
             configuration.get(
                 "weather.default_forecast_days", DEFAULT_FORECAST_DAYS
+            )
+        ),
+        cache_ttl_seconds=float(
+            configuration.get(
+                "weather.cache_ttl_seconds", DEFAULT_CACHE_TTL_SECONDS
             )
         ),
     )

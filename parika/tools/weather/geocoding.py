@@ -33,6 +33,66 @@ from .transport import HttpTransport
 GEOCODING_ENDPOINT = "https://geocoding-api.open-meteo.com/v1/search"
 
 
+def reverse_geocode(
+    latitude: float,
+    longitude: float,
+    *,
+    transport: HttpTransport,
+    timeout_seconds: float,
+) -> str | None:
+    """
+    Resolve coordinates to a human-readable location name using
+    Open-Meteo's reverse geocoding.
+
+    Args:
+        latitude: Latitude in decimal degrees.
+        longitude: Longitude in decimal degrees.
+        transport: HttpTransport used to issue the request.
+        timeout_seconds: Maximum time, in seconds, to wait for the request.
+
+    Returns:
+        Resolved location name (e.g. "Bengaluru, Karnataka, India"), or
+        None if reverse geocoding fails or returns no results.
+    """
+    query_string = urlencode({
+        "latitude": latitude,
+        "longitude": longitude,
+        "count": 1,
+        "format": "json",
+        "language": "en",
+    })
+    url = f"{GEOCODING_ENDPOINT}?{query_string}"
+
+    try:
+        response = transport.get(url, timeout=timeout_seconds)
+
+        if response.status_code >= 400:
+            return None
+
+        payload = json.loads(response.body.decode("utf-8", errors="replace"))
+        results = payload.get("results") or []
+
+        if not results:
+            return None
+
+        best = results[0]
+        name = best.get("name")
+        admin1 = best.get("admin1")
+        country = best.get("country")
+
+        parts = [name]
+        if admin1 and admin1 != name:
+            parts.append(admin1)
+        if country:
+            parts.append(country)
+
+        return ", ".join(parts)
+
+    except Exception:
+        # Reverse geocoding is best-effort; never fail the weather request
+        return None
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GeocodeResult:
     """

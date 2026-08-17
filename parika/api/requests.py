@@ -282,3 +282,15 @@ class MediaGetStateRequest:
     `parika.tools.media.state_store.MediaStateStore`). Read-only; has
     no fields. Never dispatches a command to the Web Client.
     """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WeatherRequest:
+    """
+    Requests structured weather data for coordinates.
+
+    Direct weather API operation - does not go through CoreExecutionOwner.
+    """
+
+    latitude: float
+    longitude: float

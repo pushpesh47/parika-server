@@ -23,8 +23,8 @@ def test_every_binding_dispatches(runtime_factory) -> None:
     # (this Module's additive Voice language-preference settings endpoint)
     # + the 7 Expense Management routes (create/get/list/update/delete/
     # summarize/compare) + `media.get_state` (the Media Capability's
-    # read-only state snapshot endpoint).
-    assert router.count() == 25
+    # read-only state snapshot endpoint) + `weather.get` (Weather API).
+    assert router.count() == 26
 
     status_result = router.dispatch(requests.StatusRequest())
     assert "lifecycle_state" in status_result

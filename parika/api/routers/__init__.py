@@ -26,6 +26,7 @@ from . import (
     status,
     tools,
     voice,
+    weather,
 )
 
 API_V1_PREFIX = "/api/v1"
@@ -57,6 +58,7 @@ def build_v1_router() -> APIRouter:
     v1.include_router(voice.router)
     v1.include_router(media.router)
     v1.include_router(ws_media.router)
+    v1.include_router(weather.router)
 
     return v1
 
