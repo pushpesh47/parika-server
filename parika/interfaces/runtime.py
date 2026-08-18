@@ -60,6 +60,8 @@ from parika.core.service_container.service_container import ServiceContainer
 from parika.core.state_manager.state_manager import StateManager
 from parika.core.task_manager.task_manager import TaskManager
 from parika.core.tool_manager.tool_manager import ToolManager
+from parika.core.ui_context.projector import UIContextProjector
+from parika.core.context_manager.context_manager import ContextManager
 from parika.modules.chat.driver import ChatModuleDriver
 from parika.modules.chat.manifest import CHAT_MODULE_ID, create_chat_module
 from parika.modules.coding.driver import CodingModuleDriver
@@ -222,6 +224,8 @@ class ParikaRuntime:
     health_manager: HealthManager
     metrics_manager: MetricsManager
 
+    context_manager: ContextManager
+
     capability_registry: CapabilityRegistry
     capability_resolver: CapabilityResolver
     policy_engine: PolicyEngine
@@ -239,6 +243,7 @@ class ParikaRuntime:
     task_manager: TaskManager
     planner: Planner
     brain: Brain
+    ui_context_projector: UIContextProjector
 
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -350,6 +355,8 @@ def build_default_runtime(
     resource_manager = ResourceManager(configuration=configuration, logger=logger)
     health_manager = HealthManager(event_bus=event_bus, logger=logger)
     metrics_manager = MetricsManager()
+
+    context_manager = ContextManager(event_bus=event_bus, logger=logger)
 
     capability_registry = CapabilityRegistry(event_bus=event_bus, logger=logger)
     capability_resolver = CapabilityResolver(
@@ -464,6 +471,17 @@ def build_default_runtime(
         configuration=configuration,
     )
 
+    ui_context_projector = UIContextProjector(
+        event_bus=event_bus,
+        logger=logger,
+        task_manager=task_manager,
+        workflow_engine=module_manager,  # ModuleManager has workflow_engine access
+        context_manager=context_manager,
+        state_manager=state_manager,
+        capability_registry=capability_registry,
+    )
+    ui_context_projector.start()
+
     for service_type, instance in (
         (Configuration, configuration),
         (Logger, logger),
@@ -472,6 +490,7 @@ def build_default_runtime(
         (ResourceManager, resource_manager),
         (HealthManager, health_manager),
         (MetricsManager, metrics_manager),
+        (ContextManager, context_manager),
         (CapabilityRegistry, capability_registry),
         (CapabilityResolver, capability_resolver),
         (PolicyEngine, policy_engine),
@@ -491,6 +510,7 @@ def build_default_runtime(
         (TaskManager, task_manager),
         (Planner, planner),
         (Brain, brain),
+        (UIContextProjector, ui_context_projector),
     ):
         service_container.register(service_type, instance)
 
@@ -550,6 +570,7 @@ def build_default_runtime(
         resource_manager=resource_manager,
         health_manager=health_manager,
         metrics_manager=metrics_manager,
+        context_manager=context_manager,
         capability_registry=capability_registry,
         capability_resolver=capability_resolver,
         policy_engine=policy_engine,
@@ -564,6 +585,7 @@ def build_default_runtime(
         task_manager=task_manager,
         planner=planner,
         brain=brain,
+        ui_context_projector=ui_context_projector,
     )
 
 
@@ -576,6 +598,7 @@ def shutdown_runtime(runtime: ParikaRuntime) -> None:
             Runtime previously produced by `build_default_runtime()`.
     """
 
+    runtime.ui_context_projector.stop()
     runtime.module_manager.unload_all()
     runtime.memory_manager.shutdown()
 

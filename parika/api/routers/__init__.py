@@ -14,6 +14,7 @@ from fastapi import APIRouter
 
 from ..ws import chat as ws_chat
 from ..ws import media as ws_media
+from ..ws import ui as ws_ui
 from . import (
     capabilities,
     chat,
@@ -25,6 +26,7 @@ from . import (
     providers,
     status,
     tools,
+    ui_context,
     voice,
     weather,
 )
@@ -59,6 +61,8 @@ def build_v1_router() -> APIRouter:
     v1.include_router(media.router)
     v1.include_router(ws_media.router)
     v1.include_router(weather.router)
+    v1.include_router(ui_context.router)
+    v1.include_router(ws_ui.router)
 
     return v1
 
