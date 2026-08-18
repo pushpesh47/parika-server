@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from parika.tools.weather.exceptions import LocationNotFoundError, WeatherNetworkError
-from parika.tools.weather.geocoding import geocode
+from parika.tools.weather.geocoding import geocode, reverse_geocode
 from parika.tools.weather.transport import HttpResponse
 
 _EMPTY_RESULTS_BODY = json.dumps({"results": []}).encode()
@@ -245,3 +245,265 @@ class TestGeocodeFallbackCandidates:
             geocode("Patna Bihar", transport=transport, timeout_seconds=5.0)
 
         assert len(transport.calls) == 1
+
+
+class TestReverseGeocodeNominatim:
+    """
+    Tests for Nominatim reverse geocoding with structured address parsing.
+    """
+
+    def test_suburb_city_state_country(self) -> None:
+        """suburb=Matwari, city=Hazaribagh, state=Jharkhand, country=India -> 'Matwari, Hazaribagh, Jharkhand, India'."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Matwari, Hazaribagh, Jharkhand, 825300, India",
+                "address": {
+                    "suburb": "Matwari",
+                    "city": "Hazaribagh",
+                    "state": "Jharkhand",
+                    "country": "India",
+                    "postcode": "825300",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result == "Matwari, Hazaribagh, Jharkhand, India"
+
+    def test_postcode_excluded(self) -> None:
+        """Postcode should not be included in the location name."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Matwari, Hazaribagh, Jharkhand, 825300, India",
+                "address": {
+                    "suburb": "Matwari",
+                    "city": "Hazaribagh",
+                    "state": "Jharkhand",
+                    "country": "India",
+                    "postcode": "825300",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result == "Matwari, Hazaribagh, Jharkhand, India"
+        # Verify postcode '825300' is NOT in the result
+        assert "825300" not in result
+
+    def test_missing_suburb_falls_back_to_city(self) -> None:
+        """When suburb is missing, fall back to city."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Hazaribagh, Jharkhand, India",
+                "address": {
+                    "city": "Hazaribagh",
+                    "state": "Jharkhand",
+                    "country": "India",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result == "Hazaribagh, Jharkhand, India"
+
+    def test_missing_locality_falls_back_to_coordinates(self) -> None:
+        """When no locality fields are available, fall back to coordinate string."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Some unknown location",
+                "address": {
+                    "state": "Jharkhand",
+                    "country": "India",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        # Fallback should use city/state + country when state is present
+        assert result == "Jharkhand, India"
+
+    def test_no_address_components_falls_back_to_coordinates(self) -> None:
+        """When no address components are available, use coordinate fallback."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Unknown",
+                "address": {},
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        # Should fall back to coordinate format
+        assert result == "24.0091, 85.3803"
+
+    def test_neighbourhood_preferred_over_city(self) -> None:
+        """neighbourhood should be preferred over city when both are present."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Neighbourhood, City, State, Country",
+                "address": {
+                    "neighbourhood": "Neighbourhood",
+                    "city": "City",
+                    "state": "State",
+                    "country": "Country",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        # neighbourhood should be preferred over city
+        assert result == "Neighbourhood, State, Country"
+
+    def test_missing_state_country_only(self) -> None:
+        """When only country is present, return just country."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "Country",
+                "address": {
+                    "country": "India",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result == "India"
+
+    def test_missing_locality_all_fields_absent(self) -> None:
+        """When all locality fields are absent but state and country exist."""
+        nominatim_body = json.dumps(
+            {
+                "place_id": 12345678,
+                "licence": "Data © OpenStreetMap contributors, ODbL 1.0.",
+                "osm_type": "way",
+                "osm_id": 12345678,
+                "boundingbox": ["24.00", "24.02"],
+                "lat": "24.0091136",
+                "lon": "85.3803008",
+                "display_name": "State, Country",
+                "address": {
+                    "state": "Jharkhand",
+                    "country": "India",
+                },
+            }
+        ).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result == "Jharkhand, India"
+
+    def test_no_address_returns_none(self) -> None:
+        """When Nominatim returns no address, return None."""
+        nominatim_body = json.dumps({}).encode()
+        transport = _FakeTransport(nominatim_body)
+
+        result = reverse_geocode(
+            latitude=24.0091136,
+            longitude=85.3803008,
+            transport=transport,
+            timeout_seconds=5.0,
+        )
+
+        assert result is None

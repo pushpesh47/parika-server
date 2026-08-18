@@ -617,7 +617,7 @@ units = "metric"
 request_timeout_seconds = 10.0
 max_attempts = 3
 backoff_seconds = 0.5
-default_forecast_days = 5
+default_forecast_days = 7
 
 # Cache TTL for the direct Weather API (seconds). Default 1200 = 20 minutes.
 # The direct Weather API caches normalized provider responses so that

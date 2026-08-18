@@ -27,10 +27,13 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
-from .exceptions import LocationNotFoundError, WeatherNetworkError
+from parika.core.logger.logger import Logger
+from .exceptions import LocationNotFoundError, WeatherNetworkError, WeatherTimeoutError
 from .transport import HttpTransport
 
 GEOCODING_ENDPOINT = "https://geocoding-api.open-meteo.com/v1/search"
+NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_USER_AGENT = "PARIKA/1.0 (https://github.com/parika-org/parika)"
 
 
 def reverse_geocode(
@@ -39,57 +42,158 @@ def reverse_geocode(
     *,
     transport: HttpTransport,
     timeout_seconds: float,
+    logger: Logger | None = None,
 ) -> str | None:
     """
     Resolve coordinates to a human-readable location name using
-    Open-Meteo's reverse geocoding.
+    Nominatim's reverse geocoding with structured address parsing.
 
     Args:
         latitude: Latitude in decimal degrees.
         longitude: Longitude in decimal degrees.
         transport: HttpTransport used to issue the request.
         timeout_seconds: Maximum time, in seconds, to wait for the request.
+        logger: Optional logger for diagnostic output. When provided,
+            failures are logged at WARNING level.
 
     Returns:
-        Resolved location name (e.g. "Bengaluru, Karnataka, India"), or
-        None if reverse geocoding fails or returns no results.
+        Resolved location name (e.g. "Matwari, Hazaribagh, Jharkhand, India"),
+        or None if reverse geocoding fails or returns no results.
     """
-    query_string = urlencode({
-        "latitude": latitude,
-        "longitude": longitude,
-        "count": 1,
-        "format": "json",
-        "language": "en",
-    })
-    url = f"{GEOCODING_ENDPOINT}?{query_string}"
+    # Nominatim reverse geocoding endpoint with required parameters
+    url = f"{NOMINATIM_REVERSE_ENDPOINT}?lat={latitude}&lon={longitude}&format=json&addressdetails=1&accept-language=en"
+
+    log = logger if logger else None
 
     try:
         response = transport.get(url, timeout=timeout_seconds)
 
         if response.status_code >= 400:
+            if log:
+                log.warning(
+                    "Reverse geocoding failed: provider=Nominatim "
+                    f"status={response.status_code} latitude={latitude} "
+                    f"longitude={longitude}"
+                )
             return None
 
         payload = json.loads(response.body.decode("utf-8", errors="replace"))
-        results = payload.get("results") or []
+        address = payload.get("address") or {}
 
-        if not results:
-            return None
+        # Build location name from structured address.
+        # Include locality fields in priority order (suburb > neighbourhood > village > town > city > municipality),
+        # then append state and country. Avoid duplicates.
+        locality_fields = (
+            "suburb",
+            "neighbourhood",
+            "village",
+            "town",
+            "city",
+            "municipality",
+        )
 
-        best = results[0]
-        name = best.get("name")
-        admin1 = best.get("admin1")
-        country = best.get("country")
+        # Build location name from structured address.
+        # Priority: suburb > neighbourhood > village > town > city > municipality
+        # Rules:
+        # - If suburb is present: include suburb + city + state + country
+        # - If neighbourhood is present (no suburb): include neighbourhood only (exclude city)
+        # - If only city is present (no suburb, no neighbourhood): include city + state + country
+        # - If no locality fields: fall back to state/country or coordinate fallback
+        suburb = address.get("suburb")
+        neighbourhood = address.get("neighbourhood")
+        village = address.get("village")
+        town = address.get("town")
+        city = address.get("city")
+        municipality = address.get("municipality")
 
-        parts = [name]
-        if admin1 and admin1 != name:
-            parts.append(admin1)
+        parts = []
+
+        if suburb:
+            # Suburb is most precise: include suburb + city + state + country
+            parts.append(suburb)
+            city_val = address.get("city")
+            if city_val and city_val != suburb:
+                parts.append(city_val)
+        elif neighbourhood:
+            # Neighbourhood takes priority over city: include only neighbourhood
+            parts.append(neighbourhood)
+        elif village:
+            parts.append(village)
+        elif town:
+            parts.append(town)
+        elif city:
+            # Only city (no suburb/neighbourhood/village/town): include city + state + country
+            parts.append(city)
+        elif municipality:
+            parts.append(municipality)
+        # else: no locality fields - will fall back to state/country or coordinates
+
+        # Append state if present
+        state = address.get("state")
+        if state:
+            parts.append(state)
+
+        # Append country if present
+        country = address.get("country")
         if country:
             parts.append(country)
 
-        return ", ".join(parts)
+        # If no parts were generated (no locality fields, no state, no country),
+        # fall back to coordinate string format - unless Nominatim returned
+        # no address at all (no 'address' key in payload), in which case return None.
+        if not parts:
+            if "address" not in payload:
+                # Nominatim returned no address data at all
+                if log:
+                    log.debug(
+                        "Reverse geocoding: provider=Nominatim returned no address data "
+                        f"latitude={latitude} longitude={longitude}"
+                    )
+                return None
+            # Fall back to coordinate string format
+            fallback = f"{latitude:.4f}, {longitude:.4f}"
+            return fallback
 
-    except Exception:
-        # Reverse geocoding is best-effort; never fail the weather request
+        resolved = ", ".join(parts)
+        if log:
+            log.debug(
+                "Reverse geocoding succeeded: provider=Nominatim "
+                f"latitude={latitude} longitude={longitude} name={resolved}"
+            )
+        return resolved
+
+    except WeatherTimeoutError as ex:
+        if log:
+            log.warning(
+                "Reverse geocoding timeout: provider=Nominatim "
+                f"latitude={latitude} longitude={longitude} "
+                f"timeout_seconds={timeout_seconds} error={ex}"
+            )
+        return None
+
+    except WeatherNetworkError as ex:
+        if log:
+            log.warning(
+                "Reverse geocoding network error: provider=Nominatim "
+                f"latitude={latitude} longitude={longitude} error={ex}"
+            )
+        return None
+
+    except json.JSONDecodeError as ex:
+        if log:
+            log.warning(
+                "Reverse geocoding malformed response: provider=Nominatim "
+                f"latitude={latitude} longitude={longitude} error={ex}"
+            )
+        return None
+
+    except Exception as ex:
+        if log:
+            log.warning(
+                "Reverse geocoding unexpected error: provider=Nominatim "
+                f"latitude={latitude} longitude={longitude} "
+                f"exception={type(ex).__name__} error={ex}"
+            )
         return None
 
 
