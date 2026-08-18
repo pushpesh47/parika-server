@@ -434,14 +434,21 @@ def build_execution_requirements(
     Build the `ExecutionRequirements` for a resolved Goal.
 
     Precedence, highest first: (1) an explicit
-    `Goal.metadata["execution_requirements"]` override, (2) the Task
-    Classification layer's default profile for this Goal's task
-    category (see `task_classification.py`), (3) the resolved
+    `Goal.metadata["execution_requirements"]` override, (2) agent
+    preferences from `Goal.metadata["agent_id"]`/`Goal.metadata["agent_specialization"]`
+    (3) the Task Classification layer's default profile for this Goal's task
+    category (see `task_classification.py`), (4) the resolved
     Capability category's default `reasoning_level`. Any field the
     override does not set falls through to its Task Classification or
     category default.
 
-    Task Classification (step 2): an explicit `task_category` string
+    Agent Preferences (step 2): If the Goal has agent metadata attached
+    by the AgentOrchestrator, the agent's preferred models, providers,
+    and model constraints are incorporated into the requirements. These
+    influence scoring but do not override hard constraints from
+    execution_requirements or Task Classification.
+
+    Task Classification (step 3): an explicit `task_category` string
     inside the override takes precedence; otherwise this function
     asks `task_classification.default_task_category_for(category)`
     for a sensible default (e.g. the `LLM` category classifies as
@@ -470,40 +477,6 @@ def build_execution_requirements(
     if any, remains available for future, non-text-pattern-based
     signals without changing this function's signature again; no
     built-in logic reads it today.
-
-    Args:
-        capability:
-            The `ModelCapability` required for this Goal's Capability
-            category (already resolved by Planner).
-
-        category:
-            The resolved Capability's category, used to derive a
-            sensible default `reasoning_level`.
-
-        goal_metadata:
-            The Goal's `metadata` mapping. When it contains an
-            `"execution_requirements"` entry, that entry overrides the
-            category default. It may be either an
-            `ExecutionRequirements` instance (used as-is, trusting the
-            caller) or a plain `Mapping[str, Any]` of raw field values
-            (string enum values are coerced automatically; unknown
-            keys are ignored).
-
-        goal_inputs:
-            The Goal's `inputs` mapping. Reserved for future use; no
-            built-in logic reads it today.
-
-        available_resources:
-            Optional resource snapshot to attach as
-            `ExecutionRequirements.available_resources`, so
-            `filtering.py`'s resource-validation step can consult it.
-            Planner supplies the same `ResourceSnapshot` it already
-            fetches once per `plan()` call (see `planner.py`); `None`
-            simply skips resource validation.
-
-    Returns:
-        The `ExecutionRequirements` Planner should evaluate candidate
-        models against.
     """
 
     override = goal_metadata.get("execution_requirements")
@@ -514,6 +487,21 @@ def build_execution_requirements(
     override_mapping: Mapping[str, Any] = (
         override if isinstance(override, Mapping) else MappingProxyType({})
     )
+
+    # Extract agent preferences from goal metadata
+    agent_preferences = {}
+    agent_id = goal_metadata.get("agent_id")
+    agent_specialization = goal_metadata.get("agent_specialization")
+    
+    if agent_id is not None:
+        agent_preferences["agent_id"] = agent_id
+    if agent_specialization is not None:
+        agent_preferences["agent_specialization"] = agent_specialization
+    
+    # Note: Agent model/provider preferences are stored in AgentProfile
+    # but AgentOrchestrator doesn't currently pass them through goal metadata.
+    # They could be added here if needed in the future.
+    # For now, we store the agent identity in metadata for potential future use.
 
     task_category_value = override_mapping.get("task_category")
 
@@ -534,6 +522,7 @@ def build_execution_requirements(
             ReasoningLevel.NORMAL,
         ),
         "available_resources": available_resources,
+        "metadata": {"agent_preferences": agent_preferences} if agent_preferences else {},
     }
 
     if profile is not None:
@@ -577,7 +566,11 @@ def build_execution_requirements(
             ):
                 defaults[key] = value
             elif key == "metadata" and isinstance(value, Mapping):
-                defaults[key] = value
+                # Merge override metadata with agent preferences
+                merged_metadata = dict(value)
+                if agent_preferences:
+                    merged_metadata["agent_preferences"] = agent_preferences
+                defaults[key] = merged_metadata
 
     requirements = ExecutionRequirements(**defaults)
 

@@ -344,8 +344,87 @@ Modules request capabilities instead of specific providers or models.
 
 Selection pipeline:
 
-User → Brain → Planner → CapabilityResolver → ResourceManager →
+User → Brain → AgentOrchestrator → Planner → CapabilityResolver → ResourceManager →
 PolicyEngine → ProviderManager → Best Provider → Best Model
+
+------------------------------------------------------------------------
+
+# 7. Capability System
+
+Modules request capabilities instead of specific providers or models.
+
+Selection pipeline:
+
+User → Brain → AgentOrchestrator → Planner → CapabilityResolver → ResourceManager →
+PolicyEngine → ProviderManager → Best Provider → Best Model
+
+------------------------------------------------------------------------
+
+## 7.1 Multi-Agent Execution
+
+PARIKA supports multi-agent execution where a single user request can
+produce multiple Goals, each assigned to a different specialized agent.
+The multi-agent architecture is built on the existing execution
+pipeline without duplicating systems:
+
+**Architecture:**
+
+User Request
+    ↓
+Brain
+    ↓
+AgentOrchestrator
+    ↓
+Planner
+    ↓
+ExecutionPlan
+    ↓
+Dependency-Aware Concurrent Execution
+    ↓
+TaskManager
+    ↓
+CapabilityExecutor
+    ↓
+Tools / Providers
+
+**Key Principles:**
+
+- **Single Pipeline:** Brain remains the single execution entry point.
+  `AgentOrchestrator` is called from `Brain.handle()` before planning,
+  not as a separate pipeline.
+- **Agent Assignment:** `AgentOrchestrator.assign_agents_to_goals()`
+  assigns agents to Goals based on capability, specialization, and
+  policy. Agent metadata (`agent_id`, `agent_specialization`,
+  `agent_confidence`, `agent_reason`) is attached to Goal metadata
+  for downstream consumption by Planner and TaskManager.
+- **Dependency-Aware Concurrency:** Independent Goals execute
+  concurrently (up to `[concurrency] max_concurrent_goals`). Dependent
+  Goals wait for their dependencies. Failed dependencies cause
+  dependent Goals to be skipped. Unrelated Goals continue independently.
+- **Agent Identity Propagation:** Agent metadata (`agent_id`,
+  `agent_specialization`) propagates through Goal.metadata →
+  PlanStep.execution_request.metadata → TaskRequest.metadata →
+  Task.metadata. No `Task.agent_id` field is required.
+- **Agent Policies:** Agents have `preferred_capabilities`,
+  `allowed_capabilities`, `prohibited_capabilities`. `AgentResolver`
+  enforces these during assignment. Prohibited capabilities are never
+  executed by an agent.
+- **Delegation:** `AgentOrchestrator.delegate()` allows one agent to
+  request another agent's specialization. Delegation goes through
+  `AgentResolver`, respects capability policies, and uses the existing
+  Planner/TaskManager pipeline.
+- **Model/Provider Preferences:** Agent preferences
+  (`preferred_models`, `preferred_providers`, `model_constraints`) are
+  stored in `ExecutionRequirements.metadata["agent_preferences"]` for
+  future integration with the existing model selection framework.
+- **Voice Compatibility:** Voice input follows the same pipeline:
+  speech-to-text → Brain → AgentOrchestrator → Planner → ...
+- **Context UI Compatibility:** Semantic capability context is
+  preserved. Agent identity does not replace semantic context.
+- **No Duplicate Systems:** The multi-agent architecture extends the
+  existing Brain/Planner/TaskManager/CapabilityExecutor pipeline.
+  There is no AgentManager, AgentPlanner, AgentTaskManager, or
+  AgentScheduler.
 
 ------------------------------------------------------------------------
 

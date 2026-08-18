@@ -826,19 +826,23 @@ default_model = ""
 temperature = 0.7
 
 ###############################################################################
-# Progress Reporting
+# Concurrency
 #
-# Generic, ecosystem-wide progress events (see
-# docs/architecture/Developer_Intelligence_Platform_Design.md Addendum A/B).
-# Published through the existing EventBus; disabling this only stops the
-# ProgressReporter helper from publishing - it never disables EventBus itself
-# or any other event any component already publishes today (task.*,
-# capability.execution.*, tool.*, ...).
+# Controls the maximum number of concurrent Goal executions within a single
+# Brain request. Independent Goals (those with no dependency relationship)
+# may execute concurrently up to this limit. Dependent Goals always wait for
+# their dependencies regardless of this setting.
+#
+# Set to 1 to disable concurrency and preserve the original sequential
+# execution behavior. Higher values allow more parallelism but consume more
+# resources (LLM context, provider connections, memory).
+#
+# This limit applies per Brain request. Multiple simultaneous requests will
+# be serialized by the CoreExecutionOwner's single worker thread.
 ###############################################################################
 
-[progress]
-enabled = true
-generic_channel_enabled = true
+[concurrency]
+max_concurrent_goals = 4
 
 ###############################################################################
 # Coding Tool

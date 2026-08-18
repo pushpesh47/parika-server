@@ -101,7 +101,7 @@ propagating it. It only raises `InvalidBrainRequestError` for a
 structurally malformed call (not a `BrainRequest` instance at all) — a
 caller programming error, not a runtime condition.
 
-**What Brain does next:** it calls `Planner.plan(request.goals)`. If that
+**What Brain does next:** it calls `AgentOrchestrator.assign_agents_to_goals(request.goals)` to assign agents to Goals based on capability, specialization, and policy. Agent metadata (`agent_id`, `agent_specialization`, `agent_confidence`, `agent_reason`) is attached to each Goal's metadata. Then it calls `Planner.plan(request.goals)`. If that
 raises, Brain wraps the exception into `BrainResponse(planning_failure=...)`
 and returns immediately — no Task is ever created. If planning succeeds,
 Brain supervises execution of the resulting `ExecutionPlan` (see §8).
@@ -122,9 +122,33 @@ reports nothing. The native PARIKA Console
 (`parika/console/progress_view.py`) renders this tree live.
 
 **Implementation Status:** Live. `Brain.handle()`, its planning-failure
-capture, its execution supervision loop, and its `brain.execution.*`
-progress reporting are all real, tested code
-(`parika/core/brain/brain.py`).
+capture, its execution supervision loop with dependency-aware concurrency
+(§8.1), and its `brain.execution.*` progress reporting are all real,
+tested code (`parika/core/brain/brain.py`).
+
+------------------------------------------------------------------------
+
+## 8.1 Multi-Agent Execution Supervision
+
+`Brain._supervise_async()` executes `ExecutionPlan` steps with
+dependency-aware concurrency:
+
+1. **Agent Assignment:** Already completed in `Brain.handle()` via
+   `AgentOrchestrator.assign_agents_to_goals()`.
+2. **Dependency Graph:** Built from `ExecutionPlan.steps` using
+   `PlanStep.depends_on`.
+3. **Concurrent Execution:** Independent Goals (no dependencies) execute
+   concurrently up to `[concurrency] max_concurrent_goals` (default 4).
+   Dependent Goals wait for all required dependencies to complete
+   successfully.
+4. **Failure Propagation:** If a Goal fails, all dependent Goals are
+   skipped with `skip_reason`. Unrelated Goals continue independently.
+5. **Result Aggregation:** Results are collected in the original
+   topological order for `BrainResponse`.
+
+The concurrency limit is configured via `[concurrency] max_concurrent_goals`
+(default: 4) in `config/defaults.toml`. Setting it to 1 preserves the
+original sequential behavior.
 
 ------------------------------------------------------------------------
 

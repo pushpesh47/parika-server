@@ -101,13 +101,9 @@ class ModelKnowledgeEntry:
 
 
 _MODEL_OVERRIDES: dict[str, SpecializationOverride] = {
-    "qwen3.6": SpecializationOverride(
+    "qwen3-vl": SpecializationOverride(
         remove=frozenset({"general_chat"}),
         add=frozenset({"vision_understanding", "ocr", "document_understanding"}),
-    ),
-    "glm-ocr": SpecializationOverride(
-        remove=frozenset({"general_chat"}),
-        add=frozenset({"ocr", "document_understanding"}),
     ),
     "minicpm-v4.5": SpecializationOverride(
         remove=frozenset({"general_chat"}),
@@ -137,22 +133,36 @@ need a correction - no other code needs to change.
 """
 
 _MODEL_KNOWLEDGE: dict[str, ModelKnowledgeEntry] = {
-    "glm-ocr": ModelKnowledgeEntry(
-        strengths=frozenset({"ocr", "document_understanding"}),
-        notes="Specialized OCR model; strongest on dense text/document layouts.",
-    ),
-    "minicpm-v4.5": ModelKnowledgeEntry(
+    "qwen3-vl": ModelKnowledgeEntry(
         strengths=frozenset(
             {
+                "vision_understanding",
                 "ocr",
                 "document_understanding",
                 "ui_analysis",
                 "chart_analysis",
+                "video_understanding",
+            }
+        ),
+        notes=(
+            "Vision-language model; strong fit for visual reasoning, "
+            "OCR, documents, UI screenshots, charts, diagrams, and video understanding."
+        ),
+    ),
+    "minicpm-v4.5": ModelKnowledgeEntry(
+        strengths=frozenset(
+            {
+                "vision_understanding",
+                "ocr",
+                "document_understanding",
+                "ui_analysis",
+                "chart_analysis",
+                "video_understanding",
             }
         ),
         notes=(
             "General-purpose vision-language model; broad coverage "
-            "across OCR, document, UI, and chart understanding."
+            "across OCR, documents, UI, charts, diagrams, and video understanding."
         ),
     ),
 }

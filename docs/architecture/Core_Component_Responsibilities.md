@@ -1592,6 +1592,23 @@ Acts as PARIKA's central orchestration engine.
   and submit it through the unchanged `handle()` pipeline like any
   other Goal.
 
+### Multi-Agent Execution
+
+`Brain.handle()` integrates with `AgentOrchestrator` to assign agents
+to Goals before planning:
+
+1. Validate `BrainRequest`.
+2. Call `AgentOrchestrator.assign_agents_to_goals(request.goals)` to
+   attach `agent_id`, `agent_specialization`, `agent_confidence`,
+   `agent_reason` metadata to each Goal.
+3. Call `Planner.plan()` with agent-enriched Goals.
+4. Supervise execution via dependency-aware concurrent execution
+   (`_supervise_async()`).
+5. Produce `BrainResponse`.
+
+This preserves the single Brain pipeline while enabling multi-agent
+execution where different Goals can be assigned to different agents.
+
 ### Does NOT
 
 - Replace specialized Core components.
@@ -1611,27 +1628,135 @@ Acts as PARIKA's central orchestration engine.
 > ._submit_text()` every turn). `compact()` is not wired into that
 > pipeline today -- a caller (e.g. a future Interface enhancement)
 > must invoke it explicitly before building a Goal's inputs.
+> Multi-agent execution is live and wired in `Brain.handle()`.
 
 > **Why orchestration lives in exactly one component:** every present
 > and future caller -- the Console today; the REST/WebSocket API layer;
 > a Scheduler, WorkflowEngine, or Automation caller tomorrow -- must
 > get the same guarantees (planning-failure capture, dependency-aware
-> execution, consistent progress reporting) with zero duplicated logic,
-> which is only possible if there is exactly one place those guarantees
-> are implemented. This is also why `Brain.handle()` never raises for
-> pipeline failures (`PARIKA_Decision_Flow.md` §2): a shared
-> orchestrator that could crash on any Goal's failure would make every
-> caller responsible for defensive error handling Brain should own once.
-> **Called by:** `InterfaceSession.submit_text()` (the Console and the
-> API layer's normal chat path), `OllamaProviderDriver`'s
-> `ToolCallResolver` (a *nested* re-entrant call when a model requests
-> a tool), and `StandardCodingAgent` (also nested, when the Coding
-> Agent Tool submits its own plan steps as Goals) -- in every nested
-> case, still through the same unmodified `handle()`, never bypassing
-> Planner. **Calls:** `Planner.plan()` and, per Goal,
-> `TaskManager.create()`/`.execute()`.
+> execution, consistent progress reporting, multi-agent execution)
+> with zero duplicated logic, which is only possible if there is
+> exactly one place those guarantees are implemented. This is also why
+> `Brain.handle()` never raises for pipeline failures
+> (`PARIKA_Decision_Flow.md` §2): a shared orchestrator that could
+> crash on any Goal's failure would make every caller responsible for
+> defensive error handling Brain should own once. **Called by:**
+> `InterfaceSession.submit_text()` (the Console and the API layer's
+> normal chat path), `OllamaProviderDriver`'s `ToolCallResolver` (a
+> *nested* re-entrant call when a model requests a tool), and
+> `StandardCodingAgent` (also nested, when the Coding Agent Tool
+> submits its own plan steps as Goals) -- in every nested case, still
+> through the same unmodified `handle()`, never bypassing Planner.
+> **Calls:** `AgentOrchestrator.assign_agents_to_goals()`,
+> `Planner.plan()` and, per Goal, `TaskManager.create()`/`.execute()`.
+> **Calls:** `AgentOrchestrator.assign_agents_to_goals()` before
+> `Planner.plan()`.
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------
+
+## 30. AgentOrchestrator
+
+### Purpose
+
+Coordinates multi-agent execution by assigning agents to Goals before planning.
+
+### Responsibilities
+
+- Assign agents to Goals based on capability, specialization, and policy.
+- Attach agent metadata (`agent_id`, `agent_specialization`, `agent_confidence`, `agent_reason`) to Goals for downstream consumption.
+- Resolve delegation requests between agents.
+- Publish agent lifecycle events (`agent.assigned`, `agent.delegated`) via EventBus.
+
+### Does NOT
+
+- Replace Planner (planning remains Planner's responsibility).
+- Replace TaskManager (task lifecycle remains TaskManager's responsibility).
+- Replace CapabilityExecutor (execution remains CapabilityExecutor's responsibility).
+- Execute capabilities directly.
+- Create a second execution pipeline.
+
+> **Implementation status:** Constructed in `build_default_runtime()`,
+> injected into `Brain`, and called from `Brain.handle()` before
+> `Planner.plan()`. Multi-agent execution is production-wired.
+
+--------------------------------------------------------------------
+
+## 31. AgentRegistry
+
+### Purpose
+
+Central registry for agent profiles.
+
+### Responsibilities
+
+- Register and unregister agent profiles.
+- Index agents by specialization for efficient lookup.
+- Publish registration/unregistration events via EventBus.
+- Provide thread-safe access to agent profiles.
+
+### Does NOT
+
+- Execute agents.
+- Resolve agent assignments.
+- Enforce capability policies (delegated to AgentResolver).
+
+> **Implementation status:** Constructed in `build_default_runtime()`,
+> populated with initial agent profiles after module loading.
+
+--------------------------------------------------------------------
+
+## 32. AgentResolver
+
+### Purpose
+
+Resolves the most suitable agent for a capability or goal.
+
+### Responsibilities
+
+- Score agents based on specialization match, preferred capabilities, and category preferences.
+- Enforce capability access policies (preferred/allowed/prohibited).
+- Apply deterministic tie-breaking.
+- Support delegation resolution with policy enforcement.
+
+### Does NOT
+
+- Register agents.
+- Execute goals.
+- Manage agent lifecycle.
+
+> **Implementation status:** Constructed in `build_default_runtime()`,
+> used by `AgentOrchestrator` for agent assignment and delegation.
+
+--------------------------------------------------------------------
+
+## 33. AgentProfile
+
+### Purpose
+
+Defines an agent's identity, specialization, and capability access policy.
+
+### Responsibilities
+
+- Define agent specialization (e.g., `general`, `coding`, `research`, `media`, `system`, `vision`).
+- Declare preferred capabilities, allowed capabilities, and prohibited capabilities.
+- Define category-level preferences.
+- Specify preferred models and providers.
+- Define behavioral policies and resource constraints.
+- Define delegation policy (`allow`, `restricted`, `prohibited`).
+
+### Does NOT
+
+- Execute capabilities.
+- Store runtime state.
+- Enforce policies directly (policies evaluated by AgentResolver/TaskManager).
+
+> **Implementation status:** Defined as a frozen dataclass in
+> `parika/core/agent_orchestrator/agent_profile.py`. Registered
+> during runtime initialization.
+
+--------------------------------------------------------------------
+
+--------------------------------------------------------------------
 
 ## Appendix: PARIKA Console (Interface Layer, not a Core component)
 

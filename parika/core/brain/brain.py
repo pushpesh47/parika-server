@@ -49,6 +49,7 @@ reports no progress.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import asyncio
 
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
@@ -77,6 +78,7 @@ from .exceptions import ContextEngineUnavailableError, InvalidBrainRequestError
 from .goal_result import GoalResult
 
 if TYPE_CHECKING:
+    from parika.core.agent_orchestrator.agent_orchestrator import AgentOrchestrator
     from parika.core.configuration.configuration import Configuration
     from parika.core.knowledge_manager.knowledge_manager import KnowledgeManager
     from parika.core.memory_manager.memory_manager import MemoryManager
@@ -134,6 +136,7 @@ class Brain:
         experience_source: "ExperienceSource | None" = None,
         configuration: "Configuration | None" = None,
         token_estimator: TokenEstimator | None = None,
+        agent_orchestrator: "AgentOrchestrator | None" = None,
     ) -> None:
         """
         Initialize the Brain.
@@ -192,6 +195,10 @@ class Brain:
             token_estimator:
                 Optional `TokenEstimator` override. Defaults to
                 `HeuristicTokenEstimator` (stdlib, zero dependency).
+
+            agent_orchestrator:
+                Optional AgentOrchestrator for assigning agents to goals.
+                If provided, agents are assigned before planning.
         """
 
         self._planner = planner
@@ -205,6 +212,8 @@ class Brain:
         self._token_estimator = (
             token_estimator if token_estimator is not None else HeuristicTokenEstimator()
         )
+        self._agent_orchestrator = agent_orchestrator
+        self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
 
     def handle(self, request: BrainRequest) -> BrainResponse:
         """
@@ -241,6 +250,12 @@ class Brain:
 
         planning_progress = progress.child(PLANNING_SOURCE_ID)
         planning_progress.started()
+
+        # Assign agents to goals before planning if orchestrator is available
+        if self._agent_orchestrator is not None:
+            agent_goals = self._agent_orchestrator.assign_agents_to_goals(request.goals)
+            # Extract goals with agent metadata attached
+            request = BrainRequest(goals=tuple(a.goal for a in agent_goals))
 
         try:
             plan = self._planner.plan(request.goals)
@@ -314,60 +329,14 @@ class Brain:
     # Execution Supervision
     # ------------------------------------------------------------------
 
-    def _supervise(
-        self,
-        request: BrainRequest,
-        plan: ExecutionPlan,
-        progress: ProgressReporter,
-    ) -> tuple[GoalResult, ...]:
-        """
-        Execute every PlanStep in order, skipping Goals whose
-        dependencies failed, on a best-effort basis.
-        """
-
-        goals_by_id = {goal.id: goal for goal in request.goals}
-
-        results: list[GoalResult] = []
-        failed_goal_ids: set[str] = set()
-
-        for step in plan.steps:
-
-            blocking_failures = set(step.depends_on) & failed_goal_ids
-
-            if blocking_failures:
-                results.append(
-                    GoalResult(
-                        goal_id=step.goal_id,
-                        task_id=None,
-                        status=None,
-                        skipped=True,
-                        skip_reason=(
-                            "Skipped because dependency/dependencies "
-                            f"failed: {sorted(blocking_failures)}."
-                        ),
-                    )
-                )
-                failed_goal_ids.add(step.goal_id)
-                continue
-
-            goal = goals_by_id[step.goal_id]
-
-            result = self._execute_goal(goal, step, progress)
-            results.append(result)
-
-            if not result.succeeded:
-                failed_goal_ids.add(step.goal_id)
-
-        return tuple(results)
-
-    def _execute_goal(
+    async def _execute_goal_async(
         self,
         goal: Goal,
         step: PlanStep,
         progress: ProgressReporter,
     ) -> GoalResult:
         """
-        Create and execute a single Task for a planned Goal.
+        Create and execute a single Task for a planned Goal (async version).
 
         Execution failures are captured into the returned GoalResult
         rather than raised.
@@ -386,9 +355,10 @@ class Brain:
         goal_progress.started(message=f"Executing goal '{goal.id}'.")
 
         try:
-            executed_task = self._task_manager.execute(
-                task.id,
-                step.execution_request,
+            # Run synchronous execute in thread pool to avoid blocking event loop
+            executed_task = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._task_manager.execute(task.id, step.execution_request),
             )
 
         except Exception as ex:
@@ -415,6 +385,172 @@ class Brain:
             status=executed_task.status,
             response=executed_task.response,
         )
+
+    async def _supervise_async(
+        self,
+        request: BrainRequest,
+        plan: ExecutionPlan,
+        progress: ProgressReporter,
+    ) -> tuple[GoalResult, ...]:
+        """
+        Execute PlanSteps with dependency-aware concurrency.
+
+        Independent goals execute concurrently. Dependent goals wait for their
+        dependencies to complete successfully. Failed dependencies cause
+        dependent goals to be skipped.
+        """
+
+        goals_by_id = {goal.id: goal for goal in request.goals}
+        
+        # Track results and completion status
+        results: dict[str, GoalResult] = {}
+        failed_goal_ids: set[str] = set()
+        completed_goal_ids: set[str] = set()
+        
+        # Build dependency graph
+        deps: dict[str, set[str]] = {step.goal_id: set(step.depends_on) for step in plan.steps}
+        steps_by_goal: dict[str, PlanStep] = {step.goal_id: step for step in plan.steps}
+        
+        # Goals that have no unsatisfied dependencies and are ready to run
+        ready_goals: set[str] = set(
+            goal_id for goal_id, dep_set in deps.items() if not dep_set
+        )
+        
+        # Goals currently running
+        running: dict[str, asyncio.Task[GoalResult]] = {}
+        
+        # All goals that need to be executed
+        pending_goals: set[str] = set(deps.keys())
+        
+        while pending_goals or running:
+            # Start as many ready goals as possible (up to concurrency limit)
+            while ready_goals and len(running) < self._max_concurrent_goals:
+                goal_id = ready_goals.pop()
+                pending_goals.remove(goal_id)
+                
+                goal = goals_by_id[goal_id]
+                step = steps_by_goal[goal_id]
+                
+                # Create async task for this goal
+                coro = self._execute_goal_async(goal, step, progress)
+                running[goal_id] = asyncio.create_task(coro)
+            
+            if not running:
+                # No more goals can run (all blocked or done)
+                break
+                
+            # Wait for at least one running goal to complete
+            done, _ = await asyncio.wait(running.values(), return_when=asyncio.FIRST_COMPLETED)
+            
+            for completed_task in done:
+                # Find which goal this task belongs to
+                completed_goal_id = None
+                for gid, task in running.items():
+                    if task is completed_task:
+                        completed_goal_id = gid
+                        break
+                
+                if completed_goal_id is None:
+                    continue
+                    
+                del running[completed_goal_id]
+                
+                try:
+                    result = completed_task.result()
+                except Exception as ex:
+                    # Exception during execution
+                    result = GoalResult(
+                        goal_id=completed_goal_id,
+                        task_id=None,
+                        status=None,
+                        failure=ex,
+                    )
+                
+                results[completed_goal_id] = result
+                completed_goal_ids.add(completed_goal_id)
+                
+                if not result.succeeded:
+                    failed_goal_ids.add(completed_goal_id)
+                
+                # Check if any dependent goals can now run
+                # Collect goals to process to avoid modifying set during iteration
+                goals_to_check = list(pending_goals)
+                for goal_id in goals_to_check:
+                    if goal_id in ready_goals:
+                        continue
+                    # Check if all dependencies are now satisfied
+                    all_deps_satisfied = True
+                    for dep in deps[goal_id]:
+                        if dep not in completed_goal_ids:
+                            all_deps_satisfied = False
+                            break
+                    if all_deps_satisfied:
+                        # Check if any dependency failed
+                        if any(dep in failed_goal_ids for dep in deps[goal_id]):
+                            # Dependency failed - skip this goal
+                            results[goal_id] = GoalResult(
+                                goal_id=goal_id,
+                                task_id=None,
+                                status=None,
+                                skipped=True,
+                                skip_reason=(
+                                    "Skipped because dependency/dependencies "
+                                    f"failed: {sorted(set(deps[goal_id]) & failed_goal_ids)}."
+                                ),
+                            )
+                            failed_goal_ids.add(goal_id)
+                            completed_goal_ids.add(goal_id)
+                            pending_goals.remove(goal_id)
+                        else:
+                            ready_goals.add(goal_id)
+        
+        # Handle any remaining ready goals that were blocked by failures
+        final_results: list[GoalResult] = []
+        for step in plan.steps:
+            goal_id = step.goal_id
+            
+            if goal_id in results:
+                final_results.append(results[goal_id])
+            elif goal_id in failed_goal_ids:
+                final_results.append(
+                    GoalResult(
+                        goal_id=goal_id,
+                        task_id=None,
+                        status=None,
+                        skipped=True,
+                        skip_reason=(
+                            "Skipped because dependency/dependencies "
+                            f"failed: {sorted(set(step.depends_on) & failed_goal_ids)}."
+                        ),
+                    )
+                )
+                failed_goal_ids.add(goal_id)
+            else:
+                # Should not happen, but handle gracefully
+                final_results.append(
+                    GoalResult(
+                        goal_id=goal_id,
+                        task_id=None,
+                        status=None,
+                        skipped=True,
+                        skip_reason="Execution incomplete",
+                    )
+                )
+        
+        return tuple(final_results)
+
+    def _supervise(
+        self,
+        request: BrainRequest,
+        plan: ExecutionPlan,
+        progress: ProgressReporter,
+    ) -> tuple[GoalResult, ...]:
+        """
+        Execute every PlanStep with dependency-aware concurrency.
+        
+        This is the synchronous entry point that runs the async supervisor.
+        """
+        return asyncio.run(self._supervise_async(request, plan, progress))
 
     # ------------------------------------------------------------------
     # Context Engineering (opt-in; never called automatically by

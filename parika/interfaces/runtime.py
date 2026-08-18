@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from parika.core.agent_orchestrator.agent_orchestrator import AgentOrchestrator
+from parika.core.agent_orchestrator.agent_profile import AgentProfile, AgentSpecialization
+from parika.core.agent_orchestrator.agent_registry import AgentRegistry
+from parika.core.agent_orchestrator.agent_resolver import AgentResolver
 from parika.core.brain.brain import Brain
+from parika.core.capability_registry.capability_category import CapabilityCategory
+from types import MappingProxyType
 from parika.core.capability_executor.capability_executor import (
     CapabilityExecutor,
 )
@@ -244,6 +250,9 @@ class ParikaRuntime:
     planner: Planner
     brain: Brain
     ui_context_projector: UIContextProjector
+    agent_registry: AgentRegistry
+    agent_resolver: AgentResolver
+    agent_orchestrator: AgentOrchestrator
 
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -460,16 +469,6 @@ def build_default_runtime(
         configuration=configuration,
         experience_source=experience_store,
     )
-    brain = Brain(
-        planner=planner,
-        task_manager=task_manager,
-        logger=logger,
-        event_bus=event_bus,
-        memory_manager=memory_manager,
-        knowledge_manager=knowledge_manager,
-        experience_source=experience_store,
-        configuration=configuration,
-    )
 
     ui_context_projector = UIContextProjector(
         event_bus=event_bus,
@@ -481,6 +480,35 @@ def build_default_runtime(
         capability_registry=capability_registry,
     )
     ui_context_projector.start()
+
+    # Agent Orchestrator - Multi-agent foundation (created after module loading)
+    agent_registry = AgentRegistry(event_bus=event_bus, logger=logger)
+    agent_resolver = AgentResolver(
+        agent_registry=agent_registry,
+        capability_registry=capability_registry,
+        logger=logger,
+    )
+    agent_orchestrator = AgentOrchestrator(
+        planner=planner,
+        task_manager=task_manager,
+        agent_registry=agent_registry,
+        agent_resolver=agent_resolver,
+        capability_registry=capability_registry,
+        logger=logger,
+        event_bus=event_bus,
+    )
+
+    brain = Brain(
+        planner=planner,
+        task_manager=task_manager,
+        logger=logger,
+        event_bus=event_bus,
+        memory_manager=memory_manager,
+        knowledge_manager=knowledge_manager,
+        experience_source=experience_store,
+        configuration=configuration,
+        agent_orchestrator=agent_orchestrator,
+    )
 
     for service_type, instance in (
         (Configuration, configuration),
@@ -511,6 +539,9 @@ def build_default_runtime(
         (Planner, planner),
         (Brain, brain),
         (UIContextProjector, ui_context_projector),
+        (AgentRegistry, agent_registry),
+        (AgentResolver, agent_resolver),
+        (AgentOrchestrator, agent_orchestrator),
     ):
         service_container.register(service_type, instance)
 
@@ -561,6 +592,13 @@ def build_default_runtime(
         discover_models=discover_local_speech_models,
     )
 
+    # Register initial agents AFTER modules are loaded and capabilities are registered
+    _register_initial_agents(
+        agent_registry=agent_registry,
+        capability_registry=capability_registry,
+        logger=logger,
+    )
+
     return ParikaRuntime(
         configuration=configuration,
         logger=logger,
@@ -586,7 +624,234 @@ def build_default_runtime(
         planner=planner,
         brain=brain,
         ui_context_projector=ui_context_projector,
+        agent_registry=agent_registry,
+        agent_resolver=agent_resolver,
+        agent_orchestrator=agent_orchestrator,
     )
+
+
+def _register_initial_agents(
+    *,
+    agent_registry: AgentRegistry,
+    capability_registry: CapabilityRegistry,
+    logger: Logger,
+) -> None:
+    """
+    Register the initial agent profiles based on actual repository capabilities.
+    
+    Agents are derived from the existing module/capability structure,
+    not invented. Each agent has a specialization that maps to
+    meaningful domains of capabilities in the repository.
+    """
+    from parika.core.agent_orchestrator.agent_profile import AgentProfile
+    from parika.core.agent_orchestrator.agent_specialization import AgentSpecialization
+    from parika.core.capability_registry.capability_category import CapabilityCategory
+
+    # Helper to check if capability exists
+    def has_cap(cap_id: str) -> bool:
+        return capability_registry.contains(cap_id)
+
+    # 1. General Agent - Fallback for chat.respond and general conversational LLM tasks
+    general_caps = frozenset({
+        "chat.respond",
+    })
+    general_allowed = frozenset({
+        "chat.respond",
+    })
+    general_categories = frozenset({CapabilityCategory.LLM})
+    
+    agent_registry.register(AgentProfile(
+        id="agent.general",
+        name="General Agent",
+        specialization=AgentSpecialization.GENERAL,
+        preferred_capabilities=general_caps,
+        allowed_capabilities=general_allowed,
+        preferred_categories=general_categories,
+        allowed_categories=general_categories,
+        delegation_policy="allow",
+        metadata={"description": "Handles general conversational LLM tasks (chat.respond)"},
+    ))
+
+    # 2. Coding Agent - Software engineering specialization
+    coding_caps = frozenset({
+        "coding.execute_task",
+        "coding.plan_change",
+    })
+    coding_allowed = frozenset({
+        "coding.execute_task",
+        "coding.plan_change",
+        "filesystem.read",
+        "filesystem.write",
+        "filesystem.list",
+        "shell.execute",
+        "web.search",
+    })
+    coding_categories = frozenset({
+        CapabilityCategory.LLM,
+        CapabilityCategory.TOOL,
+    })
+    
+    agent_registry.register(AgentProfile(
+        id="agent.coding",
+        name="Coding Agent",
+        specialization=AgentSpecialization.CODING,
+        preferred_capabilities=coding_caps,
+        allowed_capabilities=coding_allowed,
+        preferred_categories=coding_categories,
+        allowed_categories=coding_categories,
+        preferred_models=frozenset({"codellama", "deepseek-coder", "qwen2.5-coder"}),
+        behavioral_policies=MappingProxyType({
+            "reasoning_depth": "deep",
+            "tool_calling_style": "structured",
+            "code_review_enabled": True,
+        }),
+        delegation_policy="allow",
+        metadata={"description": "Specialized for software engineering tasks"},
+    ))
+
+    # 3. Research Agent - Information gathering
+    research_caps = frozenset()
+    research_allowed = frozenset()
+    research_categories = frozenset({CapabilityCategory.TOOL})
+    
+    # Add available research capabilities
+    if has_cap("web.search"):
+        research_caps = frozenset({"web.search"})
+        research_allowed = frozenset({"web.search"})
+    if has_cap("news.latest"):
+        research_caps = research_caps.union({"news.latest", "news.search", "news.topic"})
+        research_allowed = research_allowed.union({"news.latest", "news.search", "news.topic"})
+    if has_cap("knowledge.search"):  # Not a capability but shows intent
+        pass
+    
+    if research_caps or has_cap("web.search") or has_cap("news.latest"):
+        agent_registry.register(AgentProfile(
+            id="agent.research",
+            name="Research Agent",
+            specialization=AgentSpecialization.RESEARCH,
+            preferred_capabilities=research_caps,
+            allowed_capabilities=research_allowed.union({
+                "filesystem.read",
+                "filesystem.list",
+                "memory.search",
+                "knowledge.search",
+            }),
+            preferred_categories=research_categories,
+            allowed_categories=frozenset({CapabilityCategory.TOOL, CapabilityCategory.KNOWLEDGE, CapabilityCategory.MEMORY}),
+            behavioral_policies=MappingProxyType({
+                "reasoning_depth": "deep",
+                "source_verification": True,
+                "citation_style": "inline",
+            }),
+            delegation_policy="allow",
+            metadata={"description": "Specialized for information gathering and research tasks"},
+        ))
+
+    # 4. Media Agent - Media playback/control
+    media_caps = frozenset()
+    media_allowed = frozenset()
+    media_categories = frozenset({CapabilityCategory.TOOL})
+    
+    media_cap_ids = [
+        "media.play", "media.pause", "media.resume", "media.stop",
+        "media.skip", "media.previous", "media.seek", "media.set_volume",
+        "media.mute", "media.unmute", "media.show", "media.hide", "media.get_state",
+    ]
+    for cap in media_cap_ids:
+        if has_cap(cap):
+            media_caps = media_caps.union({cap})
+            media_allowed = media_allowed.union({cap})
+    
+    if media_caps:
+        agent_registry.register(AgentProfile(
+            id="agent.media",
+            name="Media Agent",
+            specialization=AgentSpecialization.MEDIA,
+            preferred_capabilities=media_caps,
+            allowed_capabilities=media_allowed.union({"web.search"}),
+            preferred_categories=media_categories,
+            allowed_categories=frozenset({CapabilityCategory.TOOL, CapabilityCategory.NETWORK}),
+            behavioral_policies=MappingProxyType({
+                "response_style": "concise",
+                "queue_management": True,
+            }),
+            delegation_policy="allow",
+            metadata={"description": "Specialized for media playback and control"},
+        ))
+
+    # 5. System Agent - Utilities (filesystem, shell, weather, currency, expense, runtime)
+    system_caps = frozenset()
+    system_allowed = frozenset()
+    system_categories = frozenset({CapabilityCategory.TOOL})
+    
+    system_cap_ids = [
+        "filesystem.read", "filesystem.write", "filesystem.list",
+        "shell.execute",
+        "weather.current", "weather.forecast",
+        "currency.exchange_rate", "currency.convert",
+        "expense.add", "expense.get", "expense.list", "expense.update", "expense.remove", "expense.summarize", "expense.compare",
+        "runtime.info",
+    ]
+    for cap in system_cap_ids:
+        if has_cap(cap):
+            system_caps = system_caps.union({cap})
+            system_allowed = system_allowed.union({cap})
+    
+    if system_caps:
+        agent_registry.register(AgentProfile(
+            id="agent.system",
+            name="System Agent",
+            specialization=AgentSpecialization.SYSTEM,
+            preferred_capabilities=system_caps,
+            allowed_capabilities=system_allowed.union({"web.search", "filesystem.read", "filesystem.list"}),
+            preferred_categories=system_categories,
+            allowed_categories=frozenset({CapabilityCategory.TOOL, CapabilityCategory.FILESYSTEM, CapabilityCategory.NETWORK, CapabilityCategory.SYSTEM}),
+            behavioral_policies=MappingProxyType({
+                "response_style": "concise",
+                "safety_first": True,
+            }),
+            delegation_policy="allow",
+            metadata={"description": "Handles system utilities and general tool operations"},
+        ))
+
+    # 6. Vision Agent - Visual/multimedia capabilities
+    vision_caps = frozenset()
+    vision_allowed = frozenset()
+    vision_categories = frozenset({CapabilityCategory.VISION, CapabilityCategory.OCR, CapabilityCategory.IMAGE_GENERATION, CapabilityCategory.VIDEO_GENERATION})
+    
+    vision_cap_ids = [
+        "vision.describe_image", "vision.detect_objects", "vision.compare_images",
+        "ocr.extract_text", "ocr.provider_extract_text",
+        "document.read_pdf", "document.extract_text",
+        "video.generate", "video.edit",
+        "image.generate", "image.edit",
+    ]
+    for cap in vision_cap_ids:
+        if has_cap(cap):
+            vision_caps = vision_caps.union({cap})
+            vision_allowed = vision_allowed.union({cap})
+    
+    if vision_caps:
+        agent_registry.register(AgentProfile(
+            id="agent.vision",
+            name="Vision Agent",
+            specialization=AgentSpecialization.VISION,
+            preferred_capabilities=vision_caps,
+            allowed_capabilities=vision_allowed.union({"filesystem.read", "web.search"}),
+            preferred_categories=vision_categories,
+            allowed_categories=frozenset({CapabilityCategory.VISION, CapabilityCategory.OCR, CapabilityCategory.IMAGE_GENERATION, CapabilityCategory.VIDEO_GENERATION, CapabilityCategory.TOOL, CapabilityCategory.FILESYSTEM}),
+            preferred_models=frozenset({"llava", "bakllava", "moondream"}),
+            behavioral_policies=MappingProxyType({
+                "detail_level": "comprehensive",
+                "visual_reasoning": True,
+            }),
+            delegation_policy="allow",
+            metadata={"description": "Specialized for visual understanding and generation tasks"},
+        ))
+
+    # Use module-level logger for this message
+    import logging
+    logging.getLogger("parika").info("Registered initial agent profiles based on available capabilities")
 
 
 def shutdown_runtime(runtime: ParikaRuntime) -> None:
