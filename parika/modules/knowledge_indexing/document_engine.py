@@ -18,8 +18,7 @@ from parika.core.knowledge_manager.search_query import SearchQuery
 from parika.core.knowledge_manager.search_result import SearchResult
 from parika.core.knowledge_manager.source_kind import KnowledgeSourceKind
 from parika.modules._shared.content_hash import iter_files
-
-from .unit_storage import KnowledgeUnitStorage, build_knowledge_unit
+from .postgresql_unit_storage import PostgreSQLKnowledgeUnitStorage, build_knowledge_unit
 
 _SUPPORTED_KINDS = (
     KnowledgeSourceKind.DOCUMENTATION,
@@ -34,7 +33,7 @@ class DocumentKnowledgeEngine(KnowledgeEngine):
     Indexes plain-text/Markdown documentation by paragraph.
     """
 
-    def __init__(self, unit_storage: KnowledgeUnitStorage) -> None:
+    def __init__(self, unit_storage: PostgreSQLKnowledgeUnitStorage) -> None:
         self._unit_storage = unit_storage
 
     def supports(self, source: KnowledgeSource) -> bool:

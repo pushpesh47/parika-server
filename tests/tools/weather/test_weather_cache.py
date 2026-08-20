@@ -1,17 +1,51 @@
 """
-Unit tests for WeatherCache.
+Unit tests for PostgreSQLWeatherCache.
 """
 
 from __future__ import annotations
 
-import json
-import tempfile
-import time
-from pathlib import Path
-
+import asyncio
 import pytest
 
-from parika.tools.weather.cache import WeatherCache, make_cache_key
+from parika.tools.weather.postgresql_cache import PostgreSQLWeatherCache, make_cache_key
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
+
+
+@pytest.fixture()
+def cache(_test_db_pool) -> PostgreSQLWeatherCache:
+    cache = PostgreSQLWeatherCache(_test_db_pool, ttl_seconds=0.1, max_entries=2)
+    cache.initialize()
+
+    yield cache
+
+    cache.shutdown()
 
 
 class TestMakeCacheKey:
@@ -30,68 +64,27 @@ class TestMakeCacheKey:
         assert key1 == key2
 
 
-class TestWeatherCache:
-    def test_in_memory_cache_hit(self):
-        cache = WeatherCache(None, ttl_seconds=60)
-        cache.initialize()
+class TestPostgreSQLWeatherCache:
+    def test_postgresql_persistence(self, cache: PostgreSQLWeatherCache):
+        key = "persist:key"
+        data = {"temperature": 25, "humidity": 60}
+
+        cache.set(key, data)
+
+        # Create new cache instance with same pool
+        cache2 = PostgreSQLWeatherCache(cache._pool, ttl_seconds=60)
+        cache2.initialize()
 
         try:
-            key = "test:key"
-            data = {"temperature": 25}
-
-            cache.set(key, data)
-            result = cache.get_cached(key)
-
+            result = cache2.get_cached(key)
             assert result is not None
-            cached_data, cached_at = result
+            cached_data, _ = result
             assert cached_data == data
         finally:
-            cache.shutdown()
+            cache2.shutdown()
 
-    def test_in_memory_cache_expiry(self):
-        cache = WeatherCache(None, ttl_seconds=0.1)
-        cache.initialize()
-
-        try:
-            key = "test:key"
-            data = {"temperature": 25}
-
-            cache.set(key, data)
-            time.sleep(0.2)
-            result = cache.get_cached(key)
-
-            assert result is None
-        finally:
-            cache.shutdown()
-
-    def test_sqlite_persistence(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "weather_cache.sqlite3"
-            cache = WeatherCache(db_path, ttl_seconds=60)
-            cache.initialize()
-
-            try:
-                key = "persist:key"
-                data = {"temperature": 25, "humidity": 60}
-
-                cache.set(key, data)
-
-                # Create new cache instance with same DB
-                cache2 = WeatherCache(db_path, ttl_seconds=60)
-                cache2.initialize()
-
-                try:
-                    result = cache2.get_cached(key)
-                    assert result is not None
-                    cached_data, _ = result
-                    assert cached_data == data
-                finally:
-                    cache2.shutdown()
-            finally:
-                cache.shutdown()
-
-    def test_max_entries_eviction(self):
-        cache = WeatherCache(None, ttl_seconds=60, max_entries=2)
+    def test_max_entries_eviction(self, _test_db_pool):
+        cache = PostgreSQLWeatherCache(_test_db_pool, ttl_seconds=60, max_entries=2)
         cache.initialize()
 
         try:
@@ -105,73 +98,54 @@ class TestWeatherCache:
         finally:
             cache.shutdown()
 
-    def test_get_or_fetch_fresh(self):
-        cache = WeatherCache(None, ttl_seconds=60)
-        cache.initialize()
+    def test_get_or_fetch_fresh(self, cache: PostgreSQLWeatherCache):
+        call_count = 0
 
-        try:
-            call_count = 0
+        async def fetch_func():
+            nonlocal call_count
+            call_count += 1
+            return {"fetched": call_count}
 
-            async def fetch_func():
-                nonlocal call_count
-                call_count += 1
-                return {"fetched": call_count}
+        async def run_test():
+            data1, status1 = await cache.get_or_fetch("key1", fetch_func)
+            data2, status2 = await cache.get_or_fetch("key1", fetch_func)
 
-            import asyncio
+            assert data1 == data2 == {"fetched": 1}
+            assert status1 == "fetched"
+            assert status2 == "fresh"
+            assert call_count == 1
 
-            async def run_test():
-                data1, status1 = await cache.get_or_fetch("key1", fetch_func)
-                data2, status2 = await cache.get_or_fetch("key1", fetch_func)
+        asyncio.run(run_test())
 
-                assert data1 == data2 == {"fetched": 1}
-                assert status1 == "fetched"
-                assert status2 == "fresh"
-                assert call_count == 1
-
-            asyncio.run(run_test())
-        finally:
-            cache.shutdown()
-
-    def test_get_or_fetch_stampede_prevention(self):
+    def test_get_or_fetch_stampede_prevention(self, cache: PostgreSQLWeatherCache):
         """Test that concurrent requests after expiry only trigger one fetch."""
-        cache = WeatherCache(None, ttl_seconds=0.1)
-        cache.initialize()
+        call_count = 0
 
-        try:
-            call_count = 0
+        async def fetch_func():
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.05)  # Simulate network delay
+            return {"fetched": call_count}
 
-            async def fetch_func():
-                nonlocal call_count
-                call_count += 1
-                await asyncio.sleep(0.05)  # Simulate network delay
-                return {"fetched": call_count}
+        async def run_test():
+            # Pre-populate cache with expired data
+            cache.set("key1", {"fetched": 0})
+            await asyncio.sleep(0.2)  # Wait for cache to expire
 
-            import asyncio
+            # Launch multiple concurrent requests
+            results = await asyncio.gather(*[
+                cache.get_or_fetch("key1", fetch_func)
+                for _ in range(5)
+            ])
 
-            async def run_test():
-                # Pre-populate cache with expired data
-                cache.set("key1", {"fetched": 0})
-                time.sleep(0.2)  # Expire the cache
+            # All should return the same data
+            data_values = [r[0] for r in results]
+            assert all(d == data_values[0] for d in data_values)
+            # Fetch should only be called once (stampede prevention)
+            assert call_count == 1
+            # First request gets "fetched", others get "fresh" (after first fetch completes)
+            statuses = [r[1] for r in results]
+            assert "fetched" in statuses
+            assert all(s in ("fetched", "fresh") for s in statuses)
 
-                # Launch multiple concurrent requests
-                results = await asyncio.gather(*[
-                    cache.get_or_fetch("key1", fetch_func)
-                    for _ in range(5)
-                ])
-
-                # All should return the same data
-                data_values = [r[0] for r in results]
-                assert all(d == data_values[0] for d in data_values)
-                # Fetch should only be called once (stampede prevention)
-                assert call_count == 1
-                # First request gets "fetched", others get "fresh" (after first fetch completes)
-                statuses = [r[1] for r in results]
-                assert "fetched" in statuses
-                assert all(s in ("fetched", "fresh") for s in statuses)
-
-            asyncio.run(run_test())
-        finally:
-            cache.shutdown()
-
-
-import asyncio
+        asyncio.run(run_test())

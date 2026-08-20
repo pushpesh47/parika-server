@@ -56,7 +56,7 @@ from .ai_context import (
     tool_context,
 )
 from .runtime import ParikaRuntime
-from .session_store import SqliteSessionStore
+from .postgresql_session_store import PostgreSQLSessionStore
 
 
 def build_assistant_system_prompt(configuration: Configuration) -> str:
@@ -143,7 +143,7 @@ def assemble_context_messages(
 def assemble_session_retrieval_messages(
     *,
     text: str,
-    session_store: SqliteSessionStore | None,
+    session_store: PostgreSQLSessionStore | None,
     current_session_id: str | None,
     token_budget: int,
 ) -> tuple[ChatMessage, ...]:

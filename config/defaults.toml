@@ -10,7 +10,7 @@
 
 [application]
 name = "PARIKA"
-version = "0.3.57-alpha"
+version = "0.4.01-alpha"
 environment = "production"
 
 [assistant]
@@ -71,6 +71,34 @@ file = "parika.log"
 
 [data]
 directory = "data"
+
+###############################################################################
+# PostgreSQL Database
+#
+# Configuration for the PostgreSQL persistence layer. These settings are
+# used by the server platform for durable storage. PostgreSQL is REQUIRED.
+#
+# For local development, PostgreSQL can run as a system service or via
+# Docker. Connection parameters can be overridden in config/installation.toml
+# or config/runtime.toml for per-machine configuration.
+###############################################################################
+
+[database]
+enabled = true
+host = "127.0.0.1"
+port = 5432
+database = "parika"
+username = "postgres"
+password = "dba"
+# Connection pool sizing
+pool_min_size = 2
+pool_max_size = 10
+# Connection timeout in seconds
+connect_timeout = 10.0
+# Statement timeout in seconds (0 = no timeout)
+statement_timeout = 0.0
+# Application name for pg_stat_activity
+application_name = "parika"
 
 [plugins]
 directory = "plugins"
@@ -865,7 +893,6 @@ max_concurrent_goals = 4
 enabled = true
 tree_sitter_enabled = true
 max_file_size_bytes = 2000000
-index_database = "coding_index.sqlite3"
 
 # One argv-form command per language; the target file path is appended
 # automatically. Empty/absent = coding.format/coding.lint report a clear

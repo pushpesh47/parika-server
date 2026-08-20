@@ -1,5 +1,5 @@
 """
-Unit tests for CodingIndexStorage.
+Unit tests for PostgreSQLCodingIndexStorage.
 """
 
 from __future__ import annotations
@@ -10,7 +10,64 @@ import pytest
 
 from parika.tools.coding.analyzers.python_ast import PythonAstAnalyzer
 from parika.tools.coding.exceptions import CodingIndexNotFoundError
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
+
+
+@pytest.fixture()
+def storage(_test_db_pool) -> PostgreSQLCodingIndexStorage:
+    instance = PostgreSQLCodingIndexStorage(_test_db_pool)
+    instance.initialize()
+    # Clean up before test
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM coding.coding_call_edges;")
+            cur.execute("DELETE FROM coding.coding_references;")
+            cur.execute("DELETE FROM coding.coding_imports;")
+            cur.execute("DELETE FROM coding.coding_annotations;")
+            cur.execute("DELETE FROM coding.coding_symbols;")
+            cur.execute("DELETE FROM coding.coding_files;")
+            conn.commit()
+    yield instance
+    # Clean up after test
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM coding.coding_call_edges;")
+            cur.execute("DELETE FROM coding.coding_references;")
+            cur.execute("DELETE FROM coding.coding_imports;")
+            cur.execute("DELETE FROM coding.coding_annotations;")
+            cur.execute("DELETE FROM coding.coding_symbols;")
+            cur.execute("DELETE FROM coding.coding_files;")
+            conn.commit()
+    instance.shutdown()
+
 
 SOURCE = '''"""Module docstring."""
 
@@ -27,19 +84,11 @@ UNUSED_VALUE = 42
 '''
 
 
-@pytest.fixture()
-def storage(tmp_path: Path) -> CodingIndexStorage:
-    instance = CodingIndexStorage(tmp_path / "coding_index.sqlite3")
-    instance.initialize()
-    yield instance
-    instance.shutdown()
-
-
 def _parsed(path: str = "mod.py"):
     return PythonAstAnalyzer().parse(Path(path), SOURCE)
 
 
-def test_upsert_and_symbols_for_file(storage: CodingIndexStorage) -> None:
+def test_upsert_and_symbols_for_file(storage: PostgreSQLCodingIndexStorage) -> None:
     parsed = _parsed()
     count = storage.upsert_file(parsed)
 
@@ -52,7 +101,7 @@ def test_upsert_and_symbols_for_file(storage: CodingIndexStorage) -> None:
     assert "mod.UNUSED_VALUE" in names
 
 
-def test_file_content_hash_round_trips(storage: CodingIndexStorage) -> None:
+def test_file_content_hash_round_trips(storage: PostgreSQLCodingIndexStorage) -> None:
     parsed = _parsed()
     assert storage.file_content_hash("mod.py") is None
 
@@ -60,7 +109,7 @@ def test_file_content_hash_round_trips(storage: CodingIndexStorage) -> None:
     assert storage.file_content_hash("mod.py") == parsed.content_hash
 
 
-def test_upsert_file_replaces_previous_symbols(storage: CodingIndexStorage) -> None:
+def test_upsert_file_replaces_previous_symbols(storage: PostgreSQLCodingIndexStorage) -> None:
     storage.upsert_file(_parsed())
 
     updated_source = '"""Doc."""\n\n\ndef only_one():\n    return 1\n'
@@ -72,19 +121,19 @@ def test_upsert_file_replaces_previous_symbols(storage: CodingIndexStorage) -> N
     assert names == {"mod", "mod.only_one"}
 
 
-def test_search_finds_symbol_by_name(storage: CodingIndexStorage) -> None:
+def test_search_finds_symbol_by_name(storage: PostgreSQLCodingIndexStorage) -> None:
     storage.upsert_file(_parsed())
 
     results = storage.search("helper")
     assert any(symbol.qualified_name == "mod.helper" for symbol in results)
 
 
-def test_find_symbol_raises_when_missing(storage: CodingIndexStorage) -> None:
+def test_find_symbol_raises_when_missing(storage: PostgreSQLCodingIndexStorage) -> None:
     with pytest.raises(CodingIndexNotFoundError):
         storage.find_symbol("mod.does_not_exist")
 
 
-def test_call_edges_resolve_callers_and_callees(storage: CodingIndexStorage) -> None:
+def test_call_edges_resolve_callers_and_callees(storage: PostgreSQLCodingIndexStorage) -> None:
     storage.upsert_file(_parsed())
 
     assert "mod.main" in storage.callers_of("mod.helper")
@@ -92,7 +141,7 @@ def test_call_edges_resolve_callers_and_callees(storage: CodingIndexStorage) -> 
 
 
 def test_dead_code_candidates_excludes_referenced_symbols(
-    storage: CodingIndexStorage,
+    storage: PostgreSQLCodingIndexStorage,
 ) -> None:
     storage.upsert_file(_parsed())
 
@@ -100,14 +149,14 @@ def test_dead_code_candidates_excludes_referenced_symbols(
     assert "mod.helper" not in dead  # referenced by mod.main
 
 
-def test_graph_query_forward_traversal(storage: CodingIndexStorage) -> None:
+def test_graph_query_forward_traversal(storage: PostgreSQLCodingIndexStorage) -> None:
     storage.upsert_file(_parsed())
 
     result = storage.graph_query("mod.main", direction="forward", max_depth=2)
     assert "helper" in result.nodes or "mod.helper" in result.nodes
 
 
-def test_delete_file_removes_all_children(storage: CodingIndexStorage) -> None:
+def test_delete_file_removes_all_children(storage: PostgreSQLCodingIndexStorage) -> None:
     storage.upsert_file(_parsed())
     storage.delete_file("mod.py")
 

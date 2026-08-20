@@ -52,7 +52,7 @@ from .exceptions import ExpenseAmbiguousMatchError, ExpenseNotFoundError, Expens
 from .filters import ExpenseFilter
 from .model import Expense
 from .money import to_minor_units, validate_currency_code
-from .storage import ExpenseStorage
+from .postgresql_storage import PostgreSQLExpenseStorage
 
 _UNSET = object()
 """Sentinel distinguishing "field not supplied" from "field explicitly cleared to None" on `update_by_id`."""
@@ -86,7 +86,7 @@ class ExpenseService:
     def __init__(
         self,
         *,
-        storage: ExpenseStorage,
+        storage: PostgreSQLExpenseStorage,
         event_bus: EventBus,
         logger: Logger,
         config: ExpenseToolConfig,

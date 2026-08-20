@@ -38,7 +38,6 @@ from .search_query import SearchQuery
 from .search_result import SearchResult
 from .source_kind import KnowledgeSourceKind
 from .source_status import KnowledgeSourceStatus
-from .sqlite_storage import SqliteKnowledgeStorage
 from .storage import KnowledgeStorage
 
 __all__ = [
@@ -73,5 +72,4 @@ __all__ = [
     "SearchQuery",
     "SearchQueryError",
     "SearchResult",
-    "SqliteKnowledgeStorage",
 ]

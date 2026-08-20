@@ -28,7 +28,7 @@ from parika.core.memory_manager.memory_importance import MemoryImportance
 from parika.core.memory_manager.memory_kind import MemoryKind
 from parika.core.memory_manager.memory_origin import MemoryOrigin
 from parika.core.memory_manager.memory_scope import MemoryScope
-from parika.core.memory_manager.storage import MemoryStorage
+from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 
 _EXPORT_FORMAT_VERSION: int = 1
 
@@ -93,7 +93,7 @@ def memory_from_json_dict(data: dict[str, Any]) -> Memory:
     )
 
 
-def export_memories(storage: MemoryStorage, *, path: Path) -> int:
+def export_memories(storage: PostgreSQLMemoryStorage, *, path: Path) -> int:
     """
     Body of MemoryManager.export(): write every stored memory to
     `path` as a JSON array. Returns the number of memories exported.
@@ -119,7 +119,7 @@ def export_memories(storage: MemoryStorage, *, path: Path) -> int:
 
 
 def import_memories(
-    storage: MemoryStorage, *, path: Path, on_duplicate: str = "skip"
+    storage: PostgreSQLMemoryStorage, *, path: Path, on_duplicate: str = "skip"
 ) -> int:
     """
     Body of MemoryManager.import_memories(): read a JSON export

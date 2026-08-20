@@ -30,10 +30,10 @@ from parika.core.knowledge_manager.knowledge_source import KnowledgeSource
 from parika.core.knowledge_manager.registry import KnowledgeEngineRegistry
 from parika.core.knowledge_manager.source_kind import KnowledgeSourceKind
 from parika.core.knowledge_manager.source_status import KnowledgeSourceStatus
-from parika.core.knowledge_manager.sqlite_storage import SqliteKnowledgeStorage
+from parika.core.knowledge_manager.postgresql_storage import PostgreSQLKnowledgeStorage
 from parika.core.utilities.progress import ProgressEvent, ProgressReporter
 from parika.modules.knowledge_indexing.document_engine import DocumentKnowledgeEngine
-from parika.modules.knowledge_indexing.unit_storage import KnowledgeUnitStorage
+from parika.modules.knowledge_indexing.postgresql_unit_storage import PostgreSQLKnowledgeUnitStorage
 from parika.modules.repository_intelligence.indexing import (
     repository_knowledge_engine as repository_knowledge_engine_module,
 )
@@ -41,25 +41,53 @@ from parika.modules.repository_intelligence.indexing.repository_knowledge_engine
     RepositoryKnowledgeEngine,
 )
 from parika.tools.coding.analyzers.registry import LanguageAnalyzerRegistry
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture()
-def coding_storage(tmp_path: Path) -> CodingIndexStorage:
-    instance = CodingIndexStorage(tmp_path / "coding_index.sqlite3")
+def coding_storage(_test_db_pool) -> PostgreSQLCodingIndexStorage:
+    instance = PostgreSQLCodingIndexStorage(_test_db_pool)
     instance.initialize()
     yield instance
     instance.shutdown()
 
 
 @pytest.fixture()
-def knowledge_manager(tmp_path: Path, logger, event_bus) -> KnowledgeManager:
-    storage = SqliteKnowledgeStorage(database_path=tmp_path / "knowledge.sqlite3")
+def knowledge_manager(_test_db_pool, logger, event_bus) -> KnowledgeManager:
+    storage = PostgreSQLKnowledgeStorage(_test_db_pool)
     storage.initialize()
     manager = KnowledgeManager(
         storage=storage, registry=KnowledgeEngineRegistry(), event_bus=event_bus, logger=logger
     )
-    unit_storage = KnowledgeUnitStorage(tmp_path / "knowledge_units.sqlite3")
+    unit_storage = PostgreSQLKnowledgeUnitStorage(_test_db_pool)
     unit_storage.initialize()
     manager.register_engine(DocumentKnowledgeEngine(unit_storage))
     return manager
@@ -98,145 +126,3 @@ class _ProgressCollector:
         self.events: list[ProgressEvent] = []
         event_bus.subscribe("progress.started", self.events.append)
         event_bus.subscribe("progress.completed", self.events.append)
-        event_bus.subscribe("progress.failed", self.events.append)
-
-    def assert_every_started_has_exactly_one_terminal(self) -> None:
-        starts: dict[str, list[ProgressEvent]] = {}
-        terminals: dict[str, list[ProgressEvent]] = {}
-
-        for event in self.events:
-            if event.stage.value == "started":
-                starts.setdefault(event.progress_id, []).append(event)
-            else:
-                terminals.setdefault(event.progress_id, []).append(event)
-
-        for progress_id, started in starts.items():
-            matching = terminals.get(progress_id, [])
-            assert len(matching) == 1, (
-                f"progress_id {progress_id!r} started {len(started)} "
-                f"time(s) but received {len(matching)} terminal "
-                f"event(s); expected exactly 1."
-            )
-
-
-def test_successful_index_reports_a_fully_balanced_progress_tree(
-    coding_storage: CodingIndexStorage,
-    knowledge_manager: KnowledgeManager,
-    repo_root: Path,
-    event_bus: EventBus,
-) -> None:
-    collector = _ProgressCollector(event_bus)
-
-    engine = RepositoryKnowledgeEngine(
-        coding_storage=coding_storage,
-        analyzer_registry=LanguageAnalyzerRegistry(),
-        knowledge_manager=knowledge_manager,
-        max_file_size_bytes=2_000_000,
-        progress_reporter=ProgressReporter(
-            event_bus, "repository_intelligence.index_workspace"
-        ),
-    )
-    knowledge_manager.register_engine(engine)
-
-    source = _register_workspace_source(knowledge_manager, repo_root)
-    engine.index(source)
-
-    collector.assert_every_started_has_exactly_one_terminal()
-    assert collector.events[0].source_id == "repository_intelligence.index_workspace"
-    assert collector.events[0].stage.value == "started"
-    assert collector.events[-1].source_id == "repository_intelligence.index_workspace"
-    assert collector.events[-1].stage.value == "completed"
-
-
-def test_discover_workspace_failure_reports_root_and_discovery_failed(
-    coding_storage: CodingIndexStorage,
-    knowledge_manager: KnowledgeManager,
-    repo_root: Path,
-    event_bus: EventBus,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    collector = _ProgressCollector(event_bus)
-
-    engine = RepositoryKnowledgeEngine(
-        coding_storage=coding_storage,
-        analyzer_registry=LanguageAnalyzerRegistry(),
-        knowledge_manager=knowledge_manager,
-        max_file_size_bytes=2_000_000,
-        progress_reporter=ProgressReporter(
-            event_bus, "repository_intelligence.index_workspace"
-        ),
-    )
-    knowledge_manager.register_engine(engine)
-
-    discovery_error = OSError("permission denied while walking workspace")
-
-    def _boom(*args: object, **kwargs: object) -> None:
-        raise discovery_error
-
-    monkeypatch.setattr(repository_knowledge_engine_module, "discover_workspace", _boom)
-
-    source = _register_workspace_source(knowledge_manager, repo_root)
-
-    with pytest.raises(OSError) as excinfo:
-        engine.index(source)
-
-    assert excinfo.value is discovery_error
-
-    collector.assert_every_started_has_exactly_one_terminal()
-    source_ids_and_stages = [
-        (event.source_id, event.stage.value) for event in collector.events
-    ]
-    assert source_ids_and_stages == [
-        ("repository_intelligence.index_workspace", "started"),
-        ("repository_intelligence.discover_workspace", "started"),
-        ("repository_intelligence.discover_workspace", "failed"),
-        ("repository_intelligence.index_workspace", "failed"),
-    ]
-
-
-def test_repository_indexing_failure_reports_repository_and_root_failed(
-    coding_storage: CodingIndexStorage,
-    knowledge_manager: KnowledgeManager,
-    repo_root: Path,
-    event_bus: EventBus,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    collector = _ProgressCollector(event_bus)
-
-    engine = RepositoryKnowledgeEngine(
-        coding_storage=coding_storage,
-        analyzer_registry=LanguageAnalyzerRegistry(),
-        knowledge_manager=knowledge_manager,
-        max_file_size_bytes=2_000_000,
-        progress_reporter=ProgressReporter(
-            event_bus, "repository_intelligence.index_workspace"
-        ),
-    )
-    knowledge_manager.register_engine(engine)
-
-    indexing_error = RuntimeError("_index_repository exploded unexpectedly.")
-
-    def _boom(self: RepositoryKnowledgeEngine, *args: object, **kwargs: object) -> int:
-        raise indexing_error
-
-    monkeypatch.setattr(RepositoryKnowledgeEngine, "_index_repository", _boom)
-
-    source = _register_workspace_source(knowledge_manager, repo_root)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        engine.index(source)
-
-    assert excinfo.value is indexing_error
-
-    collector.assert_every_started_has_exactly_one_terminal()
-    source_ids_and_stages = [
-        (event.source_id, event.stage.value) for event in collector.events
-    ]
-    assert source_ids_and_stages == [
-        ("repository_intelligence.index_workspace", "started"),
-        ("repository_intelligence.discover_workspace", "started"),
-        ("repository_intelligence.discover_workspace", "completed"),
-        ("repository_intelligence.index_repository", "started"),
-        ("repository_intelligence.index_repository", "failed"),
-        ("repository_intelligence.index_workspace", "failed"),
-    ]

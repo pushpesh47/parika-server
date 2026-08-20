@@ -37,7 +37,7 @@ from parika.modules.repository_intelligence.indexing.repository_knowledge_engine
 )
 from parika.modules.repository_intelligence.repository.git_reader import GitReader
 from parika.tools.coding.analyzers.registry import LanguageAnalyzerRegistry
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
 
 MODULE_HEALTH_COMPONENT_ID = "module.repository_intelligence"
 
@@ -51,7 +51,7 @@ class RepositoryIntelligenceModuleDriver(ModuleDriver):
         self,
         *,
         knowledge_manager: KnowledgeManager,
-        coding_storage: CodingIndexStorage,
+        coding_storage: PostgreSQLCodingIndexStorage,
         analyzer_registry: LanguageAnalyzerRegistry,
         max_file_size_bytes: int,
         tool_manager: ToolManager,

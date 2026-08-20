@@ -20,14 +20,14 @@ from typing import Any
 
 from parika.interfaces.runtime import ParikaRuntime
 from parika.interfaces.session import InterfaceSession
-from parika.interfaces.session_store import SessionNotFoundError, SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 
 from ..requests import ChatRequest
 
 
 def _load_or_create_session(
     runtime: ParikaRuntime,
-    session_store: SqliteSessionStore,
+    session_store: PostgreSQLSessionStore,
     session_id: str | None,
 ) -> InterfaceSession:
     if session_id:
@@ -42,7 +42,7 @@ def _load_or_create_session(
 
 def handle_chat(
     runtime: ParikaRuntime,
-    session_store: SqliteSessionStore,
+    session_store: PostgreSQLSessionStore,
     request: ChatRequest,
     *,
     on_token: Callable[[str], None] | None = None,

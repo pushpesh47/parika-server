@@ -20,11 +20,11 @@ from parika.core.memory_manager.memory import Memory
 from parika.core.memory_manager.memory_category import MemoryCategory
 from parika.core.memory_manager.memory_scope import MemoryScope
 from parika.core.memory_manager.memory_stats import MemoryStats
-from parika.core.memory_manager.storage import MemoryStorage
+from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 
 
 def list_memories(
-    storage: MemoryStorage,
+    storage: PostgreSQLMemoryStorage,
     *,
     category: MemoryCategory | None,
     scope: MemoryScope | None,
@@ -42,7 +42,7 @@ def list_memories(
 
 
 def clear(
-    storage: MemoryStorage,
+    storage: PostgreSQLMemoryStorage,
     *,
     category: MemoryCategory | None,
     scope: MemoryScope | None,
@@ -73,7 +73,7 @@ def clear(
     return removed
 
 
-def stats(storage: MemoryStorage, *, database_path: Path) -> MemoryStats:
+def stats(storage: PostgreSQLMemoryStorage) -> MemoryStats:
     """Body of MemoryManager.stats()."""
 
     total = storage.count()
@@ -81,17 +81,10 @@ def stats(storage: MemoryStorage, *, database_path: Path) -> MemoryStats:
     by_importance = storage.count_by(column="importance")
     by_scope = storage.count_by(column="scope")
 
-    storage_size_bytes = 0
-
-    try:
-        storage_size_bytes = os.path.getsize(database_path)
-    except OSError:
-        storage_size_bytes = 0
-
     return MemoryStats(
         total=total,
         by_category=MappingProxyType(by_category),
         by_importance=MappingProxyType(by_importance),
         by_scope=MappingProxyType(by_scope),
-        storage_size_bytes=storage_size_bytes,
+        storage_size_bytes=0,  # Not applicable for PostgreSQL
     )

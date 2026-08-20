@@ -18,7 +18,6 @@ from parika.core.configuration.configuration import Configuration
 DEFAULT_ENABLED = True
 DEFAULT_TREE_SITTER_ENABLED = True
 DEFAULT_MAX_FILE_SIZE_BYTES = 2_000_000
-DEFAULT_INDEX_DATABASE = "coding_index.sqlite3"
 
 
 def tree_sitter_dependency_available() -> bool:
@@ -42,7 +41,6 @@ class CodingToolConfig:
     enabled: bool = DEFAULT_ENABLED
     tree_sitter_enabled: bool = DEFAULT_TREE_SITTER_ENABLED
     max_file_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES
-    index_database: str = DEFAULT_INDEX_DATABASE
     formatters: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -77,9 +75,6 @@ def load_coding_config(configuration: Configuration | None) -> CodingToolConfig:
             configuration.get(
                 "coding.max_file_size_bytes", DEFAULT_MAX_FILE_SIZE_BYTES
             )
-        ),
-        index_database=str(
-            configuration.get("coding.index_database", DEFAULT_INDEX_DATABASE)
         ),
         formatters=MappingProxyType(
             {

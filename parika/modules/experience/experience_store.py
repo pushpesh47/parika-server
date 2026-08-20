@@ -23,7 +23,7 @@ from parika.core.logger.logger import Logger
 
 from .exceptions import ExperienceNotFoundError, InvalidExperienceError
 from .experience import Experience
-from .storage import ExperienceStorage
+from .postgresql_storage import PostgreSQLExperienceStorage
 
 
 class ExperienceStore:
@@ -34,15 +34,16 @@ class ExperienceStore:
 
     __slots__ = ("_logger", "_storage", "_lock")
 
-    def __init__(self, logger: Logger, database_path: Path) -> None:
+    def __init__(
+        self, 
+        logger: Logger, 
+        storage: PostgreSQLExperienceStorage,
+    ) -> None:
         if type(logger) is not Logger:
             raise TypeError("logger must be of type Logger.")
 
-        if not isinstance(database_path, PurePath):
-            raise TypeError("database_path must be a pathlib.Path object.")
-
         self._logger = logger.get_logger(__name__)
-        self._storage = ExperienceStorage(database_path=database_path)
+        self._storage = storage
         self._lock = RLock()
 
     def initialize(self) -> None:

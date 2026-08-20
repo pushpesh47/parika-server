@@ -19,6 +19,33 @@ from parika.interfaces.runtime import build_default_runtime, shutdown_runtime
 from parika.interfaces.session import InterfaceSession
 from parika.modules.chat.driver import CHAT_CAPABILITY_ID
 from parika.tools.web_search.manifest import WEB_SEARCH_TOOL_ID
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 class _FakeOllamaTransport:
@@ -40,7 +67,7 @@ class _FakeOllamaTransport:
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, _test_db_pool):
     # Isolated, disposable data directory so tests exercising /memory
     # (or any other Memory/Knowledge/Experience-writing command) never
     # accumulate state in the real project's data/ directory.
@@ -48,6 +75,7 @@ def runtime(tmp_path):
         ollama_transport=_FakeOllamaTransport(),
         discover_comfyui_models=False,
         data_directory=tmp_path / "data",
+        sync_pool=_test_db_pool,
     )
     yield runtime
     shutdown_runtime(runtime)
@@ -358,10 +386,10 @@ class TestSessionsCommand:
     """
 
     @pytest.fixture
-    def session_with_store(self, runtime, tmp_path):
-        from parika.interfaces.session_store import SqliteSessionStore
+    def session_with_store(self, runtime, tmp_path, _test_db_pool):
+        from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 
-        store = SqliteSessionStore(tmp_path / "sessions.db")
+        store = PostgreSQLSessionStore(_test_db_pool)
         store.initialize()
 
         return InterfaceSession(

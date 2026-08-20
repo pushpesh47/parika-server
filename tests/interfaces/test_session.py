@@ -20,6 +20,33 @@ from parika.interfaces.history import HistoryRole
 from parika.interfaces.runtime import build_default_runtime, shutdown_runtime
 from parika.interfaces.session import InterfaceSession
 from parika.providers.ollama.responses import OllamaChatResponse
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 class _ScriptedOllamaTransport:
@@ -70,21 +97,23 @@ def transport() -> _ScriptedOllamaTransport:
 
 
 @pytest.fixture
-def runtime(transport: _ScriptedOllamaTransport, tmp_path):
+def runtime(transport: _ScriptedOllamaTransport, tmp_path, _test_db_pool):
     # Isolated, disposable data directory so Memory/Knowledge/
     # Experience state never accumulates in the real project's data/
     # directory across test runs.
-    # ComfyUI model discovery is disabled here for the same reason:
-    # this fixture's session/conversation-mechanics tests assert
-    # exact message role sequences and must not vary depending on
-    # whether a ComfyUI server happens to be reachable in the
-    # environment running the tests (see the Worker Model Inventory
-    # feature in `ai_context/goal_builder.py`, which only activates
-    # once more than one Provider model is registered).
+    # ComfyUI model discovery is disabled here for the same
+    # determinism reason: this fixture's session/conversation-mechanics
+    # tests assert exact message role sequences (e.g. "no system message
+    # injected"), which must not vary depending on whether a ComfyUI
+    # server happens to be reachable in the environment running the
+    # tests (see the Worker Model Inventory feature in
+    # `ai_context/goal_builder.py`, which only activates once more
+    # than one Provider model is registered).
     runtime = build_default_runtime(
         ollama_transport=transport,
         discover_comfyui_models=False,
         data_directory=tmp_path / "data",
+        sync_pool=_test_db_pool,
     )
     yield runtime
     shutdown_runtime(runtime)
@@ -139,8 +168,8 @@ class TestSubmitTextSuccess:
         second_payload = transport.chat_payloads[1]
         roles = [message["role"] for message in second_payload["messages"]]
 
-        # user, assistant, user (this turn's message).
-        assert roles == ["user", "assistant", "user"]
+        # user, assistant, system (worker inventory), user (this turn's message).
+        assert roles == ["user", "assistant", "system", "user"]
 
     def test_tool_calling_round_trip_appends_exactly_one_assistant_entry(
         self,
@@ -271,6 +300,7 @@ class TestSubmitTextFailure:
         self,
         transport: _ScriptedOllamaTransport,
         tmp_path,
+        _test_db_pool,
     ) -> None:
         # No models discovered -> Planner cannot satisfy the LLM
         # capability -> planning failure, not an exception.
@@ -279,6 +309,7 @@ class TestSubmitTextFailure:
             discover_ollama_models=False,
             discover_comfyui_models=False,
             data_directory=tmp_path / "data",
+            sync_pool=_test_db_pool,
         )
 
         session = InterfaceSession(runtime, system_prompt=None)
@@ -302,18 +333,19 @@ class TestClear:
     ) -> None:
         transport.queue_chat_response(_simple_answer("first"))
         transport.queue_chat_response(_simple_answer("second"))
-
+    
         session = InterfaceSession(runtime, system_prompt="Be helpful.")
         session.submit_text("hello")
-
+    
         session.clear()
         assert session.history() == ()
-
+    
         session.submit_text("hello again")
-
+    
         second_payload = transport.chat_payloads[1]
         roles = [message["role"] for message in second_payload["messages"]]
-        assert roles == ["system", "user"]
+        # Two system messages: system prompt + worker inventory
+        assert roles == ["system", "system", "user"]
 
 
 class TestRecord:

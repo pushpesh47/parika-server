@@ -28,6 +28,8 @@ from parika.api.errors import register_exception_handlers
 from parika.api.router_bindings import register_router_bindings
 from parika.api.routers import build_v1_router
 from parika.api.session_registry import build_default_session_store
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
 from parika.core.execution.owner import CoreExecutionOwner
 from parika.core.router.router import Router
 from parika.interfaces.runtime import (
@@ -35,10 +37,13 @@ from parika.interfaces.runtime import (
     build_default_runtime,
     shutdown_runtime,
 )
-from parika.tools.weather.cache import WeatherCache
+from parika.tools.weather.postgresql_cache import PostgreSQLWeatherCache
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 
 from .config import ApiCorsSettings, load_server_settings
-from parika.interfaces.session_store import SqliteSessionStore
+
+# Type alias for session store
+SessionStore = PostgreSQLSessionStore
 
 
 class ParikaRoot:
@@ -49,7 +54,7 @@ class ParikaRoot:
         core_execution_owner: CoreExecutionOwner,
         runtime: ParikaRuntime,
         router: Router,
-        session_store: SqliteSessionStore,
+        session_store: SessionStore,
     ) -> None:
         self.core_execution_owner = core_execution_owner
         self.runtime = runtime
@@ -86,9 +91,36 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Load configuration to get database settings
+        from parika.core.configuration.configuration import Configuration
+        configuration = Configuration()
+        configuration.load()
+        db_config = db_config_module.load_database_config(configuration)
+        
+# Initialize PostgreSQL pools if database is enabled
+        sync_pool = None
+        if db_config.enabled:
+            # Initialize sync pool (needed by CoreExecutionOwner worker thread and API dependencies)
+            sync_pool = PoolManager.initialize_sync_pool(db_config)
+        
+        # Wrap runtime_factory to pass sync_pool if it accepts it
+        main_thread_sync_pool = sync_pool  # Capture the main thread's sync_pool
+        def runtime_factory_with_pool(sync_pool=None):
+            import inspect
+            if runtime_factory is not None:
+                sig = inspect.signature(runtime_factory)
+                if 'sync_pool' in sig.parameters:
+                    # Use the sync_pool passed by the worker thread, or fall back to the one captured from main thread
+                    pool_to_use = sync_pool if sync_pool is not None else main_thread_sync_pool
+                    return runtime_factory(sync_pool=pool_to_use)
+                else:
+                    return runtime_factory()
+            else:
+                from parika.interfaces.runtime import build_default_runtime
+                return build_default_runtime(sync_pool=main_thread_sync_pool)
+        
         # Create CoreExecutionOwner - this will own the Core thread and resources
-        # Pass the runtime_factory so tests can use isolated data directories
-        core_execution_owner = CoreExecutionOwner(runtime_factory=runtime_factory)
+        core_execution_owner = CoreExecutionOwner(runtime_factory=runtime_factory_with_pool, sync_pool=sync_pool)
         
         # Start the Core worker thread
         core_execution_owner.start()
@@ -119,19 +151,19 @@ def create_app(
             },
         )
 
+        # Load weather cache TTL from configuration
+        cache_ttl_seconds = float(runtime.configuration.get("weather.cache_ttl_seconds", 1200.0))
+
         # Create shared WeatherCache for the direct Weather API
         # This cache must be shared across all requests to prevent stampedes
-        data_directory = getattr(runtime.configuration, "_data_directory_override", None)
-        if data_directory is not None:
-            data_directory = Path(data_directory)
+        # Use PostgreSQL pool for thread-safe cache
+        if sync_pool is not None:
+            weather_cache = PostgreSQLWeatherCache(
+                sync_pool, ttl_seconds=cache_ttl_seconds
+            )
+            weather_cache.initialize()
         else:
-            data_directory = runtime.configuration.get_project_root() / runtime.configuration.get("data.directory", "data")
-        
-        cache_database_path = data_directory / "weather_cache.sqlite3"
-        cache_ttl_seconds = float(runtime.configuration.get("weather.cache_ttl_seconds", 1200.0))
-        
-        weather_cache = WeatherCache(cache_database_path, ttl_seconds=cache_ttl_seconds)
-        weather_cache.initialize()
+            raise RuntimeError("PostgreSQL is required for Weather cache")
 
         # Store references in app.state - but note that the actual Core resources
         # are owned by the CoreExecutionOwner's worker thread
@@ -142,6 +174,7 @@ def create_app(
         app.state.auth_backend = auth_backend
         app.state.server_settings = settings
         app.state.weather_cache = weather_cache  # Shared cache for Weather API
+        app.state.sync_pool = sync_pool  # PostgreSQL sync pool for API dependencies
 
         try:
             yield
@@ -156,6 +189,7 @@ def create_app(
             app.state.router = None
             app.state.session_store = None
             app.state.weather_cache = None
+            app.state.sync_pool = None
 
     app = FastAPI(
         title="PARIKA Server",

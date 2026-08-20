@@ -33,7 +33,7 @@ from .manifest import (
     CodingOperationSpec,
     create_coding_tool,
 )
-from .storage import CodingIndexStorage
+from .postgresql_storage import PostgreSQLCodingIndexStorage
 
 __all__ = [
     "CODING_OPERATIONS",
@@ -49,6 +49,7 @@ __all__ = [
     "LanguageAnalyzerUnavailableError",
     "PatchGenerationError",
     "UnsupportedLanguageError",
+    "PostgreSQLCodingIndexStorage",
     "create_coding_tool",
     "load_coding_config",
 ]

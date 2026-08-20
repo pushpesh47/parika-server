@@ -12,13 +12,13 @@ from .manifest import (
     KNOWLEDGE_INDEXING_MODULE_ID,
     create_knowledge_indexing_module,
 )
-from .unit_storage import KnowledgeUnitStorage
+from .postgresql_unit_storage import PostgreSQLKnowledgeUnitStorage
 
 __all__ = [
     "CodeKnowledgeEngine",
     "DocumentKnowledgeEngine",
     "KNOWLEDGE_INDEXING_MODULE_ID",
     "KnowledgeIndexingModuleDriver",
-    "KnowledgeUnitStorage",
+    "PostgreSQLKnowledgeUnitStorage",
     "create_knowledge_indexing_module",
 ]

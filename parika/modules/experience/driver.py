@@ -5,7 +5,7 @@ Implements the ModuleDriver contract for the Experience Module.
 
 `ExperienceStore` itself is constructed and initialized directly by
 the composition root (`runtime.py`), *before* `Planner` is constructed
--- exactly like `MemoryManager`/`SqliteKnowledgeStorage` -- because
+-- exactly like `MemoryManager`/`PostgreSQLKnowledgeStorage` -- because
 Planner needs a ready `experience_source` at construction time, and
 Module loading happens later in `build_default_runtime()`. This
 driver's job is therefore narrower than most Module drivers: on

@@ -46,8 +46,7 @@ from parika.core.knowledge_manager.source_kind import KnowledgeSourceKind
 from parika.modules._shared.content_hash import iter_files
 from parika.tools.coding.analyzers.python_ast import PythonAstAnalyzer
 from parika.tools.coding.model import ParsedFile, SymbolKind
-
-from .unit_storage import KnowledgeUnitStorage, build_knowledge_unit
+from .postgresql_unit_storage import PostgreSQLKnowledgeUnitStorage, build_knowledge_unit
 
 _SUPPORTED_KINDS = (
     KnowledgeSourceKind.REPOSITORY,
@@ -63,7 +62,7 @@ class CodeKnowledgeEngine(KnowledgeEngine):
     by import statements, delegating parsing to `PythonAstAnalyzer`.
     """
 
-    def __init__(self, unit_storage: KnowledgeUnitStorage) -> None:
+    def __init__(self, unit_storage: PostgreSQLKnowledgeUnitStorage) -> None:
         self._unit_storage = unit_storage
         self._analyzer = PythonAstAnalyzer()
 

@@ -40,7 +40,7 @@ from parika.tools.coding.analyzers.registry import (
 from parika.tools.coding.config import load_coding_config
 from parika.tools.coding.driver import CodingToolDriver
 from parika.tools.coding.manifest import CODING_OPERATIONS, create_coding_tool
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
 
 MODULE_HEALTH_COMPONENT_ID = "module.coding"
 
@@ -105,7 +105,7 @@ class CodingModuleDriver(ModuleDriver):
         config = load_coding_config(configuration)
         self._enabled = config.enabled
 
-        self._storage = CodingIndexStorage(database_path)
+        self._storage = PostgreSQLCodingIndexStorage(database_path)
         self._registry: LanguageAnalyzerRegistry = LanguageAnalyzerRegistry(
             default_analyzers(
                 formatters=config.formatters,

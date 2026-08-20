@@ -32,11 +32,11 @@ from parika.core.memory_manager.memory_search_query import MemorySearchQuery
 from parika.core.memory_manager.prune_policy import PrunePolicy
 from parika.core.memory_manager.retrieval import rank_candidates
 from parika.core.memory_manager.scored_memory import ScoredMemory
-from parika.core.memory_manager.storage import MemoryStorage
+from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 
 
 def search(
-    storage: MemoryStorage, *, query: MemorySearchQuery, config: MemoryManagerConfig
+    storage: PostgreSQLMemoryStorage, *, query: MemorySearchQuery, config: MemoryManagerConfig
 ) -> tuple[ScoredMemory, ...]:
     """Body of MemoryManager.search()."""
 
@@ -60,7 +60,7 @@ def search(
 
 
 def consolidation_candidates(
-    storage: MemoryStorage, *, policy: ConsolidationPolicy
+    storage: PostgreSQLMemoryStorage, *, policy: ConsolidationPolicy
 ) -> tuple[Memory, ...]:
     """Body of MemoryManager.consolidation_candidates()."""
 
@@ -76,7 +76,7 @@ def consolidation_candidates(
 
 
 def prune(
-    storage: MemoryStorage,
+    storage: PostgreSQLMemoryStorage,
     *,
     policy: PrunePolicy,
     event_bus: EventBus,

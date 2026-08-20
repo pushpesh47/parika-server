@@ -76,7 +76,7 @@ from parika.core.memory_manager.remember import (
     remember as _remember_remember,
 )
 from parika.core.memory_manager.scored_memory import ScoredMemory
-from parika.core.memory_manager.storage import MemoryStorage
+from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 from parika.core.utilities.progress import ProgressReporter
 
 if TYPE_CHECKING:
@@ -97,14 +97,13 @@ class MemoryManager:
         "_storage",
         "_lock",
         "_config",
-        "_database_path",
     )
 
     def __init__(
         self,
         logger: Logger,
         event_bus: EventBus,
-        database_path: Path,
+        storage: PostgreSQLMemoryStorage,
         configuration: "Configuration | None" = None,
     ) -> None:
         """
@@ -118,8 +117,8 @@ class MemoryManager:
         event_bus:
             EventBus used to publish memory events.
 
-        database_path:
-            SQLite database path.
+        storage:
+            PostgreSQL storage implementation.
 
         configuration:
             Optional Configuration used to load retrieval scoring
@@ -138,17 +137,12 @@ class MemoryManager:
                 "event_bus must be of type EventBus."
             )
 
-        if not isinstance(database_path, PurePath):
-            raise TypeError(
-                "database_path must be a pathlib.Path object."
-            )
+        if storage is None:
+            raise TypeError("storage must be provided (PostgreSQLMemoryStorage)")
 
         self._logger = logger.get_logger(__name__)
         self._event_bus: EventBus = event_bus
-        self._database_path: Path = database_path
-        self._storage: MemoryStorage = MemoryStorage(
-            database_path=database_path,
-        )
+        self._storage = storage
         self._lock: RLock = RLock()
         self._config: MemoryManagerConfig = load_memory_manager_config(configuration)
 
@@ -907,7 +901,7 @@ class MemoryManager:
         """Return aggregate statistics over every stored memory."""
 
         with self._lock:
-            return _bulk_stats(self._storage, database_path=self._database_path)
+            return _bulk_stats(self._storage)
 
     def export(self, path: Path) -> int:
         """

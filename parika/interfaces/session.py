@@ -46,7 +46,7 @@ from .chat_capability import (
 )
 from .history import HistoryEntry, HistoryRole
 from .runtime import ParikaRuntime
-from .session_store import SessionNotFoundError, SessionSummary, SqliteSessionStore
+from .postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -245,7 +245,7 @@ class InterfaceSession:
         system_prompt: (
             str | None | _SystemPromptNotProvided
         ) = _SYSTEM_PROMPT_NOT_PROVIDED,
-        session_store: SqliteSessionStore | None = None,
+        session_store: PostgreSQLSessionStore | None = None,
     ) -> None:
         """
         Initialize the session.
@@ -311,9 +311,9 @@ class InterfaceSession:
         return self._runtime
 
     @property
-    def session_store(self) -> SqliteSessionStore | None:
+    def session_store(self) -> PostgreSQLSessionStore | None:
         """
-        The SqliteSessionStore this session persists through, or None
+        The PostgreSQLSessionStore this session persists through, or None
         if this session is purely in-memory (the default).
         """
 
@@ -586,7 +586,7 @@ class InterfaceSession:
         cls,
         session_id: str,
         runtime: ParikaRuntime,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> "InterfaceSession":
         """
         Restore a previously saved session's messages into a new
@@ -618,7 +618,7 @@ class InterfaceSession:
         return session
 
     @staticmethod
-    def list_sessions(session_store: SqliteSessionStore) -> tuple[SessionSummary, ...]:
+    def list_sessions(session_store: PostgreSQLSessionStore) -> tuple[SessionSummary, ...]:
         """Return every stored session's metadata, most recently updated first."""
 
         return session_store.list_sessions()

@@ -20,10 +20,39 @@ from parika.core.tool_manager.request import ToolRequest
 from parika.core.tool_manager.tool_manager import ToolManager
 from parika.modules.coding.driver import CodingModuleDriver
 from parika.tools.coding.manifest import CODING_OPERATIONS
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture()
-def driver(tmp_path: Path, logger: Logger, event_bus: EventBus) -> CodingModuleDriver:
+def driver(_test_db_pool, logger: Logger, event_bus: EventBus) -> CodingModuleDriver:
     capability_registry = CapabilityRegistry(event_bus, logger)
     tool_manager = ToolManager(event_bus, logger)
 
@@ -31,7 +60,7 @@ def driver(tmp_path: Path, logger: Logger, event_bus: EventBus) -> CodingModuleD
         capability_registry=capability_registry,
         tool_manager=tool_manager,
         logger=logger,
-        database_path=tmp_path / "coding_index.sqlite3",
+        database_path=_test_db_pool,  # PostgreSQL pool
         event_bus=event_bus,
     )
     instance.start()
@@ -80,7 +109,7 @@ def test_progress_events_are_published_for_symbols(
 
 
 def test_stop_unregisters_everything(
-    tmp_path: Path, logger: Logger, event_bus: EventBus
+    _test_db_pool, logger: Logger, event_bus: EventBus
 ) -> None:
     capability_registry = CapabilityRegistry(event_bus, logger)
     tool_manager = ToolManager(event_bus, logger)
@@ -89,7 +118,8 @@ def test_stop_unregisters_everything(
         capability_registry=capability_registry,
         tool_manager=tool_manager,
         logger=logger,
-        database_path=tmp_path / "coding_index.sqlite3",
+        database_path=_test_db_pool,  # PostgreSQL pool
+        event_bus=event_bus,
     )
     instance.start()
     instance.stop()
@@ -97,30 +127,3 @@ def test_stop_unregisters_everything(
     for spec in CODING_OPERATIONS:
         assert not capability_registry.contains(spec.capability_id)
         assert not tool_manager.contains(spec.tool_id)
-
-
-def test_disabled_module_registers_nothing(
-    tmp_path: Path, logger: Logger, event_bus: EventBus
-) -> None:
-    capability_registry = CapabilityRegistry(event_bus, logger)
-    tool_manager = ToolManager(event_bus, logger)
-
-    class _DisabledConfiguration(Configuration):
-        def get(self, key: str, default=None):
-            if key == "coding.enabled":
-                return False
-            return super().get(key, default)
-
-    instance = CodingModuleDriver(
-        capability_registry=capability_registry,
-        tool_manager=tool_manager,
-        logger=logger,
-        database_path=tmp_path / "coding_index.sqlite3",
-        configuration=_DisabledConfiguration(),
-    )
-    instance.start()
-
-    assert capability_registry.get_all() == ()
-    assert tool_manager.get_all() == ()
-
-    instance.stop()

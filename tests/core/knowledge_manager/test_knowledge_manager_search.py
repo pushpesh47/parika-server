@@ -30,7 +30,7 @@ from parika.core.knowledge_manager.search_query import SearchQuery
 from parika.core.knowledge_manager.search_result import SearchResult
 from parika.core.knowledge_manager.source_kind import KnowledgeSourceKind
 from parika.core.knowledge_manager.source_status import KnowledgeSourceStatus
-from parika.core.knowledge_manager.sqlite_storage import SqliteKnowledgeStorage
+from parika.core.knowledge_manager.postgresql_storage import PostgreSQLKnowledgeStorage
 from parika.core.knowledge_manager.storage import KnowledgeStorage
 from parika.core.logger.logger import Logger
 
@@ -363,17 +363,47 @@ class TestSearchProgressReporting:
         ]
 
 
-class TestSqliteKnowledgeStorage:
+class TestPostgreSQLKnowledgeStorage:
+    @pytest.fixture(scope="session")
+    def _test_db_pool(self):
+        """Initialize PostgreSQL test pool for the test session."""
+        from parika.core.database.pool import PoolManager
+        import parika.core.database.config as db_config_module
+        from parika.core.database.config import DatabaseConfig
+
+        TEST_DATABASE_CONFIG = {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": 5432,
+            "database": "parika_test",
+            "username": "postgres",
+            "password": "dba",
+            "pool_min_size": 2,
+            "pool_max_size": 10,
+            "connect_timeout": 10.0,
+            "statement_timeout": 0.0,
+            "application_name": "parika_test",
+        }
+        db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+        pool = PoolManager.initialize_sync_pool(db_config)
+        yield pool
+        PoolManager.shutdown_sync_pool()
+
     @pytest.fixture
-    def storage(self, tmp_path: Path) -> Iterator[SqliteKnowledgeStorage]:
-        storage = SqliteKnowledgeStorage(tmp_path / "knowledge.db")
+    def storage(self, _test_db_pool) -> Iterator[PostgreSQLKnowledgeStorage]:
+        storage = PostgreSQLKnowledgeStorage(_test_db_pool)
         storage.initialize()
+        # Clean up before test
+        with _test_db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM core.knowledge_source;")
+                conn.commit()
 
         yield storage
 
         storage.shutdown()
 
-    def test_round_trips_a_source(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_round_trips_a_source(self, storage: PostgreSQLKnowledgeStorage) -> None:
         source = make_source(content_hash="hash-1")
 
         storage.save(source)
@@ -385,7 +415,7 @@ class TestSqliteKnowledgeStorage:
         assert fetched.kind == source.kind
         assert fetched.content_hash == "hash-1"
 
-    def test_contains_count_and_get_all(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_contains_count_and_get_all(self, storage: PostgreSQLKnowledgeStorage) -> None:
         first = make_source(name="first")
         second = make_source(name="second")
 
@@ -396,7 +426,7 @@ class TestSqliteKnowledgeStorage:
         assert storage.count() == 2
         assert {s.id for s in storage.get_all()} == {first.id, second.id}
 
-    def test_update_persists_changes(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_update_persists_changes(self, storage: PostgreSQLKnowledgeStorage) -> None:
         source = make_source()
         storage.save(source)
 
@@ -414,7 +444,7 @@ class TestSqliteKnowledgeStorage:
         assert fetched.status is KnowledgeSourceStatus.DISABLED
         assert fetched.content_hash == "new-hash"
 
-    def test_delete_removes_source(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_delete_removes_source(self, storage: PostgreSQLKnowledgeStorage) -> None:
         source = make_source()
         storage.save(source)
 
@@ -422,7 +452,7 @@ class TestSqliteKnowledgeStorage:
 
         assert storage.contains(source.id) is False
 
-    def test_get_many_filters_by_id(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_get_many_filters_by_id(self, storage: PostgreSQLKnowledgeStorage) -> None:
         first = make_source(name="first")
         second = make_source(name="second")
         storage.save(first)
@@ -433,11 +463,11 @@ class TestSqliteKnowledgeStorage:
         assert {s.id for s in results} == {first.id}
 
     def test_get_many_empty_set_returns_empty(
-        self, storage: SqliteKnowledgeStorage
+        self, storage: PostgreSQLKnowledgeStorage
     ) -> None:
         assert storage.get_many(frozenset()) == ()
 
-    def test_reinitializing_is_idempotent(self, storage: SqliteKnowledgeStorage) -> None:
+    def test_reinitializing_is_idempotent(self, storage: PostgreSQLKnowledgeStorage) -> None:
         source = make_source()
         storage.save(source)
 

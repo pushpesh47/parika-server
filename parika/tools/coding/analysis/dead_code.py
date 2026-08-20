@@ -11,11 +11,11 @@ auto-deleted -- the same "returns candidates, caller decides" shape as
 from __future__ import annotations
 
 from parika.tools.coding.model import DeadCodeCandidate
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
 
 
 def find_dead_code(
-    storage: CodingIndexStorage,
+    storage: PostgreSQLCodingIndexStorage,
     *,
     entry_point_prefixes: tuple[str, ...] = ("__main__", "test_"),
 ) -> tuple[DeadCodeCandidate, ...]:

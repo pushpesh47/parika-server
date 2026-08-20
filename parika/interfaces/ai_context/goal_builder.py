@@ -51,6 +51,7 @@ build/measure a `ChatMessage`/`ToolSpec`.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -59,6 +60,10 @@ from parika.core.capability_resolver.capability_resolution import (
     CapabilityResolution,
 )
 from parika.core.planner.goal import ROUTING_GOAL_METADATA_KEY, Goal
+from parika.core.planner.model_selection.requirements import (
+    CapabilityHint,
+    InformationFreshness,
+)
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_request import ChatRequest
 from parika.core.provider_manager.options import RequestOptions
@@ -78,6 +83,51 @@ Protocol/default implementation Brain's own Context Budgeting already
 uses (`parika.core.brain.context_engine`), reused here rather than
 reimplemented.
 """
+
+# Keywords that indicate a request for current/external information
+_FRESHNESS_KEYWORDS = frozenset({
+    "research", "latest", "current", "recent", "today", "now",
+    "search the web", "look up", "find", "what is the latest",
+    "what happened", "news", "current events", "breaking",
+    "this week", "this month", "this year", "real-time",
+    "live", "up to date", "up-to-date", "current information",
+    "external information", "external source", "web search",
+})
+
+_CAPABILITY_HINT_KEYWORDS = frozenset({
+    "research", "latest", "current", "recent", "today", "now",
+    "search the web", "look up", "find", "what is the latest",
+    "what happened", "news", "current events", "breaking",
+    "this week", "this month", "this year", "real-time",
+    "live", "up to date", "up-to-date", "current information",
+    "external information", "external source", "web search",
+    "news", "headlines", "headline",
+})
+
+
+def _infer_freshness_and_hints(message: str) -> tuple[InformationFreshness, frozenset[CapabilityHint]]:
+    """
+    Infer the InformationFreshness and CapabilityHints from a user message.
+    
+    This is a generic, keyword-based inference that detects requests
+    for current/external information without hardcoding specific topics.
+    """
+    if not message:
+        return InformationFreshness.STATIC, frozenset()
+    
+    # Normalize message for matching
+    normalized = message.lower()
+    
+    # Check for freshness keywords
+    needs_fresh = any(
+        re.search(rf"\b{re.escape(kw)}\b", normalized)
+        for kw in _FRESHNESS_KEYWORDS
+    )
+    
+    if needs_fresh:
+        return InformationFreshness.CURRENT_EVENTS, frozenset({CapabilityHint.LIVE_EXTERNAL_INFORMATION})
+    
+    return InformationFreshness.STATIC, frozenset()
 
 
 def build_chat_goal(
@@ -169,6 +219,14 @@ def build_chat_goal(
 
     if tools:
         execution_requirements["tool_calling"] = "preferred"
+
+    # Infer information freshness and capability hints from the user's message
+    if latest_message is not None:
+        freshness, hints = _infer_freshness_and_hints(latest_message)
+        if freshness != InformationFreshness.STATIC:
+            execution_requirements["information_freshness"] = freshness.value
+        if hints:
+            execution_requirements["capability_hints"] = [h.value for h in hints]
 
     return Goal(
         id=goal_id or uuid4().hex,

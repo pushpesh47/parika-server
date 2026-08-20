@@ -23,7 +23,7 @@ from __future__ import annotations
 from parika.core.router.route import Route
 from parika.core.router.router import Router
 from parika.interfaces.runtime import ParikaRuntime
-from parika.interfaces.session_store import SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 
 from . import requests
 from .handlers import (
@@ -44,7 +44,7 @@ from .handlers import (
 def register_router_bindings(
     router: Router,
     runtime: ParikaRuntime,
-    session_store: SqliteSessionStore,
+    session_store: PostgreSQLSessionStore,
 ) -> None:
     """
     Register every API-layer `Route` on `router`.

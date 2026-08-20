@@ -11,7 +11,7 @@ override.
 
 `runtime_factory`/`app`/`client` are module-scoped: one full
 `ParikaRuntime` (which loads all 14 Modules, ~50 Tools/capabilities,
-and several SQLite-backed stores) is comparatively expensive to
+and PostgreSQL-backed stores) is comparatively expensive to
 construct and tear down. Building one per test *function* (the
 original implementation) multiplied that cost by the number of tests
 and measurably increased total suite wall-clock time and short-lived
@@ -32,30 +32,80 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 from parika.interfaces.runtime import ParikaRuntime, build_default_runtime
 from parika.server.app import create_app
-from parika.tools.expense.storage import ExpenseStorage
 from parika.tools.test_slow import create_test_slow_module
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.tool_manager.tool_manager import ToolManager
 from parika.core.logger.logger import Logger
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+
+
+# Test database configuration - uses a test database
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 1,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+    "sslmode": "disable",
+}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _setup_test_database():
+    """Set up test database configuration for all tests."""
+    # Store original load_database_config
+    import parika.core.database.config as db_config_module
+    original_load = db_config_module.load_database_config
+    
+    from parika.core.database.config import DatabaseConfig
+    
+    def patched_load(configuration):
+        return DatabaseConfig(**TEST_DATABASE_CONFIG)
+    
+    db_config_module.load_database_config = patched_load
+    yield
+    # Restore original function after all tests
+    db_config_module.load_database_config = original_load
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool(_setup_test_database):
+    """Initialize PostgreSQL test pool for the test session."""
+    from parika.core.database.config import DatabaseConfig
+    from parika.core.database.pool import PoolManager
+    
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture(scope="module")
-def runtime_factory(tmp_path_factory):
+def runtime_factory(_test_db_pool, tmp_path_factory):
     data_directory = tmp_path_factory.mktemp("parika-api-data")
 
-    def _factory() -> ParikaRuntime:
+    def _factory(sync_pool=None) -> ParikaRuntime:
+        # Use provided sync_pool or fallback to test pool
+        pool = sync_pool if sync_pool is not None else _test_db_pool
         return build_default_runtime(
             discover_ollama_models=False,
             discover_comfyui_models=False,
             load_modules=True,
             data_directory=data_directory,
+            sync_pool=pool,
         )
 
     return _factory
@@ -82,7 +132,7 @@ def client(app) -> Iterator[TestClient]:
 
 # Concurrency testing fixtures with test_slow module
 @pytest.fixture(scope="module")
-def runtime_factory_with_slow_module(tmp_path_factory):
+def runtime_factory_with_slow_module(_test_db_pool, tmp_path_factory):
     """
     Runtime factory that includes the test_slow module.
     
@@ -98,6 +148,7 @@ def runtime_factory_with_slow_module(tmp_path_factory):
             discover_local_speech_models=False,
             load_modules=True,
             data_directory=data_directory,
+            sync_pool=_test_db_pool,
         )
         
         # Register and load the test slow module
@@ -129,65 +180,28 @@ def client_with_slow_module(app_with_slow_module) -> Iterator[TestClient]:
 
 
 @pytest.fixture(autouse=True)
-def _clear_expense_db(client, tmp_path_factory, request):
+def _clear_expense_db(client, _test_db_pool):
     """Clear the expense database before each test to ensure isolation."""
-    base_temp = tmp_path_factory.getbasetemp()
-    print(f'[CLEANUP] base_temp = {base_temp}')
-    print(f'[CLEANUP] test: {request.node.name}')
-    
-    # The test data directory is created by tmp_path_factory.mktemp("parika-api-data")
-    # which creates a directory like /tmp/pytest-xxx/parika-api-data0
-    # We need to find and clear the expense.sqlite3 in that specific directory
-    found_dir = False
-    for root, dirs, files in os.walk(base_temp):
-        for d in dirs:
-            if 'parika-api-data' in d:
-                data_dir = Path(root) / d
-                print(f'[CLEANUP] Checking data_dir: {data_dir}')
-                found_dir = True
-                db_path = data_dir / "expense.sqlite3"
-                print(f'[CLEANUP] DB path: {db_path}, exists: {db_path.exists()}')
-                if db_path.exists():
-                    storage = ExpenseStorage(db_path)
-                    storage.initialize()
-                    result = storage._connection.execute("DELETE FROM expenses;")
-                    print(f'[CLEANUP] Deleted {result.rowcount} rows from {db_path}')
-                    storage._connection.commit()
-                    storage.shutdown()
-                else:
-                    # Ensure database exists for tests that run before any API request
-                    storage = ExpenseStorage(db_path)
-                    storage.initialize()
-                    storage.shutdown()
-    if not found_dir:
-        print(f'[CLEANUP] No parika-api-data directory found!')
+    from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
+    storage = PostgreSQLExpenseStorage(_test_db_pool)
+    storage.initialize()
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.expense;")
+            conn.commit()
+    storage.shutdown()
     yield
 
 
 @pytest.fixture(autouse=True)
-def _clear_expense_db_with_slow_module(client_with_slow_module, tmp_path_factory, request):
+def _clear_expense_db_with_slow_module(client_with_slow_module, _test_db_pool):
     """Clear the expense database before each test to ensure isolation (for slow module tests)."""
-    base_temp = tmp_path_factory.getbasetemp()
-    
-    # The test data directory is created by tmp_path_factory.mktemp("parika-api-data")
-    found_dir = False
-    for root, dirs, files in os.walk(base_temp):
-        for d in dirs:
-            if 'parika-api-data' in d:
-                data_dir = Path(root) / d
-                found_dir = True
-                db_path = data_dir / "expense.sqlite3"
-                if db_path.exists():
-                    storage = ExpenseStorage(db_path)
-                    storage.initialize()
-                    storage._connection.execute("DELETE FROM expenses;")
-                    storage._connection.commit()
-                    storage.shutdown()
-                else:
-                    # Ensure database exists for tests that run before any API request
-                    storage = ExpenseStorage(db_path)
-                    storage.initialize()
-                    storage.shutdown()
-    if not found_dir:
-        pass  # No parika-api-data directory found
+    from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
+    storage = PostgreSQLExpenseStorage(_test_db_pool)
+    storage.initialize()
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.expense;")
+            conn.commit()
+    storage.shutdown()
     yield

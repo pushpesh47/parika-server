@@ -25,7 +25,7 @@ from parika.core.module_manager.driver import ModuleDriver
 
 from .code_engine import CodeKnowledgeEngine
 from .document_engine import DocumentKnowledgeEngine
-from .unit_storage import KnowledgeUnitStorage
+from .postgresql_unit_storage import PostgreSQLKnowledgeUnitStorage
 
 MODULE_HEALTH_COMPONENT_ID = "module.knowledge_indexing"
 
@@ -46,7 +46,7 @@ class KnowledgeIndexingModuleDriver(ModuleDriver):
         self._knowledge_manager = knowledge_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
-        self._unit_storage = KnowledgeUnitStorage(database_path)
+        self._unit_storage = PostgreSQLKnowledgeUnitStorage(database_path)
         self._document_engine = DocumentKnowledgeEngine(self._unit_storage)
         self._code_engine = CodeKnowledgeEngine(self._unit_storage)
 

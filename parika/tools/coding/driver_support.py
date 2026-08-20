@@ -32,13 +32,13 @@ from parika.tools.coding.model import (
     ProjectSummaryResult,
     Symbol,
 )
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
 
 _ARG_PATTERN = re.compile(r"\(([^)]*)\)")
 
 
 def ensure_indexed(
-    storage: CodingIndexStorage,
+    storage: PostgreSQLCodingIndexStorage,
     registry: LanguageAnalyzerRegistry,
     path: Path,
     *,
@@ -71,7 +71,7 @@ def ensure_indexed(
 
 
 def build_rename_edits(
-    storage: CodingIndexStorage, qualified_name: str, new_name: str
+    storage: PostgreSQLCodingIndexStorage, qualified_name: str, new_name: str
 ) -> tuple[Symbol, list[dict[str, object]]]:
     symbol = storage.find_symbol(qualified_name)
     references = storage.references_to(qualified_name)
@@ -166,7 +166,7 @@ def compute_complexity_for_path(path: Path, language: str) -> tuple[ComplexityRe
 
 
 def compute_duplicates_for_paths(
-    storage: CodingIndexStorage,
+    storage: PostgreSQLCodingIndexStorage,
     paths: list[Path],
     *,
     similarity_threshold: float,
@@ -187,12 +187,12 @@ def compute_duplicates_for_paths(
     )
 
 
-def compute_dead_code(storage: CodingIndexStorage) -> tuple[DeadCodeCandidate, ...]:
+def compute_dead_code(storage: PostgreSQLCodingIndexStorage) -> tuple[DeadCodeCandidate, ...]:
     return find_dead_code(storage)
 
 
 def build_project_summary(
-    storage: CodingIndexStorage, root: str
+    storage: PostgreSQLCodingIndexStorage, root: str
 ) -> ProjectSummaryResult:
     file_count, symbol_count, languages = storage.summary_for_prefix(root)
 

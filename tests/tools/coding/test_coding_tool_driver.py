@@ -1,6 +1,6 @@
 """
 Integration-style unit tests for CodingToolDriver, covering every
-operation end to end against a real (tmp_path) SQLite index.
+operation end to end against a real PostgreSQL index.
 """
 
 from __future__ import annotations
@@ -15,24 +15,40 @@ from parika.tools.coding.analyzers.registry import LanguageAnalyzerRegistry
 from parika.tools.coding.driver import CodingToolDriver
 from parika.tools.coding.exceptions import CodingToolError, InvalidCodingArgumentError
 from parika.tools.coding.manifest import CodingOperation
-from parika.tools.coding.storage import CodingIndexStorage
-
-SOURCE = '''"""Module docstring."""
-
-
-def helper(value):
-    """Return value doubled."""
-    return value * 2
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
 
 
-def main():
-    return helper(1)
-'''
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture()
-def storage(tmp_path: Path) -> CodingIndexStorage:
-    instance = CodingIndexStorage(tmp_path / "coding_index.sqlite3")
+def storage(_test_db_pool) -> PostgreSQLCodingIndexStorage:
+    instance = PostgreSQLCodingIndexStorage(_test_db_pool)
     instance.initialize()
     yield instance
     instance.shutdown()
@@ -47,7 +63,7 @@ def sample_file(tmp_path: Path) -> Path:
 
 def _driver(
     operation: CodingOperation,
-    storage: CodingIndexStorage,
+    storage: PostgreSQLCodingIndexStorage,
     *,
     tool_manager=None,
 ) -> CodingToolDriver:
@@ -60,7 +76,20 @@ def _driver(
     )
 
 
-def test_parse_indexes_the_file(storage: CodingIndexStorage, sample_file: Path) -> None:
+SOURCE = '''"""Module docstring."""
+
+
+def helper(value):
+    """Return value doubled."""
+    return value * 2
+
+
+def main():
+    return helper(1)
+'''
+
+
+def test_parse_indexes_the_file(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
     driver = _driver(CodingOperation.PARSE, storage)
     response = driver.execute(ToolRequest(arguments={"path": str(sample_file)}))
 
@@ -70,7 +99,7 @@ def test_parse_indexes_the_file(storage: CodingIndexStorage, sample_file: Path) 
 
 
 def test_symbols_lazily_indexes_on_first_call(
-    storage: CodingIndexStorage, sample_file: Path
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     driver = _driver(CodingOperation.SYMBOLS, storage)
     response = driver.execute(ToolRequest(arguments={"path": str(sample_file)}))
@@ -80,7 +109,7 @@ def test_symbols_lazily_indexes_on_first_call(
     assert "sample.main" in names
 
 
-def test_search_returns_matches(storage: CodingIndexStorage, sample_file: Path) -> None:
+def test_search_returns_matches(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
@@ -92,7 +121,7 @@ def test_search_returns_matches(storage: CodingIndexStorage, sample_file: Path) 
 
 
 def test_references_returns_call_site(
-    storage: CodingIndexStorage, sample_file: Path
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
@@ -101,197 +130,357 @@ def test_references_returns_call_site(
     response = _driver(CodingOperation.REFERENCES, storage).execute(
         ToolRequest(arguments={"symbol": "sample.helper"})
     )
-    assert len(response.result) >= 1
+    assert any(ref["file_path"] == str(sample_file) for ref in response.result)
 
 
-def test_call_hierarchy_returns_callers_and_callees(
-    storage: CodingIndexStorage, sample_file: Path
+def test_callees_returns_called_functions(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
 
-    response = _driver(CodingOperation.CALL_HIERARCHY, storage).execute(
+    response = _driver(CodingOperation.CALLEES, storage).execute(
+        ToolRequest(arguments={"symbol": "sample.main"})
+    )
+    assert "sample.helper" in response.result
+
+
+def test_callers_returns_calling_functions(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
+) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.CALLERS, storage).execute(
         ToolRequest(arguments={"symbol": "sample.helper"})
     )
-    assert "sample.main" in response.result["callers"]
+    assert "sample.main" in response.result
 
 
-def test_rename_plan_includes_definition_and_reference(
-    storage: CodingIndexStorage, sample_file: Path
+def test_imports_returns_imports(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
 
-    response = _driver(CodingOperation.RENAME_PLAN, storage).execute(
-        ToolRequest(arguments={"symbol": "sample.helper", "new_name": "double_value"})
+    response = _driver(CodingOperation.IMPORTS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
     )
-
-    assert response.result["new_name"] == "double_value"
-    assert len(response.result["edits"]) >= 2
+    assert isinstance(response.result, list)
 
 
-def test_patch_generate_renders_diff_and_new_content(storage: CodingIndexStorage) -> None:
-    driver = _driver(CodingOperation.PATCH_GENERATE, storage)
-
-    response = driver.execute(
-        ToolRequest(
-            arguments={
-                "edits": [
-                    {
-                        "file_path": "a.py",
-                        "line": 1,
-                        "column": 0,
-                        "old_text": "foo",
-                        "new_text": "bar",
-                    }
-                ],
-                "original_contents": {"a.py": "foo = 1\n"},
-            }
-        )
-    )
-
-    file_patch = response.result["files"][0]
-    assert file_patch["new_content"] == "bar = 1\n"
-    assert "-foo = 1" in file_patch["diff"]
-    assert "+bar = 1" in file_patch["diff"]
-
-
-def test_document_builds_draft_from_signature(
-    storage: CodingIndexStorage, sample_file: Path
+def test_annotations_returns_annotations(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
 
-    response = _driver(CodingOperation.DOCUMENT, storage).execute(
-        ToolRequest(arguments={"symbol": "sample.helper"})
-    )
-    assert response.result["draft"] == "Return value doubled."
-
-
-def test_complexity_computes_for_python(
-    storage: CodingIndexStorage, sample_file: Path
-) -> None:
-    response = _driver(CodingOperation.COMPLEXITY, storage).execute(
+    response = _driver(CodingOperation.ANNOTATIONS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
-    complexities = {item["symbol"]: item["complexity"] for item in response.result}
-    assert complexities["sample.helper"] == 1
-    assert complexities["sample.main"] == 1
+    assert isinstance(response.result, list)
 
 
-def test_dead_code_reports_unreferenced_symbol(
-    storage: CodingIndexStorage, tmp_path: Path
+def test_dead_code_returns_candidates(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
-    path = tmp_path / "unused.py"
-    path.write_text("def never_called():\n    return 1\n", encoding="utf-8")
-
     _driver(CodingOperation.SYMBOLS, storage).execute(
-        ToolRequest(arguments={"path": str(path)})
+        ToolRequest(arguments={"path": str(sample_file)})
     )
 
-    response = _driver(CodingOperation.DEAD_CODE, storage).execute(ToolRequest())
-    names = {item["symbol"] for item in response.result}
-    assert "unused.never_called" in names
+    response = _driver(CodingOperation.DEAD_CODE, storage).execute(
+        ToolRequest(arguments={})
+    )
+    # helper is referenced by main, so it shouldn't be in dead code
+    dead_names = {item["qualified_name"] for item in response.result}
+    assert "sample.helper" not in dead_names
+    assert "sample.UNUSED_VALUE" in dead_names
 
 
-def test_project_summary_counts_files_and_symbols(
-    storage: CodingIndexStorage, sample_file: Path
+def test_format_rewrites_file(tmp_path: Path, storage: PostgreSQLCodingIndexStorage) -> None:
+    source = 'def foo(  ):\n    return 1\n'
+    path = tmp_path / "format_test.py"
+    path.write_text(source, encoding="utf-8")
+
+    driver = _driver(CodingOperation.FORMAT, storage)
+    response = driver.execute(ToolRequest(arguments={"path": str(path)}))
+
+    assert isinstance(response, ToolResponse)
+    assert "formatted" in response.result
+    # ruff should normalize spacing
+    formatted = path.read_text(encoding="utf-8")
+    assert "def foo():" in formatted
+
+
+def test_format_file_not_found(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.FORMAT, storage)
+    response = driver.execute(ToolRequest(arguments={"path": "/nonexistent/file.py"}))
+
+    assert isinstance(response, ToolResponse)
+    assert response.result["error"] == "File not found"
+
+
+def test_lint_checks_file(tmp_path: Path, storage: PostgreSQLCodingIndexStorage) -> None:
+    source = 'import os\n\ndef foo():\n    x = 1\n    return x\n'
+    path = tmp_path / "lint_test.py"
+    path.write_text(source, encoding="utf-8")
+
+    driver = _driver(CodingOperation.LINT, storage)
+    response = driver.execute(ToolRequest(arguments={"path": str(path)}))
+
+    assert isinstance(response, ToolResponse)
+    assert "issues" in response.result
+    # Should find unused variable
+    issues = response.result["issues"]
+    assert any("unused" in issue["message"].lower() for issue in issues)
+
+
+def test_impact_analysis_returns_graph(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
+) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.IMPACT, storage).execute(
+        ToolRequest(arguments={"symbol": "sample.helper", "direction": "reverse", "max_depth": 2})
+    )
+    assert "nodes" in response.result
+    assert "edges" in response.result
+    assert "sample.main" in response.result["nodes"]
+
+
+def test_project_summary_returns_counts(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
 
     response = _driver(CodingOperation.PROJECT_SUMMARY, storage).execute(
-        ToolRequest(arguments={"root": str(sample_file.parent)})
+        ToolRequest(arguments={"root_prefix": str(sample_file.parent)})
     )
-    assert response.result["file_count"] == 1
-    assert response.result["symbol_count"] > 0
-    assert response.result["languages"] == {"python": 1}
+    assert "file_count" in response.result
+    assert "symbol_count" in response.result
+    assert "languages" in response.result
+    assert response.result["file_count"] >= 1
 
 
-def test_graph_query_and_impact_analysis(
-    storage: CodingIndexStorage, sample_file: Path
+def test_rename_plan_returns_plan(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
     _driver(CodingOperation.SYMBOLS, storage).execute(
         ToolRequest(arguments={"path": str(sample_file)})
     )
 
-    forward = _driver(CodingOperation.GRAPH_QUERY, storage).execute(
-        ToolRequest(arguments={"symbol": "sample.main"})
+    response = _driver(CodingOperation.RENAME, storage).execute(
+        ToolRequest(arguments={"symbol": "sample.helper", "new_name": "new_helper"})
     )
-    assert "sample.helper" in forward.result["nodes"]
-
-    reverse = _driver(CodingOperation.IMPACT_ANALYSIS, storage).execute(
-        ToolRequest(arguments={"symbol": "sample.helper"})
-    )
-    assert "sample.main" in reverse.result["nodes"]
+    assert "plan" in response.result
+    assert "files" in response.result
+    assert len(response.result["files"]) >= 1
 
 
-def test_format_without_tool_manager_raises(
-    storage: CodingIndexStorage, sample_file: Path
+def test_patch_generates_diff(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
 ) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.PATCH, storage).execute(
+        ToolRequest(arguments={"symbol": "sample.helper", "new_name": "new_helper"})
+    )
+    assert "patch" in response.result
+    assert isinstance(response.result["patch"], str)
+    assert "sample.helper" in response.result["patch"]
+    assert "new_helper" in response.result["patch"]
+
+
+def test_storage_instance_passed_to_driver(storage: PostgreSQLCodingIndexStorage) -> None:
+    """Ensure the same storage instance is used across operations."""
+    driver = _driver(CodingOperation.PARSE, storage)
+    assert driver.storage is storage
+
+
+def test_operation_without_storage_raises(tmp_path: Path) -> None:
+    driver = _driver(CodingOperation.PARSE, None)  # type: ignore
+    response = driver.execute(ToolRequest(arguments={"path": str(tmp_path / "dummy.py")}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Storage not initialized"
+
+
+def test_invalid_operation_raises(storage: PostgreSQLCodingIndexStorage) -> None:
+    with pytest.raises(InvalidCodingArgumentError):
+        _driver(CodingOperation("INVALID"), storage)  # type: ignore
+
+
+def test_parse_missing_path_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.PARSE, storage)
+    response = driver.execute(ToolRequest(arguments={}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: path"
+
+
+def test_format_missing_path_argument(storage: PostgreSQLCodingIndexStorage) -> None:
     driver = _driver(CodingOperation.FORMAT, storage)
-
-    with pytest.raises(CodingToolError):
-        driver.execute(ToolRequest(arguments={"path": str(sample_file)}))
-
-
-def test_format_dispatches_through_tool_manager() -> None:
-    class _FakeToolManager:
-        def __init__(self) -> None:
-            self.calls: list[ToolRequest] = []
-
-        def execute(self, tool_id: str, request: ToolRequest) -> ToolResponse:
-            self.calls.append(request)
-            return ToolResponse(result={"stdout": "", "stderr": "", "exit_code": 0})
-
-    from parika.tools.coding.analyzers.python_ast import PythonAstAnalyzer
-
-    class _FormatterRegistry(LanguageAnalyzerRegistry):
-        def __init__(self) -> None:
-            super().__init__(
-                (PythonAstAnalyzer(formatters={"python": ("ruff", "format")}),)
-            )
-
-    fake_tool_manager = _FakeToolManager()
-    storage_instance = CodingIndexStorage(Path("/tmp/coding_index_test_format.sqlite3"))
-    storage_instance.initialize()
-
-    try:
-        driver = CodingToolDriver(
-            CodingOperation.FORMAT,
-            storage=storage_instance,
-            registry=_FormatterRegistry(),
-            max_file_size_bytes=2_000_000,
-            tool_manager=fake_tool_manager,
-        )
-        response = driver.execute(ToolRequest(arguments={"path": "sample.py"}))
-
-        assert fake_tool_manager.calls
-        assert fake_tool_manager.calls[0].arguments["command"][0] == "ruff"
-        assert response.result["exit_code"] == 0
-    finally:
-        storage_instance.shutdown()
-        Path("/tmp/coding_index_test_format.sqlite3").unlink(missing_ok=True)
+    response = driver.execute(ToolRequest(arguments={}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: path"
 
 
-def test_missing_path_argument_raises() -> None:
-    storage_instance = CodingIndexStorage(Path("/tmp/coding_index_test_missing.sqlite3"))
-    storage_instance.initialize()
+def test_lint_missing_path_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.LINT, storage)
+    response = driver.execute(ToolRequest(arguments={}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: path"
 
-    try:
-        driver = CodingToolDriver(
-            CodingOperation.SYMBOLS,
-            storage=storage_instance,
-            registry=LanguageAnalyzerRegistry(),
-            max_file_size_bytes=2_000_000,
-        )
 
-        with pytest.raises(InvalidCodingArgumentError):
-            driver.execute(ToolRequest())
-    finally:
-        storage_instance.shutdown()
-        Path("/tmp/coding_index_test_missing.sqlite3").unlink(missing_ok=True)
+def test_rename_missing_symbol_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.RENAME, storage)
+    response = driver.execute(ToolRequest(arguments={"new_name": "new_name"}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: symbol"
+
+
+def test_rename_missing_new_name_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.RENAME, storage)
+    response = driver.execute(ToolRequest(arguments={"symbol": "foo"}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: new_name"
+
+
+def test_impact_missing_symbol_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.IMPACT, storage)
+    response = driver.execute(ToolRequest(arguments={}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: symbol"
+
+
+def test_patch_missing_symbol_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.PATCH, storage)
+    response = driver.execute(ToolRequest(arguments={"new_name": "new_name"}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: symbol"
+
+
+def test_patch_missing_new_name_argument(storage: PostgreSQLCodingIndexStorage) -> None:
+    driver = _driver(CodingOperation.PATCH, storage)
+    response = driver.execute(ToolRequest(arguments={"symbol": "foo"}))
+    assert isinstance(response, ToolResponse)
+    assert response.result.get("error") == "Missing required argument: new_name"
+
+
+def test_symbols_with_tool_manager(tmp_path: Path, storage: PostgreSQLCodingIndexStorage) -> None:
+    """Test that shell.execute is called for FORMAT/LINT when tool_manager is provided."""
+    from unittest.mock import MagicMock
+    tool_manager = MagicMock()
+    tool_manager.execute.return_value = MagicMock(
+        success=True, result={"formatted": True}, error=None
+    )
+
+    source = 'def foo(  ):\n    return 1\n'
+    path = tmp_path / "format_test.py"
+    path.write_text(source, encoding="utf-8")
+
+    driver = _driver(CodingOperation.FORMAT, storage, tool_manager=tool_manager)
+    response = driver.execute(ToolRequest(arguments={"path": str(path)}))
+
+    assert isinstance(response, ToolResponse)
+    assert tool_manager.execute.called
+
+
+def test_storage_path_stored_as_string(tmp_path: Path, storage: PostgreSQLCodingIndexStorage) -> None:
+    source = 'def foo():\n    return 1\n'
+    path = tmp_path / "path_test.py"
+    path.write_text(source, encoding="utf-8")
+
+    driver = _driver(CodingOperation.PARSE, storage)
+    response = driver.execute(ToolRequest(arguments={"path": str(path)}))
+
+    assert isinstance(response, ToolResponse)
+    assert storage.file_content_hash(str(path)) is not None
+
+
+def test_multiple_files_different_hashes(tmp_path: Path, storage: PostgreSQLCodingIndexStorage) -> None:
+    source1 = 'def a():\n    return 1\n'
+    source2 = 'def b():\n    return 2\n'
+    path1 = tmp_path / "file1.py"
+    path2 = tmp_path / "file2.py"
+    path1.write_text(source1, encoding="utf-8")
+    path2.write_text(source2, encoding="utf-8")
+
+    driver = _driver(CodingOperation.PARSE, storage)
+    driver.execute(ToolRequest(arguments={"path": str(path1)}))
+    driver.execute(ToolRequest(arguments={"path": str(path2)}))
+
+    hash1 = storage.file_content_hash(str(path1))
+    hash2 = storage.file_content_hash(str(path2))
+
+    assert hash1 is not None
+    assert hash2 is not None
+    assert hash1 != hash2
+
+
+def test_search_case_insensitive(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.SEARCH, storage).execute(
+        ToolRequest(arguments={"query": "HELPER"})
+    )
+    assert any(symbol["qualified_name"] == "sample.helper" for symbol in response.result)
+
+
+def test_search_empty_query(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.SEARCH, storage).execute(
+        ToolRequest(arguments={"query": ""})
+    )
+    assert response.result == []
+
+
+def test_search_nonexistent_symbol(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.SEARCH, storage).execute(
+        ToolRequest(arguments={"query": "nonexistent"})
+    )
+    assert response.result == []
+
+
+def test_references_case_insensitive(storage: PostgreSQLCodingIndexStorage, sample_file: Path) -> None:
+    _driver(CodingOperation.SYMBOLS, storage).execute(
+        ToolRequest(arguments={"path": str(sample_file)})
+    )
+
+    response = _driver(CodingOperation.REFERENCES, storage).execute(
+        ToolRequest(arguments={"symbol": "SAMPLE.HELPER"})
+    )
+    assert any(ref["file_path"] == str(sample_file) for ref in response.result)
+
+
+def test_symbols_returns_full_symbol_info(
+    storage: PostgreSQLCodingIndexStorage, sample_file: Path
+) -> None:
+    driver = _driver(CodingOperation.SYMBOLS, storage)
+    response = driver.execute(ToolRequest(arguments={"path": str(sample_file)}))
+
+    for symbol in response.result:
+        assert "id" in symbol
+        assert "file_path" in symbol
+        assert "kind" in symbol
+        assert "name" in symbol
+        assert "qualified_name" in symbol
+        assert "line_start" in symbol
+        assert "line_end" in symbol

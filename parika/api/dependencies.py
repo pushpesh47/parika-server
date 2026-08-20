@@ -15,24 +15,18 @@ submitting work through the `CoreExecutionOwner` returned by
 `get_core_execution_owner()` below, never by touching `ParikaRuntime`
 directly (see `docs/development/Integration_Checklist.md` section 11).
 
-API-owned Expense dependencies:
-These create independent ExpenseService/ExpenseStorage instances with
-their own SQLite connections for the direct Expense API path, which
-must not go through CoreExecutionOwner.
-
-API-owned Weather dependencies:
-These create independent WeatherService/WeatherCache instances for the
-direct Weather API path, which must not go through CoreExecutionOwner.
+API-owned Expense/Weather dependencies:
+These use the PostgreSQL async pool.
 """
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import AsyncGenerator, Generator
 
 from fastapi import Request
 
 from parika.core.configuration.configuration import Configuration
+from parika.core.database.pool import PoolManager
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.execution.owner import CoreExecutionOwner
 from parika.core.logger.logger import Logger
@@ -40,8 +34,8 @@ from parika.interfaces.runtime import ParikaRuntime
 
 from parika.tools.expense.config import load_expense_config
 from parika.tools.expense.service import ExpenseService
-from parika.tools.expense.storage import ExpenseStorage
-from parika.tools.weather.cache import WeatherCache
+from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
+from parika.tools.weather.postgresql_cache import PostgreSQLWeatherCache
 from parika.tools.weather.service import WeatherService
 
 
@@ -85,12 +79,7 @@ def get_expense_service(request: Request) -> Generator[ExpenseService, None, Non
     """
     FastAPI generator dependency for API-owned ExpenseService.
 
-    Creates a NEW ExpenseStorage with its own SQLite connection,
-    initializes it, creates an ExpenseService, yields it to the
-    request handler, then shuts down the storage after the request.
-
-    This is independent of the Core-owned ExpenseService and does
-    not go through CoreExecutionOwner.
+    Uses PostgreSQL sync pool.
     """
     # Get database path from configuration
     # Use the runtime's configuration which has the correct data_directory (for tests)
@@ -101,16 +90,17 @@ def get_expense_service(request: Request) -> Generator[ExpenseService, None, Non
         configuration = Configuration()
         configuration.load()
     
-    # Use the runtime's data_directory override if available
-    data_directory = getattr(configuration, "_data_directory_override", None)
-    if data_directory is not None:
-        data_directory = Path(data_directory)
-    else:
-        data_directory = configuration.get_project_root() / configuration.get("data.directory", "data")
-    database_path = data_directory / "expense.sqlite3"
-
-    # Create API-owned storage and service
-    storage = ExpenseStorage(database_path=database_path)
+    # Get sync pool from app state
+    sync_pool = getattr(request.app.state, "sync_pool", None)
+    if sync_pool is None:
+        # Try to get from PoolManager
+        try:
+            sync_pool = PoolManager.get_sync_pool()
+        except RuntimeError:
+            raise RuntimeError("PostgreSQL sync pool not initialized")
+    
+    # Use PostgreSQL
+    storage = PostgreSQLExpenseStorage(sync_pool)
     storage.initialize()
 
     event_bus = EventBus(Logger(configuration))

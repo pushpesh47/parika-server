@@ -50,7 +50,7 @@ from parika.modules.repository_intelligence.workspace.workspace_model import (
 )
 from parika.tools.coding.analyzers.registry import LanguageAnalyzerRegistry
 from parika.tools.coding.driver_support import ensure_indexed
-from parika.tools.coding.storage import CodingIndexStorage
+from parika.tools.coding.postgresql_storage import PostgreSQLCodingIndexStorage
 
 _SUPPORTED_KINDS = (
     KnowledgeSourceKind.REPOSITORY,
@@ -74,7 +74,7 @@ class RepositoryKnowledgeEngine(KnowledgeEngine):
     def __init__(
         self,
         *,
-        coding_storage: CodingIndexStorage,
+        coding_storage: PostgreSQLCodingIndexStorage,
         analyzer_registry: LanguageAnalyzerRegistry,
         knowledge_manager: KnowledgeManager,
         max_file_size_bytes: int,

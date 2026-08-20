@@ -15,7 +15,7 @@ PARIKA has three distinct knowledge sources for a chat turn:
    (see `parika.tools.memory.intent`), retrieved automatically via
    Context Assembly (`Brain.assemble_context()`).
 3. Saved Sessions -- archived past conversations, persisted by
-   `SqliteSessionStore` (already used by the CLI's `/sessions search`)
+   `PostgreSQLSessionStore` (already used by the CLI's `/sessions search`)
    but previously unreachable from natural language at all.
 
 This module recognizes source (3): explicit asks to search/recall

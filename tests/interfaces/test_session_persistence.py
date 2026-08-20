@@ -16,7 +16,34 @@ import pytest
 
 from parika.interfaces.runtime import build_default_runtime, shutdown_runtime
 from parika.interfaces.session import InterfaceSession
-from parika.interfaces.session_store import SessionNotFoundError, SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import DatabaseConfig
+
+
+# Test database configuration
+TEST_DATABASE_CONFIG = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "parika_test",
+    "username": "postgres",
+    "password": "dba",
+    "pool_min_size": 2,
+    "pool_max_size": 10,
+    "connect_timeout": 10.0,
+    "statement_timeout": 0.0,
+    "application_name": "parika_test",
+}
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(db_config)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 class _ScriptedOllamaTransport:
@@ -49,22 +76,38 @@ def transport() -> _ScriptedOllamaTransport:
 
 
 @pytest.fixture
-def runtime(transport: _ScriptedOllamaTransport, tmp_path):
+def runtime(transport: _ScriptedOllamaTransport, tmp_path, _test_db_pool):
     runtime = build_default_runtime(
-        ollama_transport=transport, data_directory=tmp_path / "data"
+        ollama_transport=transport, data_directory=tmp_path / "data", sync_pool=_test_db_pool
     )
     yield runtime
     shutdown_runtime(runtime)
 
 
 @pytest.fixture
-def session_store(tmp_path: Path) -> Iterator[SqliteSessionStore]:
-    store = SqliteSessionStore(tmp_path / "sessions.db")
+def session_store(_test_db_pool) -> Iterator[PostgreSQLSessionStore]:
+    store = PostgreSQLSessionStore(_test_db_pool)
     store.initialize()
+    # Clean up before each test
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.session_message;")
+            cur.execute("DELETE FROM core.session;")
+            conn.commit()
 
     yield store
 
     store.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _clear_memory_db(_test_db_pool):
+    """Clear the memory database before each test to ensure isolation."""
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.memory;")
+            conn.commit()
+    yield
 
 
 def _simple_answer(text: str) -> dict[str, Any]:
@@ -80,7 +123,7 @@ class TestSessionStorePersistence:
         session.save()
 
     def test_construction_ensures_session_row(
-        self, runtime, session_store: SqliteSessionStore
+        self, runtime, session_store: PostgreSQLSessionStore
     ) -> None:
         session = InterfaceSession(
             runtime, system_prompt=None, session_store=session_store
@@ -89,7 +132,7 @@ class TestSessionStorePersistence:
         assert session_store.get_session(session.id) is not None
 
     def test_submit_text_persists_user_and_assistant_turns(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Hi there."))
 
@@ -107,7 +150,7 @@ class TestSessionStorePersistence:
 
 class TestSave:
     def test_derives_title_from_first_user_message(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Hi there."))
 
@@ -122,7 +165,7 @@ class TestSave:
         assert summary.title == "What is the weather like today?"
 
     def test_does_not_overwrite_existing_title(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Hi there."))
 
@@ -139,7 +182,7 @@ class TestSave:
         assert summary.title == "Custom Title"
 
     def test_does_not_record_implicit_preferences_as_memory(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         """
         Ordinary conversational statements -- even ones that state a
@@ -163,7 +206,7 @@ class TestSave:
         assert runtime.memory_manager.count() == 0
 
     def test_save_is_idempotent_and_creates_no_memory(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Noted."))
 
@@ -178,12 +221,12 @@ class TestSave:
 
 
 class TestLoad:
-    def test_raises_when_session_missing(self, runtime, session_store: SqliteSessionStore) -> None:
+    def test_raises_when_session_missing(self, runtime, session_store: PostgreSQLSessionStore) -> None:
         with pytest.raises(SessionNotFoundError):
             InterfaceSession.load("missing", runtime, session_store)
 
     def test_restores_conversation_history(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Hi there."))
 
@@ -197,7 +240,7 @@ class TestLoad:
         assert [e.text for e in restored.history()] == ["hello", "Hi there."]
 
     def test_restored_messages_are_fed_back_to_the_model(
-        self, runtime, transport: _ScriptedOllamaTransport, session_store: SqliteSessionStore
+        self, runtime, transport: _ScriptedOllamaTransport, session_store: PostgreSQLSessionStore
     ) -> None:
         transport.queue_chat_response(_simple_answer("Hi there."))
 
@@ -228,7 +271,7 @@ class TestSessionRetrieval:
         self,
         runtime,
         transport: _ScriptedOllamaTransport,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> None:
         transport.queue_chat_response(_simple_answer("Noted."))
 
@@ -258,7 +301,7 @@ class TestSessionRetrieval:
         self,
         runtime,
         transport: _ScriptedOllamaTransport,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> None:
         transport.queue_chat_response(_simple_answer("Noted."))
 
@@ -280,7 +323,7 @@ class TestSessionRetrieval:
         self,
         runtime,
         transport: _ScriptedOllamaTransport,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> None:
         """
         The current turn's own user message is already persisted to
@@ -312,7 +355,7 @@ class TestSessionRetrieval:
         self,
         runtime,
         transport: _ScriptedOllamaTransport,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> None:
         """
         Bug #8 (performance): normal questions must not trigger
@@ -337,7 +380,7 @@ class TestSessionRetrieval:
         self,
         runtime,
         transport: _ScriptedOllamaTransport,
-        session_store: SqliteSessionStore,
+        session_store: PostgreSQLSessionStore,
     ) -> None:
         """Bug #5: a question about *this* conversation is not a session-search request."""
 
@@ -372,7 +415,7 @@ class TestSessionRetrieval:
 
 class TestListSessions:
     def test_lists_every_saved_session(
-        self, runtime, session_store: SqliteSessionStore
+        self, runtime, session_store: PostgreSQLSessionStore
     ) -> None:
         InterfaceSession(runtime, system_prompt=None, session_store=session_store)
         InterfaceSession(runtime, system_prompt=None, session_store=session_store)

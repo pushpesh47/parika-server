@@ -41,11 +41,12 @@ from parika.core.capability_resolver.capability_resolver import (
     CapabilityResolver,
 )
 from parika.core.configuration.configuration import Configuration
+from parika.core.database.config import load_database_config
+from parika.core.database.pool import PoolManager
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.health_manager.health_manager import HealthManager
 from parika.core.knowledge_manager.knowledge_manager import KnowledgeManager
 from parika.core.knowledge_manager.registry import KnowledgeEngineRegistry
-from parika.core.knowledge_manager.sqlite_storage import SqliteKnowledgeStorage
 from parika.core.logger.logger import Logger
 from parika.core.memory_manager.memory_manager import MemoryManager
 from parika.core.metrics_manager.metrics_manager import MetricsManager
@@ -89,7 +90,7 @@ from parika.modules.expense.manifest import (
 )
 from parika.tools.expense.config import load_expense_config
 from parika.tools.expense.service import ExpenseService
-from parika.tools.expense.storage import ExpenseStorage
+from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
 from parika.modules.filesystem.driver import FilesystemModuleDriver
 from parika.modules.filesystem.manifest import (
     FILESYSTEM_MODULE_ID,
@@ -267,6 +268,7 @@ def build_default_runtime(
     discover_local_speech_models: bool = True,
     data_directory: Path | None = None,
     workspace_permission_prompt: WorkspacePermissionPrompt | None = None,
+    sync_pool=None,  # PostgreSQL sync pool from CoreExecutionOwner
 ) -> ParikaRuntime:
     """
     Construct the default PARIKA runtime.
@@ -339,6 +341,11 @@ def build_default_runtime(
             `None`, every request outside a trusted workspace fails
             closed (denied) rather than blocking.
 
+        sync_pool:
+            Optional PostgreSQL sync connection pool from CoreExecutionOwner.
+            If provided, PostgreSQL storage implementations will use this pool.
+            If not provided, falls back to SQLite.
+
     Returns:
         A fully wired `ParikaRuntime`.
     """
@@ -355,6 +362,36 @@ def build_default_runtime(
     # Store data_directory override in configuration for API dependency to use
     if data_directory is not None:
         configuration._data_directory_override = str(resolved_data_directory)
+
+    # Load database configuration
+    db_config = load_database_config(configuration)
+    
+    # PostgreSQL is required
+    if not db_config.enabled:
+        raise RuntimeError("PostgreSQL is required but database.enabled is false in configuration")
+    if sync_pool is None:
+        # Create a default test pool for tests that don't provide one
+        from parika.core.database.config import DatabaseConfig
+        from parika.core.database.pool import PoolManager
+        test_db_config = DatabaseConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=5432,
+            database="parika_test",
+            username="postgres",
+            password="dba",
+            pool_min_size=1,
+            pool_max_size=10,
+            connect_timeout=10.0,
+            statement_timeout=0.0,
+            application_name="parika_test",
+            sslmode="disable",
+        )
+        sync_pool = PoolManager.initialize_sync_pool(test_db_config)
+        # Mark that we own this pool so we can clean it up
+        _owns_sync_pool = True
+    else:
+        _owns_sync_pool = False
 
     logger = Logger(configuration)
     event_bus = EventBus(logger)
@@ -394,6 +431,7 @@ def build_default_runtime(
             event_bus=event_bus,
             logger=logger,
             data_directory=resolved_data_directory,
+            sync_pool=sync_pool,
         )
     )
 
@@ -405,16 +443,14 @@ def build_default_runtime(
         logger=logger,
     )
     # Expense Management's `ExpenseService` (and the `ExpenseStorage`/
-    # SQLite connection it owns) is constructed here, at the
+    # PostgreSQL connection it owns) is constructed here, at the
     # composition root, for the same reason `tts_operation_registry`
     # below is: it is shared between `ExpenseModuleDriver`'s Tools
     # (the natural-language/Planner path) and the direct
     # `/api/v1/expenses...` handlers (the Web Client's structured CRUD
     # path) via `ServiceContainer` -- one shared data path, never two.
     expense_config = load_expense_config(configuration)
-    expense_storage = ExpenseStorage(
-        database_path=resolved_data_directory / "expense.sqlite3"
-    )
+    expense_storage = PostgreSQLExpenseStorage(sync_pool)
     expense_storage.initialize()
     expense_service = ExpenseService(
         storage=expense_storage,
@@ -565,6 +601,7 @@ def build_default_runtime(
         data_directory=resolved_data_directory,
         workspace_permissions=workspace_permissions,
         brain=brain,
+        sync_pool=sync_pool,
     )
 
     _register_ollama_provider(
@@ -874,10 +911,11 @@ def _build_intelligence_foundation_stores(
     event_bus: EventBus,
     logger: Logger,
     data_directory: Path,
+    sync_pool,  # PostgreSQL sync pool (required)
 ) -> tuple[MemoryManager, KnowledgeManager, ExperienceStore]:
     """
     Construct and initialize MemoryManager, KnowledgeManager (with its
-    SQLite source storage), and ExperienceStore -- in that order, all
+    PostgreSQL source storage), and ExperienceStore -- in that order, all
     before Planner/Brain are constructed, since both need them ready
     (Planner needs `experience_store` for its optional
     `experience_source`; Brain needs `memory_manager`/
@@ -886,23 +924,26 @@ def _build_intelligence_foundation_stores(
     ExperienceStore is a Module-owned object, not Core -- see
     docs/architecture/Intelligence_Foundation_Design.md section 6A --
     but is still materialized here at the composition root, exactly
-    like MemoryManager/SqliteKnowledgeStorage, for the same readiness
+    like MemoryManager/PostgreSQLKnowledgeStorage, for the same readiness
     reason. Planner only ever receives it through the structurally-
     typed `ExperienceSource` Protocol it owns; `planner.py` never
     imports this class.
     """
 
+    from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
+    from parika.core.knowledge_manager.postgresql_storage import PostgreSQLKnowledgeStorage
+    from parika.modules.experience.postgresql_storage import PostgreSQLExperienceStorage
+
+    memory_storage = PostgreSQLMemoryStorage(sync_pool)
+    memory_storage.initialize()
     memory_manager = MemoryManager(
         logger=logger,
         event_bus=event_bus,
-        database_path=data_directory / "memory.sqlite3",
+        storage=memory_storage,
         configuration=configuration,
     )
-    memory_manager.initialize()
 
-    knowledge_storage = SqliteKnowledgeStorage(
-        database_path=data_directory / "knowledge.sqlite3"
-    )
+    knowledge_storage = PostgreSQLKnowledgeStorage(sync_pool)
     knowledge_storage.initialize()
     knowledge_manager = KnowledgeManager(
         storage=knowledge_storage,
@@ -913,7 +954,7 @@ def _build_intelligence_foundation_stores(
 
     experience_store = ExperienceStore(
         logger=logger,
-        database_path=data_directory / "experience.sqlite3",
+        storage=PostgreSQLExperienceStorage(sync_pool),
     )
     experience_store.initialize()
 
@@ -941,6 +982,7 @@ def _register_modules(
     data_directory: Path,
     workspace_permissions: WorkspacePermissionManager,
     brain: Brain,
+    sync_pool,  # PostgreSQL sync pool
 ) -> None:
     """
     Register the built-in Web Search, Runtime Info, Filesystem, Shell,
@@ -1048,7 +1090,7 @@ def _register_modules(
     knowledge_indexing_driver = KnowledgeIndexingModuleDriver(
         knowledge_manager=knowledge_manager,
         logger=logger,
-        database_path=data_directory / "knowledge_units.sqlite3",
+        database_path=sync_pool,  # PostgreSQL pool
         health_manager=health_manager,
     )
     module_manager.register(
@@ -1080,7 +1122,7 @@ def _register_modules(
         capability_registry=capability_registry,
         tool_manager=tool_manager,
         logger=logger,
-        database_path=data_directory / "coding_index.sqlite3",
+        database_path=sync_pool,  # PostgreSQL pool
         event_bus=event_bus,
         health_manager=health_manager,
         configuration=configuration,

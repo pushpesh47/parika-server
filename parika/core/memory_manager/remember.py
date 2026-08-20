@@ -44,7 +44,7 @@ from parika.core.memory_manager.memory_importance import (
 from parika.core.memory_manager.memory_kind import MemoryKind
 from parika.core.memory_manager.memory_origin import MemoryOrigin
 from parika.core.memory_manager.memory_scope import MemoryScope
-from parika.core.memory_manager.storage import MemoryStorage
+from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 from parika.core.memory_manager.structured_facts import (
     SlotMatch,
     extract_slot,
@@ -56,7 +56,7 @@ _DUPLICATE_CANDIDATE_POOL: int = 20
 
 
 def remember(
-    storage: MemoryStorage,
+    storage: PostgreSQLMemoryStorage,
     *,
     content: str,
     category: MemoryCategory,
@@ -322,7 +322,7 @@ def _merge_into(
 
 
 def merge(
-    storage: MemoryStorage, *, primary_id: str, secondary_id: str
+    storage: PostgreSQLMemoryStorage, *, primary_id: str, secondary_id: str
 ) -> tuple[Memory, Memory]:
     """
     Body of MemoryManager.merge(): explicitly merge `secondary_id`

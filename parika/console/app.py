@@ -39,8 +39,9 @@ from parika.interfaces.runtime import (
     build_default_runtime,
     shutdown_runtime,
 )
-from parika.interfaces.session import ChatTurnResult, InterfaceSession
-from parika.interfaces.session_store import SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
+from parika.core.database.pool import PoolManager
+import parika.core.database.config as db_config_module
 
 from .colors import Ansi, colorize
 from .markdown import render_markdown
@@ -114,16 +115,18 @@ def parse_console_args(argv: list[str] | None = None) -> ConsoleCliArgs:
     return ConsoleCliArgs(debug=parsed.debug)
 
 
-def _default_session_store(runtime: ParikaRuntime) -> SqliteSessionStore:
-    """Construct and initialize the default `data/sessions.sqlite3` store."""
+def _default_session_store(runtime: ParikaRuntime) -> PostgreSQLSessionStore:
+    """Construct and initialize the default session store using PostgreSQL."""
 
-    store = SqliteSessionStore(
-        runtime.configuration.get_project_root()
-        / runtime.configuration.get("data.directory", "data")
-        / "sessions.sqlite3"
-    )
+    configuration = runtime.configuration
+    db_config = db_config_module.load_database_config(configuration)
+    
+    pool = PoolManager.get_sync_pool()
+    if pool is None:
+        raise RuntimeError("PostgreSQL enabled but sync pool not initialized")
+    
+    store = PostgreSQLSessionStore(pool)
     store.initialize()
-
     return store
 
 
@@ -146,7 +149,7 @@ class CliApplication:
         history_size: int = 1000,
         registry: CommandRegistry | None = None,
         session: InterfaceSession | None = None,
-        session_store: SqliteSessionStore | None = None,
+        session_store: PostgreSQLSessionStore | None = None,
     ) -> None:
         """
         Initialize the CLI application.
@@ -209,13 +212,10 @@ class CliApplication:
                 any).
 
             session_store:
-                Optional explicit SqliteSessionStore override. When
+                Optional explicit PostgreSQLSessionStore override. When
                 omitted (and `session` is also omitted), a real
-                SQLite-backed store is constructed and initialized
-                automatically at `data/sessions.sqlite3`, so the
-                default CLI session is persisted -- see
-                docs/architecture/Intelligence_Foundation_Design.md
-                section 8.
+                PostgreSQL-backed store is constructed and initialized
+                automatically, so the default CLI session is persisted.
         """
 
         self._runtime = runtime

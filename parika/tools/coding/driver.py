@@ -43,7 +43,7 @@ from .exceptions import (
 )
 from .manifest import CodingOperation
 from .patch import render_patch
-from .storage import CodingIndexStorage
+from .postgresql_storage import PostgreSQLCodingIndexStorage
 
 SHELL_EXECUTE_TOOL_ID = "tool.shell_execute"
 
@@ -57,7 +57,7 @@ class CodingToolDriver:
         self,
         operation: CodingOperation,
         *,
-        storage: CodingIndexStorage,
+        storage: PostgreSQLCodingIndexStorage,
         registry: LanguageAnalyzerRegistry,
         max_file_size_bytes: int,
         tool_manager: ToolManager | None = None,

@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from parika.core.tool_manager.request import ToolRequest
-from parika.tools.web_search.cache import SearchResultCache
+from parika.tools.web_search.cache import InMemorySearchResultCache
 from parika.tools.web_search.driver import WebSearchToolDriver
 from parika.tools.web_search.search_result import SearchResult
 
@@ -29,8 +29,8 @@ class _FakePageFetcher:
 
 
 @pytest.fixture
-def cache() -> SearchResultCache:
-    cache = SearchResultCache(None, ttl_seconds=1000)
+def cache() -> InMemorySearchResultCache:
+    cache = InMemorySearchResultCache(ttl_seconds=1000)
     cache.initialize()
     return cache
 

@@ -8,6 +8,8 @@ import pytest
 
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.configuration.configuration import Configuration
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import DatabaseConfig
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.health_manager.health_manager import HealthManager
 from parika.core.health_manager.health_status import HealthStatus
@@ -28,7 +30,31 @@ from parika.tools.expense.manifest import (
     OPERATION_TOOL_ID,
 )
 from parika.tools.expense.service import ExpenseService
-from parika.tools.expense.storage import ExpenseStorage
+from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
+
+
+TEST_DATABASE_CONFIG = DatabaseConfig(
+    enabled=True,
+    host="127.0.0.1",
+    port=5432,
+    database="parika_test",
+    username="postgres",
+    password="dba",
+    pool_min_size=1,
+    pool_max_size=10,
+    connect_timeout=10.0,
+    statement_timeout=0.0,
+    application_name="parika_test",
+    sslmode="disable",
+)
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    pool = PoolManager.initialize_sync_pool(TEST_DATABASE_CONFIG)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture
@@ -62,8 +88,8 @@ def module_manager(event_bus: EventBus, logger: Logger) -> ModuleManager:
 
 
 @pytest.fixture
-def service(tmp_path, event_bus: EventBus, logger: Logger) -> ExpenseService:
-    storage = ExpenseStorage(tmp_path / "expense.sqlite3")
+def service(_test_db_pool, event_bus: EventBus, logger: Logger) -> ExpenseService:
+    storage = PostgreSQLExpenseStorage(_test_db_pool)
     storage.initialize()
     return ExpenseService(
         storage=storage, event_bus=event_bus, logger=logger, config=ExpenseToolConfig()
@@ -146,9 +172,9 @@ class TestModuleLifecycle:
         tool_manager: ToolManager,
         event_bus: EventBus,
         logger: Logger,
-        tmp_path,
+        _test_db_pool,
     ) -> None:
-        storage = ExpenseStorage(tmp_path / "expense.sqlite3")
+        storage = PostgreSQLExpenseStorage(_test_db_pool)
         storage.initialize()
         disabled_service = ExpenseService(
             storage=storage,

@@ -52,10 +52,10 @@ def transport() -> _ScriptedOllamaTransport:
     return _ScriptedOllamaTransport()
 
 
-@pytest.fixture
+@ pytest.fixture
 def runtime(transport: _ScriptedOllamaTransport, tmp_path):
     # Isolated, disposable data directory: without this, MemoryManager
-    # would persist into the real project's data/memory.sqlite3 (by
+    # would persist into the real project's data/ (by
     # design -- that IS "true permanent memory" in production), which
     # would make absolute count()/get_all() assertions here depend on
     # every other test run's accumulated state.

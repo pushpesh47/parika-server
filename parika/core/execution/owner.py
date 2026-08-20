@@ -2,7 +2,7 @@
 PARIKA Core - Core Execution Owner
 
 Manages the dedicated Core worker thread that owns all Core resources
-(ParikaRuntime, SqliteSessionStore, Router) and executes all Core work
+(ParikaRuntime, SessionStore, Router) and executes all Core work
 serialized on that thread.
 
 FastAPI endpoints submit work asynchronously and await results without
@@ -19,9 +19,14 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Any, Generic, TypeVar
 
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import load_database_config
 from parika.core.router.router import Router
 from parika.interfaces.runtime import ParikaRuntime
-from parika.interfaces.session_store import SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
+
+# Type alias for session store - using PostgreSQLSessionStore directly
+SessionStore = PostgreSQLSessionStore
 
 T = TypeVar("T")
 
@@ -60,14 +65,18 @@ class CoreExecutionOwner:
     It creates and manages:
     - One dedicated worker thread
     - One ParikaRuntime (created on the worker thread)
-    - One SqliteSessionStore (created on the worker thread)
+    - One SessionStore (PostgreSQL, created on the worker thread)
     - One Router (created on the worker thread)
     
     All Core work is submitted via submit() and executed serially
     on the worker thread. The caller awaits the returned Future.
     """
 
-    def __init__(self, runtime_factory: Callable[[], "ParikaRuntime"] | None = None) -> None:
+    def __init__(
+        self, 
+        runtime_factory: Callable[[], "ParikaRuntime"] | None = None,
+        sync_pool=None
+    ) -> None:
         self._thread: Thread | None = None
         self._work_queue: Queue[_Job[Any]] = Queue()
         self._ready_event = Event()
@@ -75,10 +84,12 @@ class CoreExecutionOwner:
         self._exception: BaseException | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._started = False
+        self._sync_pool = sync_pool
+        self._owns_sync_pool = sync_pool is None  # Track if we own the pool
 
         # Core resources - initialized by the worker thread
         self._runtime: ParikaRuntime | None = None
-        self._session_store: SqliteSessionStore | None = None
+        self._session_store: SessionStore | None = None
         self._router: Router | None = None
         
         # Optional runtime factory for tests
@@ -188,10 +199,10 @@ class CoreExecutionOwner:
         return self._runtime
 
     @property
-    def session_store(self) -> SqliteSessionStore:
+    def session_store(self) -> SessionStore:
         """
-        Get the SqliteSessionStore instance.
-        
+        Get the SessionStore instance (SQLite or PostgreSQL).
+
         Only safe to call from the Core worker thread after initialization.
         External code should not access this directly.
         """
@@ -263,13 +274,33 @@ class CoreExecutionOwner:
         from parika.core.router.router import Router
         from parika.interfaces.runtime import build_default_runtime
         from parika.api.session_registry import build_default_session_store
+        from parika.core.configuration.configuration import Configuration
+        from parika.core.database.config import load_database_config
+        
+        # Load database config
+        configuration = Configuration()
+        configuration.load()
+        db_config = load_database_config(configuration)
+        
+        # Use the sync_pool already initialized (passed from main thread)
+        sync_pool = self._sync_pool
+        if sync_pool is None and db_config.enabled:
+            # Fallback: initialize if not provided (for non-test scenarios)
+            sync_pool = PoolManager.initialize_sync_pool(db_config)
+            self._sync_pool = sync_pool
         
         # Create Runtime on the worker thread
         # Use the runtime_factory if provided, otherwise default
         if hasattr(self, '_runtime_factory') and self._runtime_factory is not None:
-            self._runtime = self._runtime_factory()
+            # Pass sync_pool to the factory if it accepts it
+            import inspect
+            sig = inspect.signature(self._runtime_factory)
+            if 'sync_pool' in sig.parameters:
+                self._runtime = self._runtime_factory(sync_pool=sync_pool)
+            else:
+                self._runtime = self._runtime_factory()
         else:
-            self._runtime = build_default_runtime()
+            self._runtime = build_default_runtime(sync_pool=sync_pool)
         
         # Create SessionStore on the worker thread using configuration-driven path
         self._session_store = build_default_session_store(self._runtime)
@@ -294,6 +325,11 @@ class CoreExecutionOwner:
         if self._runtime is not None:
             shutdown_runtime(self._runtime)
             self._runtime = None
+            
+        # Shutdown PostgreSQL sync pool only if we created it
+        if self._owns_sync_pool and self._sync_pool is not None:
+            PoolManager.shutdown_sync_pool()
+            self._sync_pool = None
             
         # Router doesn't need explicit shutdown
         self._router = None

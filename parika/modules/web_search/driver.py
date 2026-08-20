@@ -34,7 +34,7 @@ from parika.core.health_manager.health_status import HealthStatus
 from parika.core.logger.logger import Logger
 from parika.core.module_manager.driver import ModuleDriver
 from parika.core.tool_manager.tool_manager import ToolManager
-from parika.tools.web_search.cache import SearchResultCache
+from parika.tools.web_search.postgresql_cache import PostgreSQLSearchResultCache
 from parika.tools.web_search.config import load_web_search_config
 from parika.tools.web_search.driver import WebSearchToolDriver
 from parika.tools.web_search.manifest import (
@@ -177,22 +177,27 @@ class WebSearchModuleDriver(ModuleDriver):
             backoff_seconds=backoff_seconds,
         )
 
-        resolved_cache: SearchResultCache | None = None
+        resolved_cache: PostgreSQLSearchResultCache | None = None
 
         if web_search_config.cache_enabled:
-            cache_database_path = (
-                configuration.get_project_root()
-                / configuration.get("data.directory", "data")
-                / "search_cache.sqlite3"
-                if configuration is not None
-                else None
-            )
-            resolved_cache = SearchResultCache(
-                cache_database_path,
-                ttl_seconds=web_search_config.cache_ttl_seconds,
-                max_entries=web_search_config.cache_max_entries,
-            )
-            resolved_cache.initialize()
+            # Use PostgreSQL pool for thread-safe cache
+            if configuration is not None:
+                from parika.core.database.config import load_database_config
+                from parika.core.database.pool import PoolManager
+                db_config = load_database_config(configuration)
+                if db_config.enabled:
+                    # Initialize sync pool if not already initialized
+                    try:
+                        pool = PoolManager.get_sync_pool()
+                    except RuntimeError:
+                        pool = PoolManager.initialize_sync_pool(db_config)
+                    if pool is not None:
+                        resolved_cache = PostgreSQLSearchResultCache(
+                            pool,
+                            ttl_seconds=web_search_config.cache_ttl_seconds,
+                            max_entries=web_search_config.cache_max_entries,
+                        )
+                        resolved_cache.initialize()
 
         self._search_result_cache = resolved_cache
 
@@ -250,6 +255,13 @@ class WebSearchModuleDriver(ModuleDriver):
                 ),
                 category=CapabilityCategory.TOOL,
                 tags=frozenset({"web", "search", "network"}),
+                keywords=frozenset({
+                    "research", "lookup", "find", "current", "latest",
+                    "recent", "today", "now", "news", "current events",
+                    "breaking", "live", "up to date", "up-to-date",
+                    "current information", "external information",
+                    "external source", "web search", "look up",
+                }),
                 metadata={"tool_affordance": WEB_SEARCH_TOOL_AFFORDANCE},  # type: ignore[arg-type]
             )
         )

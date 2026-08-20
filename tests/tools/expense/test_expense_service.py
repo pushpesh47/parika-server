@@ -9,6 +9,8 @@ from datetime import date
 
 import pytest
 
+from parika.core.database.pool import PoolManager
+from parika.core.database.config import DatabaseConfig
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
 from parika.core.configuration.configuration import Configuration
@@ -26,9 +28,32 @@ from parika.tools.expense.exceptions import (
 from parika.tools.expense.filters import ExpenseFilter
 from parika.tools.expense.periods import PeriodKeyword, resolve_period
 from parika.tools.expense.service import ExpenseService
-from parika.tools.expense.storage import ExpenseStorage
+from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
 
 TODAY = date(2026, 8, 9)
+
+TEST_DATABASE_CONFIG = DatabaseConfig(
+    enabled=True,
+    host="127.0.0.1",
+    port=5432,
+    database="parika_test",
+    username="postgres",
+    password="dba",
+    pool_min_size=1,
+    pool_max_size=10,
+    connect_timeout=10.0,
+    statement_timeout=0.0,
+    application_name="parika_test",
+    sslmode="disable",
+)
+
+
+@pytest.fixture(scope="session")
+def _test_db_pool():
+    """Initialize PostgreSQL test pool for the test session."""
+    pool = PoolManager.initialize_sync_pool(TEST_DATABASE_CONFIG)
+    yield pool
+    PoolManager.shutdown_sync_pool()
 
 
 @pytest.fixture
@@ -42,15 +67,28 @@ def event_bus(logger: Logger) -> EventBus:
 
 
 @pytest.fixture
-def storage(tmp_path) -> ExpenseStorage:
-    instance = ExpenseStorage(tmp_path / "expense.sqlite3")
+def storage(_test_db_pool) -> PostgreSQLExpenseStorage:
+    instance = PostgreSQLExpenseStorage(_test_db_pool)
     instance.initialize()
     yield instance
     instance.shutdown()
 
 
+@pytest.fixture(autouse=True)
+def _clear_expense_db(_test_db_pool):
+    """Clear the expense database before each test to ensure isolation."""
+    storage = PostgreSQLExpenseStorage(_test_db_pool)
+    storage.initialize()
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.expense;")
+            conn.commit()
+    storage.shutdown()
+    yield
+
+
 @pytest.fixture
-def service(storage: ExpenseStorage, event_bus: EventBus, logger: Logger) -> ExpenseService:
+def service(storage: PostgreSQLExpenseStorage, event_bus: EventBus, logger: Logger) -> ExpenseService:
     return ExpenseService(
         storage=storage, event_bus=event_bus, logger=logger, config=ExpenseToolConfig()
     )

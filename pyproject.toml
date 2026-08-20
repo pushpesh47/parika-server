@@ -52,6 +52,9 @@ server = [
     "pydantic>=2.9",
     "websockets>=13",
     "pyjwt>=2.9",
+    # PostgreSQL persistence layer - required for server platform
+    "psycopg[pool]>=3.2",
+    "alembic>=1.13",
 ]
 # OCR Module: deterministic image preprocessing/analysis (rotation/skew
 # correction, contrast/denoise/upscale, blur/quality/orientation

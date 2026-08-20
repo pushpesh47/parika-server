@@ -39,7 +39,7 @@ from typing import Any
 
 from parika.core.tool_manager.request import ToolRequest
 from parika.interfaces.runtime import ParikaRuntime
-from parika.interfaces.session_store import SqliteSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 from parika.modules.voice.capability_ids import (
     SPEECH_TO_TEXT_TOOL_ID,
     TEXT_TO_SPEECH_TOOL_ID,
@@ -94,7 +94,7 @@ def handle_voice_transcribe(
 
 def handle_voice_respond(
     runtime: ParikaRuntime,
-    session_store: SqliteSessionStore,
+    session_store: PostgreSQLSessionStore,
     request: VoiceRespondRequest,
 ) -> dict[str, Any]:
     """

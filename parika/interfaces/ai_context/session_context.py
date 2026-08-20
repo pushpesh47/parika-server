@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from ..session_intent import extract_session_search_topic, has_session_retrieval_intent
-from ..session_store import SessionMessage, SessionPersistenceError, SqliteSessionStore
+from ..postgresql_session_store import PostgreSQLSessionStore
 from parika.core.brain.context_engine import HeuristicTokenEstimator, TokenEstimator
 from parika.core.provider_manager.chat_message import ChatMessage
 
@@ -92,7 +92,7 @@ def _take_within_budget(
 
 
 def _recent_session_excerpts(
-    session_store: SqliteSessionStore,
+    session_store: PostgreSQLSessionStore,
     *,
     exclude_session_id: str | None,
     token_budget: int,
@@ -156,7 +156,7 @@ def _recent_session_excerpts(
 def assemble_session_retrieval_messages(
     *,
     text: str,
-    session_store: SqliteSessionStore | None,
+    session_store: PostgreSQLSessionStore | None,
     current_session_id: str | None,
     token_budget: int,
     estimator: TokenEstimator | None = None,
