@@ -78,18 +78,13 @@ directory = "data"
 # Configuration for the PostgreSQL persistence layer. These settings are
 # used by the server platform for durable storage. PostgreSQL is REQUIRED.
 #
-# For local development, PostgreSQL can run as a system service or via
-# Docker. Connection parameters can be overridden in config/installation.toml
-# or config/runtime.toml for per-machine configuration.
+# Connection parameters MUST be provided via environment variables:
+# PARIKA_DATABASE__HOST, PARIKA_DATABASE__PORT, PARIKA_DATABASE__DATABASE,
+# PARIKA_DATABASE__USERNAME, PARIKA_DATABASE__PASSWORD
 ###############################################################################
 
 [database]
 enabled = true
-host = "127.0.0.1"
-port = 5432
-database = "parika"
-username = "postgres"
-password = "dba"
 # Connection pool sizing
 pool_min_size = 2
 pool_max_size = 10
@@ -225,7 +220,6 @@ expose_hostname = false
 # 12.5) before setting `[api].host = "0.0.0.0"` for LAN access.
 mode = "none"
 api_keys = []
-jwt_secret = ""
 jwt_expiry_seconds = 3600
 
 [api.cors]
@@ -556,8 +550,10 @@ cache_max_entries = 500
 # this subtable instead of `[web_search]` itself.
 
 [web_search.google_cse]
-api_key = ""
-search_engine_id = ""
+# These are sensitive credentials and MUST be provided via environment variables:
+# PARIKA_WEB_SEARCH__GOOGLE_CSE__API_KEY
+# PARIKA_WEB_SEARCH__GOOGLE_CSE__SEARCH_ENGINE_ID
+# Do not put real credentials in this file or any committed configuration.
 
 ###############################################################################
 # Workspace

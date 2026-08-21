@@ -38,13 +38,30 @@ def get_database_dsn() -> str:
     import os
     if os.environ.get("PARIKA_TEST_DB") == "1":
         from parika.core.database.config import DatabaseConfig
+        # Test credentials MUST come from environment variables
+        test_host = os.environ.get("PARIKA_TEST_DATABASE__HOST")
+        if test_host is None:
+            raise RuntimeError("Test PostgreSQL host not configured. Set PARIKA_TEST_DATABASE__HOST environment variable.")
+        test_port_str = os.environ.get("PARIKA_TEST_DATABASE__PORT")
+        if test_port_str is None:
+            raise RuntimeError("Test PostgreSQL port not configured. Set PARIKA_TEST_DATABASE__PORT environment variable.")
+        test_port = int(test_port_str)
+        test_database = os.environ.get("PARIKA_TEST_DATABASE__NAME")
+        if test_database is None:
+            raise RuntimeError("Test PostgreSQL database name not configured. Set PARIKA_TEST_DATABASE__NAME environment variable.")
+        test_username = os.environ.get("PARIKA_TEST_DATABASE__USERNAME")
+        if test_username is None:
+            raise RuntimeError("Test PostgreSQL username not configured. Set PARIKA_TEST_DATABASE__USERNAME environment variable.")
+        test_password = os.environ.get("PARIKA_TEST_DATABASE__PASSWORD")
+        if test_password is None:
+            raise RuntimeError("Test PostgreSQL password not configured. Set PARIKA_TEST_DATABASE__PASSWORD environment variable.")
         return DatabaseConfig(
             enabled=True,
-            host="127.0.0.1",
-            port=5432,
-            database="parika_test",
-            username="postgres",
-            password="dba",
+            host=test_host,
+            port=test_port,
+            database=test_database,
+            username=test_username,
+            password=test_password,
             pool_min_size=2,
             pool_max_size=10,
             connect_timeout=10.0,

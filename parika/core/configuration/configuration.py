@@ -10,6 +10,7 @@ configuration values used throughout PARIKA.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from copy import deepcopy
 from pathlib import Path
@@ -44,6 +45,9 @@ class Configuration:
         self._project_root = self._find_project_root()
         self._config: dict[str, Any] = {}
         self._is_loaded = False
+
+        # Load .env file if it exists
+        self._load_dotenv()
 
     def load(self) -> None:
         """
@@ -80,7 +84,66 @@ class Configuration:
             runtime,
         )
 
+        # Override with environment variables (highest precedence)
+        self._apply_env_overrides()
+
         self._is_loaded = True
+
+    def _load_dotenv(self) -> None:
+        """Load environment variables from .env file if it exists."""
+        env_path = self._project_root / ".env"
+        if env_path.exists():
+            with env_path.open("r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        # Only set if not already in environment (environment takes precedence)
+                        if key not in os.environ:
+                            os.environ[key] = value
+
+    def _apply_env_overrides(self) -> None:
+        """Apply environment variable overrides to configuration.
+
+        Environment variables with PARIKA_ prefix are mapped to configuration keys.
+        Format: PARIKA_SECTION__SUBSECTION__KEY = value (double underscore for nesting)
+        Maps to: section.subsection.key
+        """
+        prefix = "PARIKA_"
+        for env_key, env_value in os.environ.items():
+            if env_key.startswith(prefix):
+                # Convert PARIKA_DATABASE__HOST -> database.host
+                # Use double underscore for nesting, single underscore stays as underscore
+                config_key = env_key[len(prefix):].replace("__", ".").lower()
+                self._set_nested_key(self._config, config_key, self._parse_env_value(env_value))
+
+    def _parse_env_value(self, value: str) -> Any:
+        """Parse environment variable value to appropriate type."""
+        # Try to parse as boolean
+        if value.lower() in ("true", "false"):
+            return value.lower() == "true"
+        # Try to parse as integer
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        # Try to parse as float
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        # Return as string
+        return value
+
+    def _set_nested_key(self, config: dict[str, Any], key: str, value: Any) -> None:
+        """Set a nested configuration key using dot notation."""
+        parts = key.split(".")
+        current = config
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        current[parts[-1]] = value
 
     def has(self, key: str) -> bool:
         """

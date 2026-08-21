@@ -315,9 +315,7 @@ def build_default_runtime(
             tests that want to control this themselves.
 
         data_directory:
-            Optional override for where every SQLite-backed store
-            (Memory, Knowledge, Experience, and the Knowledge Indexing
-            Module's unit storage) persists its database file.
+            Optional override for where the data directory is located.
             Defaults to `Configuration.get_project_root() /
             [data].directory` (normally the real project's `data/`
             directory), matching every existing caller's behavior.
@@ -344,7 +342,7 @@ def build_default_runtime(
         sync_pool:
             Optional PostgreSQL sync connection pool from CoreExecutionOwner.
             If provided, PostgreSQL storage implementations will use this pool.
-            If not provided, falls back to SQLite.
+            If not provided, test environment must provide PARIKA_TEST_DATABASE__* variables.
 
     Returns:
         A fully wired `ParikaRuntime`.
@@ -373,13 +371,30 @@ def build_default_runtime(
         # Create a default test pool for tests that don't provide one
         from parika.core.database.config import DatabaseConfig
         from parika.core.database.pool import PoolManager
+        import os
+        test_host = os.environ.get("PARIKA_TEST_DATABASE__HOST")
+        if test_host is None:
+            raise RuntimeError("Test PostgreSQL host not configured. Set PARIKA_TEST_DATABASE__HOST environment variable.")
+        test_port_str = os.environ.get("PARIKA_TEST_DATABASE__PORT")
+        if test_port_str is None:
+            raise RuntimeError("Test PostgreSQL port not configured. Set PARIKA_TEST_DATABASE__PORT environment variable.")
+        test_port = int(test_port_str)
+        test_database = os.environ.get("PARIKA_TEST_DATABASE__NAME")
+        if test_database is None:
+            raise RuntimeError("Test PostgreSQL database name not configured. Set PARIKA_TEST_DATABASE__NAME environment variable.")
+        test_username = os.environ.get("PARIKA_TEST_DATABASE__USERNAME")
+        if test_username is None:
+            raise RuntimeError("Test PostgreSQL username not configured. Set PARIKA_TEST_DATABASE__USERNAME environment variable.")
+        test_password = os.environ.get("PARIKA_TEST_DATABASE__PASSWORD")
+        if test_password is None:
+            raise RuntimeError("Test PostgreSQL password not configured. Set PARIKA_TEST_DATABASE__PASSWORD environment variable.")
         test_db_config = DatabaseConfig(
             enabled=True,
-            host="127.0.0.1",
-            port=5432,
-            database="parika_test",
-            username="postgres",
-            password="dba",
+            host=test_host,
+            port=test_port,
+            database=test_database,
+            username=test_username,
+            password=test_password,
             pool_min_size=1,
             pool_max_size=10,
             connect_timeout=10.0,

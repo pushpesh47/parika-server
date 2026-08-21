@@ -15,11 +15,11 @@ class DatabaseConfig:
     """PostgreSQL connection and pool configuration."""
 
     enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 5432
-    database: str = "parika"
-    username: str = "parika"
-    password: str = ""
+    host: str
+    port: int
+    database: str
+    username: str
+    password: str
     pool_min_size: int = 2
     pool_max_size: int = 10
     connect_timeout: float = 10.0
@@ -61,13 +61,34 @@ def load_database_config(configuration: "Configuration | None" = None) -> Databa
     if configuration is None:
         raise RuntimeError("Configuration is required for database setup. PostgreSQL is mandatory.")
 
+    # Database connection identity MUST come from environment variables
+    host = configuration.get("database.host")
+    if host is None:
+        raise RuntimeError("PostgreSQL host not configured. Set PARIKA_DATABASE__HOST environment variable.")
+
+    port = configuration.get("database.port")
+    if port is None:
+        raise RuntimeError("PostgreSQL port not configured. Set PARIKA_DATABASE__PORT environment variable.")
+
+    database = configuration.get("database.database")
+    if database is None:
+        raise RuntimeError("PostgreSQL database name not configured. Set PARIKA_DATABASE__DATABASE environment variable.")
+
+    username = configuration.get("database.username")
+    if username is None:
+        raise RuntimeError("PostgreSQL username not configured. Set PARIKA_DATABASE__USERNAME environment variable.")
+
+    password = configuration.get("database.password")
+    if password is None:
+        raise RuntimeError("PostgreSQL password not configured. Set PARIKA_DATABASE__PASSWORD environment variable.")
+
     return DatabaseConfig(
         enabled=configuration.get("database.enabled", True),
-        host=configuration.get("database.host", "127.0.0.1"),
-        port=configuration.get("database.port", 5432),
-        database=configuration.get("database.database", "parika"),
-        username=configuration.get("database.username", "parika"),
-        password=configuration.get("database.password", ""),
+        host=host,
+        port=port,
+        database=database,
+        username=username,
+        password=password,
         pool_min_size=configuration.get("database.pool_min_size", 2),
         pool_max_size=configuration.get("database.pool_max_size", 10),
         connect_timeout=configuration.get("database.connect_timeout", 10.0),
