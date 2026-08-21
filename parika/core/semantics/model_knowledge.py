@@ -109,6 +109,9 @@ _MODEL_OVERRIDES: dict[str, SpecializationOverride] = {
         remove=frozenset({"general_chat"}),
         add=frozenset({"vision_understanding", "ocr", "document_understanding"}),
     ),
+    "medgemma1.5":  SpecializationOverride(
+        remove=frozenset({"general_chat", "vision_understanding", "ocr", "document_understanding"}),
+    ),
 }
 """
 Hand-curated corrections, keyed by exact, lowercased model base name.

@@ -51,6 +51,7 @@ from .ai_context import (
     context_builder,
     conversation,
     goal_builder,
+    goal_decomposer,
     prompt_builder,
     session_context,
     tool_context,
@@ -221,3 +222,31 @@ def build_chat_goal(
         goal_id=goal_id,
         provider_manager=runtime.provider_manager if runtime is not None else None,
     )
+
+
+def decompose_and_build_goals(
+    *,
+    latest_message: str,
+    runtime: ParikaRuntime,
+) -> tuple[Goal, ...]:
+    """
+    Decompose a user message into multiple semantic Goals.
+
+    This is the NEW multi-goal decomposition pathway that replaces
+    the single `chat.respond` goal for complex requests.
+
+    Args:
+        latest_message: The user's message to decompose
+        runtime: Runtime providing Brain, CapabilityRegistry, ProviderManager
+
+    Returns:
+        Tuple of Goals ready for Brain.handle()
+    """
+    decomposer = goal_decomposer.create_goal_decomposer(
+        brain=runtime.brain,
+        capability_registry=runtime.capability_registry,
+        provider_manager=runtime.provider_manager,
+    )
+    
+    result = decomposer.decompose(latest_message)
+    return result.goals

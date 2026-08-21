@@ -81,17 +81,19 @@ before this distinction was named explicitly.
                              generically from each Capability's own
                              metadata, never from a hardcoded
                              capability/tool list.
-    goal_builder.py            Builds the `Goal` handed to Brain, and
-                             injects the Worker Model Inventory (see
-                             `worker_inventory.py`) once Planner has
-                             selected this Goal's own routing model.
+goal_builder.py            Builds the `Goal` handed to Brain, and
+                              injects the Worker Model Inventory (see
+                              `worker_inventory.py`) once Planner has
+                              selected this Goal's own routing model.
+    goal_decomposer.py         Decomposes high-level user requests into
+                              multiple semantic Goals with dependencies.
     worker_inventory.py        Renders a compact, semantic inventory
-                             of other installed AI models -- objective
-                             provider facts kept strictly separate
-                             from PARIKA's own observed Model
-                             Knowledge (see `parika/core/semantics
-                             /model_knowledge.py`). Never selects,
-                             ranks, or filters a model itself.
+                              of other installed AI models -- objective
+                              provider facts kept strictly separate
+                              from PARIKA's own observed Model
+                              Knowledge (see `parika/core/semantics
+                              /model_knowledge.py`). Never selects,
+                              ranks, or filters a model itself.
 
 Capability Independence (mandatory): no module in this package may
 reference a specific Capability id, tool name, or affordance value by

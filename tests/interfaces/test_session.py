@@ -58,6 +58,7 @@ class _ScriptedOllamaTransport:
     def __init__(self) -> None:
         self._chat_queue: list[dict[str, Any]] = []
         self.chat_payloads: list[dict[str, Any]] = []
+        self._decomposition_call_count = 0
 
     def queue_chat_response(self, response: dict[str, Any]) -> None:
         self._chat_queue.append(response)
@@ -81,6 +82,35 @@ class _ScriptedOllamaTransport:
 
         if url.endswith("/api/chat"):
             self.chat_payloads.append(dict(payload or {}))
+            
+            # Check if this is a decomposition request (contains "Goal Decomposer" in system prompt)
+            if payload and "messages" in payload:
+                for msg in payload["messages"]:
+                    if msg.get("role") == "system" and "Goal Decomposer" in msg.get("content", ""):
+                        self._decomposition_call_count += 1
+                        # Return a valid decomposition JSON for simple requests
+                        # Use the next queued response's content as the message for chat.respond
+                        if self._chat_queue:
+                            next_response = self._chat_queue[0]
+                            message_content = next_response.get("message", {}).get("content", "Hi there.")
+                            return {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": f'{{"goals": [{{"id": "goal_0", "capability_id": "chat.respond", "inputs": {{"message": "{message_content}"}}, "depends_on": []}}]}}',
+                                    "done": True
+                                },
+                                "done": True
+                            }
+                        else:
+                            return {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": '{"goals": [{"id": "goal_0", "capability_id": "chat.respond", "inputs": {"message": "Hi there."}, "depends_on": []}]}',
+                                    "done": True
+                                },
+                                "done": True
+                            }
+            
             return self._chat_queue.pop(0)
 
         return {}
@@ -165,8 +195,10 @@ class TestSubmitTextSuccess:
         session.submit_text("first message")
         session.submit_text("second message")
 
-        second_payload = transport.chat_payloads[1]
-        roles = [message["role"] for message in second_payload["messages"]]
+        # With decomposition, each submit_text makes 2 calls:
+        # [0]=decomp1, [1]=exec1, [2]=decomp2, [3]=exec2
+        second_execution_payload = transport.chat_payloads[3]
+        roles = [message["role"] for message in second_execution_payload["messages"]]
 
         # user, assistant, system (worker inventory), user (this turn's message).
         assert roles == ["user", "assistant", "system", "user"]
@@ -232,9 +264,10 @@ class TestSubmitTextSuccess:
         session = InterfaceSession(runtime, system_prompt="Be helpful.")
         session.submit_text("hello")
 
-        first_payload = transport.chat_payloads[0]
-        assert first_payload["messages"][0]["role"] == "system"
-        assert first_payload["messages"][0]["content"] == "Be helpful."
+        # With decomposition, first payload is decomposition, second is execution
+        first_execution_payload = transport.chat_payloads[1]
+        assert first_execution_payload["messages"][0]["role"] == "system"
+        assert first_execution_payload["messages"][0]["content"] == "Be helpful."
 
 
 class TestExecutionProgressTrail:

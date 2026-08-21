@@ -42,6 +42,7 @@ from .chat_capability import (
     assemble_session_retrieval_messages,
     build_assistant_system_prompt,
     build_chat_goal,
+    decompose_and_build_goals,
     discover_tool_specs,
 )
 from .history import HistoryEntry, HistoryRole
@@ -429,22 +430,28 @@ class InterfaceSession:
         on_token: Callable[[str], None] | None,
         progress_trail: list[ProgressEvent],
     ) -> ChatTurnResult:
-        # Automatic Capability Discovery (AI Context Engineering):
-        # advertise every currently enabled Capability, discovered
-        # from CapabilityRegistry with no hardcoded list -- see
-        # chat_capability.discover_tool_specs(), which also applies
-        # the two fixed-scope memory-authorization security gates
-        # (never capability routing). Relevance judgment for an
-        # ordinary Capability is left entirely to the model's own
-        # native tool-calling reasoning.
-        tools = discover_tool_specs(self._runtime, text=text)
+        # NEW: Try multi-goal decomposition first
+        # This will return multiple goals for complex requests,
+        # or a single chat.respond goal for simple requests
+        goals = decompose_and_build_goals(
+            latest_message=text,
+            runtime=self._runtime,
+        )
 
-        # Context Assembly: automatically retrieve relevant Memory/
-        # Knowledge context for this turn and inject it immediately
-        # before the newest user message -- never mutates the rolling
-        # `self._messages` history itself, since context is
-        # re-assembled fresh every turn (Phase 1 Completion
-        # Specification sections 3, 20-21).
+        # For goals that need context assembly (primarily chat.respond for final synthesis),
+        # we still need to assemble context and inject it into the conversation
+        # But we do this per-goal rather than once for the whole request
+        
+        # First, check if any goal is chat.respond (final synthesis)
+        chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
+        other_goals = [g for g in goals if g.capability_id != "chat.respond"]
+
+        # If we have chat.respond goals, they need the full conversation context
+        # For other goals (tools), they typically don't need conversation history
+        # but may need memory/knowledge context if their inputs reference it
+        
+        # Assemble context once for the whole turn (for chat.respond)
+        # Tool goals will get their context from their own inputs
         context_messages, context_bundle = assemble_context_messages(
             self._runtime,
             text=text,
@@ -452,19 +459,6 @@ class InterfaceSession:
             conversation_message_count=len(self._messages),
         )
 
-        # Session Retrieval: automatically retrieve read-only excerpts
-        # from previously saved sessions, but only for a turn
-        # explicitly asking about past/previous conversations (Phase:
-        # PARIKA Memory & Session Retrieval Finalization, Bugs #4/#5/
-        # #6/#7/#8) -- never every turn, unlike Memory/Knowledge
-        # Context Assembly above, and never mutating
-        # `self._messages`, exactly like `context_messages`.
-        #
-        # `token_budget` is what remains of this turn's Runtime
-        # Context Budget after Memory/Knowledge Context Assembly
-        # already spent `context_bundle.estimated_tokens` of it --
-        # Session Retrieval never uses a fixed excerpt count
-        # independent of that budget (Phase A.5).
         session_token_budget = load_context_engine_config(
             self._runtime.configuration
         ).usable_tokens
@@ -481,24 +475,34 @@ class InterfaceSession:
 
         injected_messages = context_messages + session_messages
 
-        # Conversation Assembly (AI Context Engineering): splice
-        # injected context into the right position relative to the
-        # rolling history -- never mutates `self._messages` itself,
-        # since context is re-assembled fresh every turn.
+        # For chat.respond goals, inject context into their inputs
         effective_messages = assemble_conversation_messages(
             tuple(self._messages), injected_messages
         )
 
-        goal = build_chat_goal(
-            messages=effective_messages,
-            tools=tools,
-            on_token=on_token,
-            latest_message=text,
-            runtime=self._runtime,
-        )
+        # Build tools for the routing model (chat.respond) if needed
+        tools = discover_tool_specs(self._runtime, text=text)
 
+        # Enhance chat.respond goals with context and tools
+        enhanced_goals = []
+        for goal in goals:
+            if goal.capability_id == "chat.respond":
+                # Rebuild this goal with proper context and tools
+                enhanced_goal = build_chat_goal(
+                    messages=effective_messages,
+                    tools=tools,
+                    on_token=on_token,
+                    latest_message=text,
+                    runtime=self._runtime,
+                )
+                enhanced_goals.append(enhanced_goal)
+            else:
+                # Tool goals keep their decomposed inputs
+                enhanced_goals.append(goal)
+
+        # Execute ALL goals through Brain
         brain_response = self._runtime.brain.handle(
-            BrainRequest(goals=(goal,))
+            BrainRequest(goals=tuple(enhanced_goals))
         )
 
         result = ChatTurnResult(brain_response=brain_response)
