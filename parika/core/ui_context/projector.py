@@ -439,8 +439,14 @@ class UIContextProjector:
         # Determine semantic context from capability
         context, focus, confidence = self._infer_context_from_capability(capability_id, capability_def)
         
-        # Build surfaces from related capabilities
-        surfaces = self._build_surfaces_for_context(context)
+        # Build surfaces from related capabilities (enhanced with active capabilities)
+        active_capability_ids = {
+            task.request.capability_id
+            for task, _, _ in candidate_tasks
+            if _is_semantic_capability(task.request.capability_id, 
+                self._capability_registry.get(task.request.capability_id) if self._capability_registry.contains(task.request.capability_id) else None)
+        }
+        surfaces = self._build_surfaces_for_context(context, active_capability_ids)
         
         # Determine attention from task status
         attention = self._attention_from_task_status(primary_task.status.name)
@@ -448,11 +454,8 @@ class UIContextProjector:
         # Determine urgency - check for critical system events
         urgency = self._determine_urgency()
         
-        metadata = MappingProxyType({
-            "task_id": primary_task.id,
-            "capability_id": capability_id,
-            "task_status": primary_task.status.name,
-        })
+        # Build enriched metadata with multi-agent information
+        metadata = self._build_enriched_metadata(primary_task, capability_id, candidate_tasks)
         
         return _ContextCandidate(
             context=context,
@@ -580,6 +583,125 @@ class UIContextProjector:
             metadata=candidate.metadata,
         )
     
+
+    def _build_enriched_metadata(
+        self,
+        primary_task: Any,
+        primary_capability_id: str,
+        candidate_tasks: list[tuple[Any, str, Any]],
+    ) -> MappingProxyType[str, Any]:
+        """Build enriched metadata with multi-agent runtime information."""
+        # Extract primary task info
+        primary_task_metadata = primary_task.request.metadata
+        primary_agent_id = primary_task_metadata.get("agent_id")
+        primary_agent_specialization = primary_task_metadata.get("agent_specialization")
+        primary_agent_confidence = primary_task_metadata.get("agent_confidence")
+        
+        # Collect active agents from all candidate tasks
+        active_agents: dict[str, dict[str, Any]] = {}
+        active_domains: dict[str, dict[str, Any]] = {}
+        active_semantic_capabilities: set[str] = set()
+        
+        running_count = 0
+        waiting_count = 0
+        completed_count = 0
+        pending_count = 0
+        
+        for task, cap_id, cap_def in candidate_tasks:
+            task_metadata = task.request.metadata
+            agent_id = task_metadata.get("agent_id")
+            agent_specialization = task_metadata.get("agent_specialization")
+            agent_confidence = task_metadata.get("agent_confidence")
+            
+            # Count task statuses
+            status = task.status.name
+            if status == "RUNNING":
+                running_count += 1
+            elif status == "WAITING":
+                waiting_count += 1
+            elif status == "COMPLETED":
+                completed_count += 1
+            elif status == "PENDING":
+                pending_count += 1
+            
+            # Track active semantic capabilities
+            if _is_semantic_capability(cap_id, cap_def):
+                active_semantic_capabilities.add(cap_id)
+            
+            # Track active agents
+            if agent_id:
+                if agent_id not in active_agents:
+                    active_agents[agent_id] = {
+                        "id": agent_id,
+                        "specialization": agent_specialization or "unknown",
+                        "confidence": agent_confidence,
+                        "task_count": 0,
+                        "domains": set(),
+                    }
+                active_agents[agent_id]["task_count"] += 1
+                # Infer domain from capability
+                domain, _, _ = self._infer_context_from_capability(cap_id, cap_def)
+                active_agents[agent_id]["domains"].add(domain)
+            
+            # Track active domains
+            domain, domain_focus, _ = self._infer_context_from_capability(cap_id, cap_def)
+            if domain not in active_domains:
+                active_domains[domain] = {
+                    "context": domain,
+                    "focus": domain_focus.value,
+                    "task_count": 0,
+                }
+            active_domains[domain]["task_count"] += 1
+        
+        # Build active agents list (sorted for determinism)
+        active_agents_list = []
+        for agent_id in sorted(active_agents.keys()):
+            agent_info = active_agents[agent_id]
+            active_agents_list.append({
+                "id": agent_info["id"],
+                "specialization": agent_info["specialization"],
+                "confidence": agent_info["confidence"],
+                "task_count": agent_info["task_count"],
+                "domains": sorted(agent_info["domains"]),
+            })
+        
+        # Build active domains list (sorted for determinism)
+        active_domains_list = []
+        for domain in sorted(active_domains.keys()):
+            domain_info = active_domains[domain]
+            active_domains_list.append({
+                "context": domain_info["context"],
+                "focus": domain_info["focus"],
+                "task_count": domain_info["task_count"],
+            })
+        
+        metadata_dict = {
+            "task": {
+                "id": primary_task.id,
+                "capability_id": primary_capability_id,
+                "status": primary_task.status.name,
+            },
+            "agent": {
+                "id": primary_agent_id,
+                "specialization": primary_agent_specialization,
+                "confidence": primary_agent_confidence,
+            } if primary_agent_id else {},
+            "activity": {
+                "active_agents": active_agents_list,
+                "active_domains": active_domains_list,
+                "active_semantic_capabilities": sorted(active_semantic_capabilities),
+                "task_counts": {
+                    "running": running_count,
+                    "waiting": waiting_count,
+                    "completed": completed_count,
+                    "pending": pending_count,
+                    "total": running_count + waiting_count + completed_count + pending_count,
+                },
+            },
+        }
+        
+        return MappingProxyType(metadata_dict)
+
     def _infer_context_from_capability(
         self,
         capability_id: str,
@@ -695,7 +817,7 @@ class UIContextProjector:
         
         return UrgencyLevel.NORMAL
     
-    def _build_surfaces_for_context(self, context: str) -> tuple[SurfaceItem, ...]:
+    def _build_surfaces_for_context(self, context: str, active_capability_ids: set[str] | None = None) -> tuple[SurfaceItem, ...]:
         """Build semantic surfaces for a given context."""
         surfaces = []
         
@@ -773,6 +895,26 @@ class UIContextProjector:
                     tier=tier,
                     metadata=MappingProxyType({}),
                 ))
+        
+        # Include actively executing semantic capabilities from concurrent tasks
+        if active_capability_ids:
+            for cap_id in sorted(active_capability_ids):
+                # Skip if already in surfaces
+                if any(s.capability_id == cap_id for s in surfaces):
+                    continue
+                # Only include if capability exists in registry
+                if self._capability_registry.contains(cap_id):
+                    cap_def = self._capability_registry.get(cap_id)
+                    # Use capability name from registry or derive from ID
+                    label = cap_def.name if cap_def else cap_id.replace(".", " ").title()
+                    # Determine tier: PRIMARY if it's the primary context's domain, SECONDARY otherwise
+                    tier = SurfaceTier.SECONDARY
+                    surfaces.append(SurfaceItem(
+                        capability_id=cap_id,
+                        label=label,
+                        tier=tier,
+                        metadata=MappingProxyType({}),
+                    ))
         
         # Always add ambient system surfaces
         for cap_id, label, tier in context_surfaces["system"]:
