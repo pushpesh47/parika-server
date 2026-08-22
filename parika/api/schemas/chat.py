@@ -15,6 +15,7 @@ Core-native `Goal`/`BrainRequest`.
 from __future__ import annotations
 
 from .common import ApiModel
+from parika.core.brain.brain_response import RequestStatus
 
 
 class ChatRequestBody(ApiModel):
@@ -25,6 +26,7 @@ class ChatRequestBody(ApiModel):
 class ChatResponseBody(ApiModel):
     session_id: str
     succeeded: bool
+    status: RequestStatus
     message: str | None = None
     error_message: str | None = None
 

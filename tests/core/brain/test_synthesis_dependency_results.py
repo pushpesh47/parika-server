@@ -9,6 +9,7 @@ import pytest
 
 from parika.core.brain.brain import Brain
 from parika.core.brain.brain_request import BrainRequest
+from parika.core.brain.brain_response import BrainResponse, RequestStatus
 from parika.core.capability_executor.capability_executor import CapabilityExecutor
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.capability_registry.capability_definition import CapabilityDefinition
@@ -417,3 +418,371 @@ def test_chat_turn_result_succeeded_planning_failure():
     assert "No models available" in chat_turn_result.error_message
     
     print("✓ Planning failure handling works!")
+
+
+def test_brain_response_status_success_all_goals_succeed():
+    """Test that BrainResponse.status returns SUCCESS when all goals succeed."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    # All goals succeed
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "data1"}),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "data2"}),
+    )
+    synthesis = GoalResult(
+        goal_id="g3",
+        task_id="t3",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": ChatResult(
+            message=ChatMessage(role="assistant", content="Summary"),
+            tool_invocations=(),
+        )}),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2, synthesis),
+    )
+    
+    assert brain_response.status == RequestStatus.SUCCESS
+    assert brain_response.succeeded is True
+    assert brain_response.partial_success is False
+
+
+def test_brain_response_status_partial_success_synthesis_succeeds_some_goals_fail():
+    """Test that BrainResponse.status returns PARTIAL_SUCCESS when synthesis succeeds but some independent goals fail."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    # Some goals succeed, one fails, synthesis succeeds
+    weather_current = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": {"temp": 25}}),
+    )
+    weather_forecast = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": {"forecast": "sunny"}}),
+    )
+    currency = GoalResult(
+        goal_id="g3",
+        task_id="t3",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Invalid currency code"),
+    )
+    synthesis = GoalResult(
+        goal_id="g4",
+        task_id="t4",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": ChatResult(
+            message=ChatMessage(role="assistant", content="Weather: 25°C sunny. Currency lookup failed."),
+            tool_invocations=(),
+        )}),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(weather_current, weather_forecast, currency, synthesis),
+    )
+    
+    assert brain_response.status == RequestStatus.PARTIAL_SUCCESS
+    assert brain_response.succeeded is False  # Backward compat: not all goals succeeded
+    assert brain_response.partial_success is True
+
+
+def test_brain_response_status_partial_success_multiple_independent_goals_fail():
+    """Test that BrainResponse.status returns PARTIAL_SUCCESS when multiple independent goals fail but synthesis succeeds."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    # Multiple goals fail, synthesis succeeds
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "success1"}),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Error 1"),
+    )
+    goal3 = GoalResult(
+        goal_id="g3",
+        task_id="t3",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Error 2"),
+    )
+    synthesis = GoalResult(
+        goal_id="g4",
+        task_id="t4",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": ChatResult(
+            message=ChatMessage(role="assistant", content="Partial results with errors"),
+            tool_invocations=(),
+        )}),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2, goal3, synthesis),
+    )
+    
+    assert brain_response.status == RequestStatus.PARTIAL_SUCCESS
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is True
+
+
+def test_brain_response_status_failed_synthesis_fails():
+    """Test that BrainResponse.status returns FAILED when synthesis itself fails."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    # Some goals succeed, but synthesis fails
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "data1"}),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Goal 2 failed"),
+    )
+    synthesis = GoalResult(
+        goal_id="g3",
+        task_id="t3",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Synthesis failed"),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2, synthesis),
+        synthesis_goal_id="g3",
+    )
+    
+    assert brain_response.status == RequestStatus.FAILED
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is False
+
+
+def test_brain_response_status_failed_planning_failure():
+    """Test that BrainResponse.status returns FAILED when planning fails."""
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id=None,
+        results=(),
+        planning_failure=RuntimeError("No models available"),
+    )
+    
+    assert brain_response.status == RequestStatus.FAILED
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is False
+
+
+def test_brain_response_status_failed_no_goals_no_synthesis():
+    """Test that BrainResponse.status returns FAILED when no goals and no synthesis."""
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(),
+    )
+    
+    assert brain_response.status == RequestStatus.FAILED
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is False
+
+
+def test_brain_response_status_partial_success_no_synthesis_some_goals_succeed():
+    """Test that BrainResponse.status returns PARTIAL_SUCCESS when some goals succeed but no synthesis."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    
+    # Some goals succeed, some fail, no synthesis goal
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "data1"}),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Goal 2 failed"),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2),
+    )
+    
+    assert brain_response.status == RequestStatus.PARTIAL_SUCCESS
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is True
+
+
+def test_brain_response_status_failed_no_synthesis_all_goals_fail():
+    """Test that BrainResponse.status returns FAILED when all goals fail and no synthesis."""
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Goal 1 failed"),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Goal 2 failed"),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2),
+    )
+    
+    assert brain_response.status == RequestStatus.FAILED
+    assert brain_response.succeeded is False
+    assert brain_response.partial_success is False
+
+
+def test_chat_turn_result_status_property():
+    """Test that ChatTurnResult.status delegates to BrainResponse.status."""
+    from parika.interfaces.session import ChatTurnResult
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    # PARTIAL_SUCCESS scenario
+    goal1 = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": "data1"}),
+    )
+    goal2 = GoalResult(
+        goal_id="g2",
+        task_id="t2",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Goal 2 failed"),
+    )
+    synthesis = GoalResult(
+        goal_id="g3",
+        task_id="t3",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": ChatResult(
+            message=ChatMessage(role="assistant", content="Summary"),
+            tool_invocations=(),
+        )}),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(goal1, goal2, synthesis),
+    )
+    
+    chat_turn_result = ChatTurnResult(brain_response=brain_response)
+    
+    assert chat_turn_result.status == RequestStatus.PARTIAL_SUCCESS
+    assert chat_turn_result.partial_success is True
+    assert chat_turn_result.succeeded is True  # Because synthesis succeeded
+
+
+def test_chat_turn_result_status_single_goal_success():
+    """Test ChatTurnResult.status for single successful goal."""
+    from parika.interfaces.session import ChatTurnResult
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    chat_result = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        response=TaskResponse(outputs={"result": ChatResult(
+            message=ChatMessage(role="assistant", content="Hello!"),
+            tool_invocations=(),
+        )}),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(chat_result,),
+    )
+    
+    chat_turn_result = ChatTurnResult(brain_response=brain_response)
+    
+    assert chat_turn_result.status == RequestStatus.SUCCESS
+    assert chat_turn_result.succeeded is True
+    assert chat_turn_result.partial_success is False
+
+
+def test_chat_turn_result_status_single_goal_failure():
+    """Test ChatTurnResult.status for single failed goal."""
+    from parika.interfaces.session import ChatTurnResult
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.task_manager.task_status import TaskStatus
+    
+    failed_result = GoalResult(
+        goal_id="g1",
+        task_id="t1",
+        status=TaskStatus.FAILED,
+        failure=RuntimeError("Provider unavailable"),
+    )
+    
+    brain_response = BrainResponse(
+        request_id="test-request",
+        plan_id="test-plan",
+        results=(failed_result,),
+    )
+    
+    chat_turn_result = ChatTurnResult(brain_response=brain_response)
+    
+    assert chat_turn_result.status == RequestStatus.FAILED
+    assert chat_turn_result.succeeded is False
+    assert chat_turn_result.partial_success is False

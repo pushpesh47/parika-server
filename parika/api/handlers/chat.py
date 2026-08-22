@@ -20,9 +20,10 @@ from typing import Any
 
 from parika.interfaces.runtime import ParikaRuntime
 from parika.interfaces.session import InterfaceSession
-from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
 
 from ..requests import ChatRequest
+from parika.core.brain.brain_response import RequestStatus
 
 
 def _load_or_create_session(
@@ -71,6 +72,7 @@ def handle_chat(
     return {
         "session_id": session.id,
         "succeeded": result.succeeded,
+        "status": result.status.value,
         "message": message,
         "error_message": None if result.succeeded else (result.error_message or "The request failed."),
     }

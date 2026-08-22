@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from parika.core.brain.brain_request import BrainRequest
-from parika.core.brain.brain_response import BrainResponse
+from parika.core.brain.brain_response import BrainResponse, RequestStatus
 from parika.core.brain.context_engine import ContextBundle, load_context_engine_config
 from parika.core.planner.goal import Goal
 from parika.core.provider_manager.chat_message import ChatMessage
@@ -114,6 +114,24 @@ class ChatTurnResult:
 
         # Otherwise fall back to brain response success (planning failure or all goals failed)
         return self.brain_response.succeeded
+
+    @property
+    def status(self) -> RequestStatus:
+        """
+        Three-state status of this turn.
+        
+        Delegates to BrainResponse.status for the authoritative status.
+        """
+        return self.brain_response.status
+
+    @property
+    def partial_success(self) -> bool:
+        """
+        Whether this turn achieved partial success.
+        
+        Delegates to BrainResponse.partial_success.
+        """
+        return self.brain_response.partial_success
 
     @property
     def chat_response(self) -> ChatResult | None:

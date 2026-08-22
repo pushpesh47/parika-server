@@ -219,6 +219,18 @@ class Brain:
         self._agent_orchestrator = agent_orchestrator
         self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
 
+    def _find_synthesis_goal_id(self, request: BrainRequest) -> str | None:
+        """
+        Find the synthesis goal ID from the request goals.
+        
+        Returns the goal_id of the synthesis goal (chat.respond with depends_on),
+        or None if no synthesis goal is present.
+        """
+        for goal in request.goals:
+            if self._is_synthesis_goal(goal):
+                return goal.id
+        return None
+
     def _is_synthesis_goal(self, goal: Goal) -> bool:
         """
         Check if a goal is a synthesis goal that should execute even with failed dependencies.
@@ -451,6 +463,7 @@ class Brain:
             request_id=request.id,
             plan_id=plan.id,
             results=results,
+            synthesis_goal_id=self._find_synthesis_goal_id(request),
         )
 
         self._logger.debug(
