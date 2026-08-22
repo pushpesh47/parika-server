@@ -163,11 +163,13 @@ def _serialize(results: tuple[SearchResult, ...]) -> str:
     )
 
 
-def _deserialize(payload: str) -> tuple[SearchResult, ...]:
+def _deserialize(payload: str | list) -> tuple[SearchResult, ...]:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
     return tuple(
         SearchResult(
             title=item["title"], url=item["url"],
             snippet=item.get("snippet"), display_url=item.get("display_url"),
         )
-        for item in json.loads(payload)
+        for item in payload
     )

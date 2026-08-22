@@ -57,8 +57,11 @@ from parika.core.planner.execution_plan import ExecutionPlan
 from parika.core.planner.goal import Goal
 from parika.core.planner.plan_step import PlanStep
 from parika.core.planner.planner import Planner
+from parika.core.provider_manager.chat_request import ChatRequest
+from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.task_manager.request import TaskRequest
 from parika.core.task_manager.task_manager import TaskManager
+from parika.core.tool_manager.request import ToolRequest
 from parika.core.utilities.progress import NullProgressReporter, ProgressReporter
 
 from .brain_request import BrainRequest
@@ -83,6 +86,7 @@ if TYPE_CHECKING:
     from parika.core.knowledge_manager.knowledge_manager import KnowledgeManager
     from parika.core.memory_manager.memory_manager import MemoryManager
     from parika.core.planner.model_selection.experience_source import ExperienceSource
+    from parika.core.provider_manager.chat_request import ChatRequest
 
 ROOT_SOURCE_ID = "brain.execution"
 """
@@ -214,6 +218,158 @@ class Brain:
         )
         self._agent_orchestrator = agent_orchestrator
         self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
+
+    def _is_synthesis_goal(self, goal: Goal) -> bool:
+        """
+        Check if a goal is a synthesis goal that should execute even with failed dependencies.
+        
+        A synthesis goal is typically a final response generation goal (chat.respond)
+        that depends on multiple data-gathering goals. It should receive partial results
+        and produce a response acknowledging any failures.
+        """
+        # Heuristic: chat.respond with dependencies is a synthesis goal
+        if goal.capability_id == "chat.respond" and goal.depends_on:
+            return True
+        # Also treat any goal with metadata flag as synthesis
+        if goal.metadata.get("is_synthesis_goal") is True:
+            return True
+        return False
+
+    def _build_dependency_results(
+        self,
+        goal_id: str,
+        deps: dict[str, set[str]],
+        results: dict[str, GoalResult],
+    ) -> dict[str, Any]:
+        """Build a summary of dependency results for a synthesis goal."""
+        dep_results = {}
+        for dep_id in deps.get(goal_id, []):
+            if dep_id in results:
+                result = results[dep_id]
+                if result.succeeded:
+                    dep_results[dep_id] = {
+                        "status": "success",
+                        "result": result.response,
+                    }
+                elif result.skipped:
+                    dep_results[dep_id] = {
+                        "status": "skipped",
+                        "reason": result.skip_reason,
+                    }
+                else:
+                    dep_results[dep_id] = {
+                        "status": "failed",
+                        "error": str(result.failure) if result.failure else "Unknown error",
+                    }
+            else:
+                dep_results[dep_id] = {
+                    "status": "unknown",
+                }
+        return dep_results
+
+    def _create_synthesis_execution_request(
+        self,
+        step: PlanStep,
+        goal: Goal,
+        dep_results: dict[str, Any],
+    ) -> PlanStep:
+        """
+        Create a modified PlanStep for a synthesis goal with dependency results injected.
+        """
+        from parika.core.capability_executor.request import CapabilityExecutionRequest
+        from parika.core.capability_executor.execution_target import ExecutionTarget
+        from parika.core.planner.plan_step import PlanStep
+        from parika.core.provider_manager.chat_request import ChatRequest
+        from parika.core.provider_manager.chat_message import ChatMessage
+        
+        execution_request = step.execution_request
+        backend_request = execution_request.backend_request
+        
+        # Inject dependency results into the backend request
+        if isinstance(backend_request, ToolRequest):
+            # For tool goals, add dependency results to arguments
+            new_arguments = dict(backend_request.arguments)
+            new_arguments["_dependency_results"] = dep_results
+            new_backend_request = ToolRequest(
+                arguments=new_arguments,
+                metadata=backend_request.metadata,
+            )
+        elif isinstance(backend_request, ChatRequest):
+            # For provider goals (ChatRequest), inject dependency results as a system message
+            # Format the dependency results into a structured message
+            dep_summary = self._format_dependency_results_for_synthesis(dep_results)
+            system_message = ChatMessage(
+                role="system",
+                content=(
+                    "DEPENDENCY RESULTS FOR SYNTHESIS:\n"
+                    "The following are the results from the data-gathering goals this synthesis depends on.\n"
+                    "Use these results to synthesize a final response. Note which goals failed.\n\n"
+                    f"{dep_summary}"
+                ),
+            )
+            # Insert the system message before the last message (typically the user message)
+            # or at the beginning if there's only one message
+            messages = list(backend_request.messages)
+            if len(messages) >= 2:
+                # Insert before the last message (user message)
+                messages.insert(-1, system_message)
+            else:
+                # Prepend as first message
+                messages.insert(0, system_message)
+            
+            new_backend_request = ChatRequest(
+                messages=tuple(messages),
+                tools=backend_request.tools,
+                on_token=backend_request.on_token,
+                options=getattr(backend_request, 'options', None),
+            )
+        else:
+            # For other provider request types, pass through unchanged
+            new_backend_request = backend_request
+        
+        new_execution_request = CapabilityExecutionRequest(
+            resolution=execution_request.resolution,
+            target=execution_request.target,
+            backend_request=new_backend_request,
+            metadata=execution_request.metadata,
+        )
+        
+        return PlanStep(
+            goal_id=step.goal_id,
+            execution_request=new_execution_request,
+            depends_on=step.depends_on,
+        )
+
+    def _format_dependency_results_for_synthesis(self, dep_results: dict[str, Any]) -> str:
+        """Format dependency results into a human-readable summary for the synthesis model."""
+        lines = []
+        for dep_id, result in dep_results.items():
+            status = result.get("status", "unknown")
+            if status == "success":
+                # Include a summary of the result
+                result_data = result.get("result")
+                if result_data:
+                    lines.append(f"✓ {dep_id}: SUCCESS - {self._summarize_result(result_data)}")
+                else:
+                    lines.append(f"✓ {dep_id}: SUCCESS")
+            elif status == "failed":
+                error = result.get("error", "Unknown error")
+                lines.append(f"✗ {dep_id}: FAILED - {error}")
+            elif status == "skipped":
+                reason = result.get("reason", "Dependency failed")
+                lines.append(f"⊘ {dep_id}: SKIPPED - {reason}")
+            else:
+                lines.append(f"? {dep_id}: {status.upper()}")
+        return "\n".join(lines)
+
+    def _summarize_result(self, result: Any) -> str:
+        """Create a brief summary of a tool result."""
+        if isinstance(result, dict):
+            # Try to extract key fields
+            if "result" in result:
+                return str(result["result"])[:200]
+            return str(result)[:200]
+        return str(result)[:200]
 
     def handle(self, request: BrainRequest) -> BrainResponse:
         """
@@ -431,6 +587,14 @@ class Brain:
                 goal = goals_by_id[goal_id]
                 step = steps_by_goal[goal_id]
                 
+                # Check if this is a synthesis goal that needs dependency results
+                if self._is_synthesis_goal(goal) and deps[goal_id]:
+                    # Build dependency results for injection
+                    dep_results = self._build_dependency_results(goal_id, deps, results)
+                    if dep_results:
+                        # Create modified execution request with dependency results
+                        step = self._create_synthesis_execution_request(step, goal, dep_results)
+                
                 # Create async task for this goal
                 coro = self._execute_goal_async(goal, step, progress)
                 running[goal_id] = asyncio.create_task(coro)
@@ -478,7 +642,7 @@ class Brain:
                 for goal_id in goals_to_check:
                     if goal_id in ready_goals:
                         continue
-                    # Check if all dependencies are now satisfied
+                    # Check if all dependencies are now satisfied (completed or failed)
                     all_deps_satisfied = True
                     for dep in deps[goal_id]:
                         if dep not in completed_goal_ids:
@@ -486,21 +650,70 @@ class Brain:
                             break
                     if all_deps_satisfied:
                         # Check if any dependency failed
-                        if any(dep in failed_goal_ids for dep in deps[goal_id]):
-                            # Dependency failed - skip this goal
-                            results[goal_id] = GoalResult(
-                                goal_id=goal_id,
-                                task_id=None,
-                                status=None,
-                                skipped=True,
-                                skip_reason=(
-                                    "Skipped because dependency/dependencies "
-                                    f"failed: {sorted(set(deps[goal_id]) & failed_goal_ids)}."
-                                ),
-                            )
-                            failed_goal_ids.add(goal_id)
-                            completed_goal_ids.add(goal_id)
-                            pending_goals.remove(goal_id)
+                        failed_deps = set(deps[goal_id]) & failed_goal_ids
+                        if failed_deps:
+                            # Dependency failed - check if this is a synthesis goal
+                            goal = goals_by_id[goal_id]
+                            if self._is_synthesis_goal(goal):
+                                # Synthesis goal: execute with dependency results
+                                dep_results = self._build_dependency_results(goal_id, deps, results)
+                                step = steps_by_goal[goal_id]
+                                # Create modified execution request with dependency results
+                                synthesis_step = self._create_synthesis_execution_request(step, goal, dep_results)
+                                # Execute the synthesis goal with modified request
+                                async def execute_synthesis():
+                                    task = self._task_manager.create(
+                                        TaskRequest(
+                                            capability_id=goal.capability_id,
+                                            inputs=goal.inputs,
+                                            context_id=goal.context_id,
+                                            metadata=goal.metadata,
+                                        ),
+                                    )
+                                    goal_progress = progress.child(EXECUTE_GOAL_SOURCE_ID, task_id=task.id)
+                                    goal_progress.started(message=f"Executing synthesis goal '{goal.id}'.")
+                                    try:
+                                        executed_task = await asyncio.get_event_loop().run_in_executor(
+                                            None,
+                                            lambda: self._task_manager.execute(task.id, synthesis_step.execution_request),
+                                        )
+                                    except Exception as ex:
+                                        self._logger.exception(
+                                            "Execution failed for synthesis goal '%s' (task '%s').",
+                                            goal.id,
+                                            task.id,
+                                        )
+                                        goal_progress.failed(message=str(ex))
+                                        return GoalResult(
+                                            goal_id=goal.id,
+                                            task_id=task.id,
+                                            status=self._task_manager.get(task.id).status,
+                                            failure=ex,
+                                        )
+                                    goal_progress.completed()
+                                    return GoalResult(
+                                        goal_id=goal.id,
+                                        task_id=executed_task.id,
+                                        status=executed_task.status,
+                                        response=executed_task.response,
+                                    )
+                                running[goal_id] = asyncio.create_task(execute_synthesis())
+                                pending_goals.remove(goal_id)
+                            else:
+                                # Regular goal: skip it
+                                results[goal_id] = GoalResult(
+                                    goal_id=goal_id,
+                                    task_id=None,
+                                    status=None,
+                                    skipped=True,
+                                    skip_reason=(
+                                        "Skipped because dependency/dependencies "
+                                        f"failed: {sorted(failed_deps)}."
+                                    ),
+                                )
+                                failed_goal_ids.add(goal_id)
+                                completed_goal_ids.add(goal_id)
+                                pending_goals.remove(goal_id)
                         else:
                             ready_goals.add(goal_id)
         

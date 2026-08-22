@@ -110,7 +110,8 @@ _MODEL_OVERRIDES: dict[str, SpecializationOverride] = {
         add=frozenset({"vision_understanding", "ocr", "document_understanding"}),
     ),
     "medgemma1.5":  SpecializationOverride(
-        remove=frozenset({"general_chat", "vision_understanding", "ocr", "document_understanding"}),
+        remove=frozenset({"general_chat"}),
+        add=frozenset({"vision_understanding", "ocr", "document_understanding"}),
     ),
 }
 """

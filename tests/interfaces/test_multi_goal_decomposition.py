@@ -218,7 +218,7 @@ class TestMultiGoalDecomposition:
             "currency.convert", "web.search"
         ])
         
-        goals = decomposer._parse_decomposition(raw_response, available)
+        goals = decomposer._parse_decomposition(raw_response, available, "test message")
         
         assert len(goals) == 5
         cap_ids = [g.capability_id for g in goals]

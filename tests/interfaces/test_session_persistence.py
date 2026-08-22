@@ -47,26 +47,69 @@ def _test_db_pool():
 
 
 class _ScriptedOllamaTransport:
+    """
+    Deterministic OllamaTransport: canned model discovery + health,
+    and a FIFO queue of `/api/chat` responses.
+    """
+
     def __init__(self) -> None:
         self._chat_queue: list[dict[str, Any]] = []
         self.chat_payloads: list[dict[str, Any]] = []
+        self._decomposition_call_count = 0
 
     def queue_chat_response(self, response: dict[str, Any]) -> None:
         self._chat_queue.append(response)
 
-    def request_json(self, method, url, *, payload, timeout) -> dict[str, Any]:
+    def request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: Mapping[str, Any] | None,
+        timeout: float,
+    ) -> dict[str, Any]:
         if url.endswith("/api/tags"):
             return {"models": [{"name": "test-model"}]}
+
         if url.endswith("/api/show"):
             return {"capabilities": ["completion", "tools"]}
+
         if url.endswith("/api/version"):
             return {"version": "0.0.0-test"}
+
         if url.endswith("/api/chat"):
             self.chat_payloads.append(dict(payload or {}))
+            
+            # Check if this is a decomposition request (contains "Goal Decomposer" in system prompt)
+            if payload and "messages" in payload:
+                for msg in payload["messages"]:
+                    if msg.get("role") == "system" and "Goal Decomposer" in msg.get("content", ""):
+                        self._decomposition_call_count += 1
+                        # Return a valid decomposition JSON for simple requests
+                        # Use the next queued response's content as the message for chat.respond
+                        # BUT DO NOT CONSUME THE QUEUE - decomposition calls are internal
+                        if self._chat_queue:
+                            next_response = self._chat_queue[0]  # Peek, don't pop
+                            message_content = next_response.get("message", {}).get("content", "Hi there.")
+                        else:
+                            message_content = "Hi there."
+                        return {
+                            "message": {
+                                "role": "assistant",
+                                "content": f'{{"goals": [{{"id": "goal_0", "capability_id": "chat.respond", "inputs": {{"message": "{message_content}"}}, "depends_on": []}}]}}',
+                                "done": True
+                            },
+                            "done": True
+                        }
+            
+            # Only consume queue for non-decomposition calls
             return self._chat_queue.pop(0)
+
         return {}
 
-    def stream_lines(self, method, url, *, payload, timeout):
+    def stream_lines(
+        self, method: str, url: str, *, payload, timeout
+    ) -> Iterator[dict[str, Any]]:
         return iter(())
 
 
@@ -273,25 +316,28 @@ class TestSessionRetrieval:
         transport: _ScriptedOllamaTransport,
         session_store: PostgreSQLSessionStore,
     ) -> None:
+        # Queue responses for both sessions' actual chat calls
+        # (decomposition calls use synthetic responses and don't consume the queue)
         transport.queue_chat_response(_simple_answer("Noted."))
-
+        transport.queue_chat_response(
+            _simple_answer("You previously mentioned Docker.")
+        )
+    
         earlier = InterfaceSession(
             runtime, system_prompt=None, session_store=session_store
         )
         earlier.submit_text("Docker is great for containerizing apps.")
-
-        transport.queue_chat_response(
-            _simple_answer("You previously mentioned Docker.")
-        )
-
+    
         current = InterfaceSession(
             runtime, system_prompt=None, session_store=session_store
         )
         current.submit_text("Search previous sessions for Docker.")
-
-        sent_messages = transport.chat_payloads[1]["messages"]
+    
+        # With multi-goal decomposition, the actual chat calls are at indices 1 and 3
+        # (0=first decomposition, 1=first actual, 2=second decomposition, 3=second actual)
+        sent_messages = transport.chat_payloads[3]["messages"]
         system_contents = [m["content"] for m in sent_messages if m["role"] == "system"]
-
+    
         assert any("Docker" in content for content in system_contents)
         assert any(
             "previously saved sessions" in content for content in system_contents
@@ -304,13 +350,12 @@ class TestSessionRetrieval:
         session_store: PostgreSQLSessionStore,
     ) -> None:
         transport.queue_chat_response(_simple_answer("Noted."))
+        transport.queue_chat_response(_simple_answer("Here you go."))
 
         earlier = InterfaceSession(
             runtime, system_prompt=None, session_store=session_store
         )
         earlier.submit_text("Docker is great for containerizing apps.")
-
-        transport.queue_chat_response(_simple_answer("Here you go."))
 
         current = InterfaceSession(
             runtime, system_prompt=None, session_store=session_store
@@ -339,7 +384,9 @@ class TestSessionRetrieval:
         )
         session.submit_text("Search previous sessions for Docker.")
 
-        sent_messages = transport.chat_payloads[0]["messages"]
+        # With multi-goal decomposition, the actual chat call is at index 1
+        # (0=decomposition, 1=actual chat)
+        sent_messages = transport.chat_payloads[1]["messages"]
         system_contents = [m["content"] for m in sent_messages if m["role"] == "system"]
 
         # No earlier session ever mentioned Docker, so either no

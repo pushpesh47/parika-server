@@ -53,6 +53,7 @@ Rules:
 5. Independent goals (no shared data) should have no dependencies
 6. Simple requests (greeting, single fact) -> 1 goal
 7. Complex requests -> multiple goals
+8. CRITICAL: The FINAL chat.respond synthesis goal MUST depend on ALL data-gathering goals. If the user asks for multiple pieces of information (weather, currency, web search, etc.), create ONE final chat.respond goal that depends on ALL of them.
 
 Respond with ONLY a JSON object matching this schema:
 {{
@@ -61,7 +62,7 @@ Respond with ONLY a JSON object matching this schema:
     {{"id": "goal_1", "capability_id": "weather.forecast", "inputs": {{"location": "Patna, Bihar"}}, "depends_on": []}},
     {{"id": "goal_2", "capability_id": "currency.convert", "inputs": {{"from": "USD", "to": "INR", "amount": 1}}, "depends_on": []}},
     {{"id": "goal_3", "capability_id": "web.search", "inputs": {{"query": "Jharkhand protest outcome"}}, "depends_on": []}},
-    {{"id": "goal_4", "capability_id": "chat.respond", "inputs": {{"message": "Summarize all results"}}, "depends_on": ["goal_0", "goal_1", "goal_2", "goal_3"]}}
+    {{"id": "goal_4", "capability_id": "chat.respond", "inputs": {{"message": "Summarize all results: weather, currency, and web search"}}, "depends_on": ["goal_0", "goal_1", "goal_2", "goal_3"]}}
   ]
 }}
 
@@ -161,7 +162,7 @@ class GoalDecomposer:
             return self._fallback_single_goal(user_message)
 
         raw_response = self._extract_text(response.results[0])
-        goals = self._parse_decomposition(raw_response, available_capabilities)
+        goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
 
         return DecompositionResult(
             goals=tuple(goals),
@@ -172,15 +173,36 @@ class GoalDecomposer:
         self,
         raw_response: str,
         available_capabilities: frozenset[str],
+        user_message: str,
     ) -> list[Goal]:
         """Parse LLM response into Goal objects."""
         try:
-            # Try to extract JSON from response
-            json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-            if not json_match:
-                raise ValueError("No JSON object found in response")
+            # Try to extract JSON from response - the LLM outputs JSON in a code block
+            # Look for ```json ... ``` or just the JSON object
+            import re
             
-            data = json.loads(json_match.group())
+            # First try to find JSON in a code block
+            code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+            if code_block_match:
+                json_str = code_block_match.group(1)
+                data = json.loads(json_str)
+            else:
+                # Fallback: find the last {...} block that parses as JSON
+                json_matches = list(re.finditer(r'\{.*?\}', raw_response, re.DOTALL))
+                if not json_matches:
+                    raise ValueError("No JSON object found in response")
+                
+                data = None
+                for match in reversed(json_matches):
+                    try:
+                        data = json.loads(match.group())
+                        break
+                    except json.JSONDecodeError:
+                        continue
+                
+                if data is None:
+                    raise ValueError("No valid JSON object found in response")
+            
             goal_data_list = data.get("goals", [])
             
             if not goal_data_list:

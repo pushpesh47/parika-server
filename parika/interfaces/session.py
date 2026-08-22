@@ -31,6 +31,7 @@ from uuid import uuid4
 from parika.core.brain.brain_request import BrainRequest
 from parika.core.brain.brain_response import BrainResponse
 from parika.core.brain.context_engine import ContextBundle, load_context_engine_config
+from parika.core.planner.goal import Goal
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_result import ChatResult
 from parika.core.provider_manager.tool_spec import ToolSpec
@@ -96,8 +97,22 @@ class ChatTurnResult:
     def succeeded(self) -> bool:
         """
         Whether the turn completed successfully.
+
+        For multi-goal requests with a synthesis goal (chat.respond), the turn
+        is considered successful if the synthesis goal produced a response,
+        even if some independent data-gathering goals failed. This ensures
+        the user receives the generated response with acknowledgment of any
+        failures.
+
+        For single-goal requests and planning failures, falls back to the
+        BrainResponse's overall success status.
         """
 
+        # If there's a chat response, the synthesis succeeded and user gets a response
+        if self.chat_response is not None:
+            return True
+
+        # Otherwise fall back to brain response success (planning failure or all goals failed)
         return self.brain_response.succeeded
 
     @property
@@ -114,15 +129,13 @@ class ChatTurnResult:
         if not self.brain_response.results:
             return None
 
-        goal_result = self.brain_response.results[0]
-
-        if goal_result.response is None:
-            return None
-
-        backend_response = goal_result.response.outputs.get("result")
-
-        if isinstance(backend_response, ChatResult):
-            return backend_response
+        # Find the goal result that contains a ChatResult (typically the final synthesis goal)
+        for goal_result in self.brain_response.results:
+            if goal_result.response is None:
+                continue
+            backend_response = goal_result.response.outputs.get("result")
+            if isinstance(backend_response, ChatResult):
+                return backend_response
 
         return None
 
@@ -139,13 +152,12 @@ class ChatTurnResult:
         if not self.brain_response.results:
             return None
 
-        goal_result = self.brain_response.results[0]
-
-        if goal_result.skipped:
-            return goal_result.skip_reason
-
-        if goal_result.failure is not None:
-            return str(goal_result.failure)
+        # Check all goal results for errors
+        for goal_result in self.brain_response.results:
+            if goal_result.skipped:
+                return goal_result.skip_reason
+            if goal_result.failure is not None:
+                return str(goal_result.failure)
 
         return None
 
@@ -487,13 +499,26 @@ class InterfaceSession:
         enhanced_goals = []
         for goal in goals:
             if goal.capability_id == "chat.respond":
-                # Rebuild this goal with proper context and tools
+                # For synthesis goals (those with dependencies), don't pass tools
+                # The dependency results are injected via system message by Brain
+                goal_tools = () if goal.depends_on else tools
+                
+                # Rebuild this goal with proper context and tools, preserving metadata
                 enhanced_goal = build_chat_goal(
                     messages=effective_messages,
-                    tools=tools,
+                    tools=goal_tools,
                     on_token=on_token,
                     latest_message=text,
                     runtime=self._runtime,
+                )
+                # Preserve original goal metadata (dependencies, etc.)
+                enhanced_goal = Goal(
+                    id=goal.id,
+                    capability_id=goal.capability_id,
+                    inputs=goal.inputs,  # Keep original inputs (message to summarize)
+                    depends_on=goal.depends_on,
+                    provider_request_builder=enhanced_goal.provider_request_builder,
+                    metadata=goal.metadata,
                 )
                 enhanced_goals.append(enhanced_goal)
             else:

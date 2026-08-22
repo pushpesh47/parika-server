@@ -147,6 +147,11 @@ class PostgreSQLKnowledgeUnitStorage:
         metadata = row["metadata"]
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
+        
+        created_at = row["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        
         knowledge = Knowledge(
             id=UUID(row["id"]),
             source_id=UUID(row["source_id"]),
@@ -154,7 +159,7 @@ class PostgreSQLKnowledgeUnitStorage:
             content=row["content"],
             location=row["location"],
             metadata=MappingProxyType(metadata),
-            created_at=datetime.fromisoformat(row["created_at"]),
+            created_at=created_at,
         )
 
         bm25_rank = float(row["rank"])
