@@ -57,11 +57,11 @@ class TestDeterministicFiltering:
     def test_excludes_non_public_capabilities(self) -> None:
         catalog = CapabilityCatalog()
         definitions = (
-            _definition("internal.helper", public=False),
-            _definition("public.tool", public=True),
+            _definition("internal.helper", public=False, keywords=frozenset({"test"})),
+            _definition("public.tool", public=True, keywords=frozenset({"test"})),
         )
 
-        result = catalog.retrieve(definitions, text="anything")
+        result = catalog.retrieve(definitions, text="test")
 
         ids = {definition.id for definition in result}
         assert "internal.helper" not in ids
@@ -75,10 +75,11 @@ class TestDeterministicFiltering:
             description="",
             category=CapabilityCategory.TOOL,
             metadata={"catalog_excluded": True},
+            keywords=frozenset({"test"}),
         )
-        included = _definition("included.capability")
+        included = _definition("included.capability", keywords=frozenset({"test"}))
 
-        result = catalog.retrieve((excluded, included), text="anything")
+        result = catalog.retrieve((excluded, included), text="test")
 
         ids = {definition.id for definition in result}
         assert "excluded.capability" not in ids
@@ -167,9 +168,9 @@ class TestFamilyRanking:
         self,
     ) -> None:
         catalog = CapabilityCatalog()
-        definition = _definition("standalone.capability")
+        definition = _definition("standalone.capability", keywords=frozenset({"test"}))
 
-        result = catalog.retrieve((definition,), text="anything")
+        result = catalog.retrieve((definition,), text="test")
 
         assert result == (definition,)
 
@@ -178,30 +179,30 @@ class TestBudgetAwareSelection:
     def test_returns_every_candidate_when_within_budget(self) -> None:
         catalog = CapabilityCatalog(budget=100)
         definitions = tuple(
-            _definition(f"capability.{index}") for index in range(10)
+            _definition(f"capability.{index}", keywords=frozenset({"test"})) for index in range(10)
         )
 
-        result = catalog.retrieve(definitions, text="anything")
+        result = catalog.retrieve(definitions, text="test")
 
         assert len(result) == 10
 
     def test_truncates_to_budget_when_candidates_exceed_it(self) -> None:
         catalog = CapabilityCatalog(budget=3)
         definitions = tuple(
-            _definition(f"capability.{index}") for index in range(10)
+            _definition(f"capability.{index}", keywords=frozenset({"test"})) for index in range(10)
         )
 
-        result = catalog.retrieve(definitions, text="anything")
+        result = catalog.retrieve(definitions, text="test")
 
         assert len(result) == 3
 
     def test_non_positive_budget_is_treated_as_unbounded(self) -> None:
         catalog = CapabilityCatalog(budget=0)
         definitions = tuple(
-            _definition(f"capability.{index}") for index in range(10)
+            _definition(f"capability.{index}", keywords=frozenset({"test"})) for index in range(10)
         )
 
-        result = catalog.retrieve(definitions, text="anything")
+        result = catalog.retrieve(definitions, text="test")
 
         assert len(result) == 10
 
@@ -234,9 +235,9 @@ class TestSemanticRetrievalExtensionPoint:
         catalog_with_semantic = CapabilityCatalog(
             semantic_scorer=None,
         )
-        definitions = (_definition("standalone.capability"),)
+        definitions = (_definition("standalone.capability", keywords=frozenset({"test"})),)
 
-        result = catalog_with_semantic.retrieve(definitions, text="anything")
+        result = catalog_with_semantic.retrieve(definitions, text="test")
 
         assert result == definitions
 
@@ -265,12 +266,15 @@ class TestPipelineExtensibility:
                 )
                 return context
 
-        definitions = (_definition("weather.current"), _definition("web.search"))
+        definitions = (
+            _definition("weather.current", keywords=frozenset({"test"})),
+            _definition("web.search", keywords=frozenset({"test"})),
+        )
         catalog = CapabilityCatalog(
             budget=1, extra_stages=(_RecordingStage(),)
         )
 
-        result = catalog.retrieve(definitions, text="anything")
+        result = catalog.retrieve(definitions, text="test")
 
         # The recording stage runs after the Budget Safety Ceiling, so
         # it only ever observes the already-budget-limited roster.
@@ -293,9 +297,12 @@ class TestPipelineExtensibility:
         assert result == ()
 
     def test_omitted_extra_stages_leaves_the_fixed_pipeline_unchanged(self) -> None:
-        definitions = (_definition("weather.current"), _definition("web.search"))
+        definitions = (
+            _definition("weather.current", keywords=frozenset({"test"})),
+            _definition("web.search", keywords=frozenset({"test"})),
+        )
 
-        result = CapabilityCatalog().retrieve(definitions, text="anything")
+        result = CapabilityCatalog().retrieve(definitions, text="test")
 
         assert set(definition.id for definition in result) == {
             "weather.current",

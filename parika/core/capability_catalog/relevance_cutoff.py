@@ -230,15 +230,14 @@ def apply_relevance_cutoff(
 
     if best_score <= 0.0:
         return RelevanceCutoffResult(
-            survivors=definitions,
-            discarded=(),
+            survivors=(),
+            discarded=definitions,
             best_score=0.0,
             cutoff_score=0.0,
             reason=(
                 "no capability scored above zero for this turn's text "
-                "(no lexical/semantic signal found); deferring to the "
-                "full deterministically-filtered roster rather than "
-                "guessing at relevance"
+                "(no lexical/semantic signal found); advertising zero "
+                "tools for no-signal conversational requests"
             ),
         )
 

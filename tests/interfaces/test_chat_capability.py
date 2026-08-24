@@ -86,17 +86,14 @@ class TestDiscoverToolSpecs:
     def test_includes_web_search_with_its_own_affordance_contract(
         self, runtime
     ) -> None:
-        specs = discover_tool_specs(runtime, text="Hello!")
+        # "search the web for news" contains tokens that match web.search capability
+        specs = discover_tool_specs(runtime, text="search the web for news")
         by_capability = {spec.capability_id: spec for spec in specs}
 
         assert WEB_SEARCH_CAPABILITY_ID in by_capability
         web_search_spec = by_capability[WEB_SEARCH_CAPABILITY_ID]
         assert web_search_spec.name == WEB_SEARCH_TOOL_SPEC.name
         assert web_search_spec.parameters == WEB_SEARCH_TOOL_SPEC.parameters
-        # The composed description leads with the Tool's own short
-        # description, then appends its Tool Affordance Contract
-        # sections (Purpose/Use when/Avoid when/...) -- see
-        # `ai_context.tool_context._compose_description()`.
         assert web_search_spec.description.startswith(
             WEB_SEARCH_TOOL_SPEC.description
         )
@@ -104,7 +101,8 @@ class TestDiscoverToolSpecs:
         assert "Avoid when:" in web_search_spec.description
 
     def test_includes_runtime_datetime(self, runtime) -> None:
-        specs = discover_tool_specs(runtime, text="Hello!")
+        # "what time is it" contains tokens that match runtime.current_datetime capability
+        specs = discover_tool_specs(runtime, text="what time is it")
         by_name = {spec.name: spec for spec in specs}
 
         assert "get_current_datetime" in by_name
@@ -121,10 +119,11 @@ class TestDiscoverToolSpecs:
                 name="Custom Capability",
                 description="A capability with no documented schema.",
                 category=CapabilityCategory.TOOL,
+                keywords=frozenset({"custom", "made", "up"}),
             )
         )
 
-        specs = discover_tool_specs(runtime, text="Hello!")
+        specs = discover_tool_specs(runtime, text="custom made up capability")
         by_capability = {spec.capability_id: spec for spec in specs}
 
         assert "custom.made_up_capability" in by_capability
@@ -135,7 +134,8 @@ class TestDiscoverToolSpecs:
     def test_filesystem_capabilities_use_their_own_documented_schema(
         self, runtime
     ) -> None:
-        specs = discover_tool_specs(runtime, text="Hello!")
+        # "read a file" contains tokens that match filesystem.read capability
+        specs = discover_tool_specs(runtime, text="read a file")
         by_capability = {spec.capability_id: spec for spec in specs}
 
         assert "filesystem.read" in by_capability
@@ -156,26 +156,18 @@ class TestDiscoverToolSpecs:
             spec.capability_id != CHAT_CAPABILITY_ID for spec in specs
         )
 
-    def test_ordinary_message_advertises_every_enabled_capability_except_remember(
+    def test_no_signal_request_advertises_zero_tools(
         self, runtime
     ) -> None:
         """
-        Unlike the removed domain-keyword router, an ordinary message
-        with no explicit memory intent still advertises every enabled
-        Capability except `memory_remember` -- relevance judgment is
-        left to the model's own native tool-calling reasoning.
+        A conversational request with no relevance signal (e.g. "Hello!")
+        must advertise zero tools. The old behavior of returning all
+        enabled capabilities caused a massive prompt token explosion
+        (≈178 capabilities → 177 tools → 46k prompt tokens).
         """
 
         specs = discover_tool_specs(runtime, text="Hello!")
-        names = {spec.name for spec in specs}
-
-        assert "memory_remember" not in names
-        assert "memory_search" in names
-        assert "memory_forget" in names
-        assert "get_current_datetime" in names
-        assert "web_search" in names
-        assert "weather_current" in names
-        assert "weather_forecast" in names
+        assert specs == ()
 
     def test_ordinary_statement_does_not_advertise_memory_remember(
         self, runtime
@@ -195,22 +187,23 @@ class TestDiscoverToolSpecs:
 
         assert "memory_remember" in names
 
-    def test_identity_question_advertises_no_memory_tools(self, runtime) -> None:
+    def test_identity_question_advertises_no_tools(self, runtime) -> None:
+        """
+        An identity question like "Who are you?" has no relevance signal
+        for any capability, so zero tools should be advertised.
+        """
         specs = discover_tool_specs(runtime, text="Who are you?")
-        names = {spec.name for spec in specs}
+        assert specs == ()
 
-        assert "memory_remember" not in names
-        assert "memory_search" not in names
-        assert "memory_forget" not in names
-
-    def test_identity_question_still_advertises_non_memory_capabilities(
+    def test_explicit_memory_request_advertises_memory_remember(
         self, runtime
     ) -> None:
-        specs = discover_tool_specs(runtime, text="Who are you?")
+        specs = discover_tool_specs(
+            runtime, text="Remember my name is Pushpesh."
+        )
         names = {spec.name for spec in specs}
 
-        assert "web_search" in names
-        assert "get_current_datetime" in names
+        assert "memory_remember" in names
 
     def test_never_reintroduces_a_disabled_capability(self, runtime) -> None:
         runtime.capability_registry.disable("weather.current")

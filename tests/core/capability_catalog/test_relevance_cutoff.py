@@ -50,24 +50,24 @@ def _cutoff(
     )
 
 
-class TestNoSignalDefersToFullRoster:
-    def test_every_candidate_survives_when_nothing_scored_above_zero(self) -> None:
+class TestNoSignalReturnsZeroCapabilities:
+    def test_zero_capabilities_when_nothing_scored_above_zero(self) -> None:
         """
-        "No candidate scored above zero" means "we have no signal to
-        judge relevance by", not "everything is equally irrelevant" --
-        cutoff must defer to the full roster rather than guess, exactly
-        like PARIKA's existing Automatic Capability Discovery does for
-        an ambiguous/generic turn.
+        No relevance signal means no tools should be advertised for
+        conversational requests like "hello". The old behavior of
+        returning all candidates caused a massive prompt token explosion
+        (≈178 capabilities → 177 tools → 46k prompt tokens).
         """
 
         definitions = (_definition("a"), _definition("b"), _definition("c"))
 
         result = _cutoff(definitions, scores={})
 
-        assert result.survivors == definitions
-        assert result.discarded == ()
+        assert result.survivors == ()
+        assert result.discarded == definitions
         assert result.best_score == 0.0
         assert "no capability scored above zero" in result.reason
+        assert "advertising zero tools" in result.reason
 
 
 class TestRelativeThreshold:
