@@ -27,6 +27,9 @@ from .exceptions import InvalidCurrencyArgumentError
 from .manifest import CurrencyMode
 from .protocol import RateBackend
 
+import logging
+
+_logger = logging.getLogger(__name__)
 
 class CurrencyToolDriver:
     """
@@ -85,13 +88,16 @@ class CurrencyToolDriver:
             CurrencyAllProvidersFailedError:
                 If every configured provider failed.
         """
+        _logger.debug(
+            "CurrencyToolDriver.execute-check-: mode=%s arguments=%r",
+            self._mode,
+            request.arguments,
+        )
+        base = request.arguments.get("base") or request.arguments.get("from")
+        base = validate_currency_code(base, argument_name="base")
 
-        base = validate_currency_code(
-            request.arguments.get("base"), argument_name="base"
-        )
-        quote = validate_currency_code(
-            request.arguments.get("quote"), argument_name="quote"
-        )
+        quote = request.arguments.get("quote") or request.arguments.get("to")
+        quote = validate_currency_code(quote, argument_name="quote")
 
         rate = self._rate_backend.get_rate(base, quote)
 
