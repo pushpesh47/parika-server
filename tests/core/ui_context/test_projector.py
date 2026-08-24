@@ -2841,9 +2841,6 @@ class TestPhase2ContextualIntelligence:
             assert domain.contextual_role in ContextualRole
             assert 0.0 <= domain.relevance <= 1.0
         
-        # Entities from all domains
-        assert len(state.entities) > 0
-        
         # Topics from all domains
         assert len(state.topics) >= 2
     

@@ -394,6 +394,19 @@ class SurfaceItem:
         default_factory=lambda: MappingProxyType({})
     )
     """Optional semantic metadata"""
+    
+    # Phase 3: Semantic decoupling fields (additive for backward compatibility)
+    domain: str | None = None
+    """Semantic domain (e.g., 'weather', 'finance', 'search') - derived from capability"""
+    
+    semantic_type: str | None = None
+    """Semantic type within domain (e.g., 'current_conditions', 'forecast', 'exchange_rate')"""
+    
+    capability_category: str | None = None
+    """Capability category (e.g., 'tool', 'llm', 'speech')"""
+    
+    capability_tags: tuple[str, ...] = field(default_factory=tuple)
+    """Capability tags for semantic grouping"""
 
     def __post_init__(self) -> None:
         """Validate surface item after initialization."""
@@ -413,6 +426,17 @@ class SurfaceItem:
             raise TypeError("freshness must be a FreshnessInfo or None")
         if type(self.metadata) is not MappingProxyType:
             raise TypeError("metadata must be a MappingProxyType")
+        if self.domain is not None and (type(self.domain) is not str or not self.domain.strip()):
+            raise ValueError("domain must be a non-empty string or None")
+        if self.semantic_type is not None and (type(self.semantic_type) is not str or not self.semantic_type.strip()):
+            raise ValueError("semantic_type must be a non-empty string or None")
+        if self.capability_category is not None and (type(self.capability_category) is not str or not self.capability_category.strip()):
+            raise ValueError("capability_category must be a non-empty string or None")
+        if type(self.capability_tags) is not tuple:
+            raise TypeError("capability_tags must be a tuple")
+        for tag in self.capability_tags:
+            if type(tag) is not str:
+                raise TypeError("each capability_tag must be a string")
         
         object.__setattr__(
             self,
@@ -459,6 +483,16 @@ class DomainInfo:
     freshness: FreshnessInfo | None = None
     """Freshness information if applicable"""
     
+    # Phase 3: Semantic decoupling fields
+    domain_category: str | None = None
+    """Semantic category of this domain (e.g., 'information', 'action', 'communication')"""
+    
+    primary_entities: tuple[str, ...] = field(default_factory=tuple)
+    """Primary entity names for quick client access"""
+    
+    primary_topics: tuple[str, ...] = field(default_factory=tuple)
+    """Primary topic names for quick client access"""
+    
     def __post_init__(self) -> None:
         """Validate domain info after initialization."""
         if type(self.name) is not str or not self.name.strip():
@@ -491,6 +525,18 @@ class DomainInfo:
                 raise TypeError("each topic must be a TopicInfo")
         if self.freshness is not None and type(self.freshness) is not FreshnessInfo:
             raise TypeError("freshness must be a FreshnessInfo or None")
+        if self.domain_category is not None and (type(self.domain_category) is not str or not self.domain_category.strip()):
+            raise ValueError("domain_category must be a non-empty string or None")
+        if type(self.primary_entities) is not tuple:
+            raise TypeError("primary_entities must be a tuple")
+        for e in self.primary_entities:
+            if type(e) is not str:
+                raise TypeError("each primary_entity must be a string")
+        if type(self.primary_topics) is not tuple:
+            raise TypeError("primary_topics must be a tuple")
+        for t in self.primary_topics:
+            if type(t) is not str:
+                raise TypeError("each primary_topic must be a string")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -522,6 +568,16 @@ class SynthesisInfo:
     contextual_role: ContextualRole = ContextualRole.PRIMARY
     """Role in current contextual HUD"""
     
+    # Phase 3: Semantic decoupling fields
+    domain: str | None = None
+    """Semantic domain of synthesis (e.g., 'chat', 'report_generation')"""
+    
+    semantic_type: str | None = None
+    """Type of synthesis (e.g., 'summary', 'report', 'answer', 'aggregation')"""
+    
+    dependency_domains: tuple[str, ...] = field(default_factory=tuple)
+    """Domains of the dependencies"""
+    
     def __post_init__(self) -> None:
         """Validate synthesis info after initialization."""
         if self.goal_id is not None and type(self.goal_id) is not str:
@@ -538,6 +594,15 @@ class SynthesisInfo:
             raise TypeError("failed_dependencies must be a tuple")
         if type(self.contextual_role) is not ContextualRole:
             raise TypeError("contextual_role must be a ContextualRole")
+        if self.domain is not None and (type(self.domain) is not str or not self.domain.strip()):
+            raise ValueError("domain must be a non-empty string or None")
+        if self.semantic_type is not None and (type(self.semantic_type) is not str or not self.semantic_type.strip()):
+            raise ValueError("semantic_type must be a non-empty string or None")
+        if type(self.dependency_domains) is not tuple:
+            raise TypeError("dependency_domains must be a tuple")
+        for d in self.dependency_domains:
+            if type(d) is not str:
+                raise TypeError("each dependency_domain must be a string")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -566,6 +631,22 @@ class DependencyInfo:
     contextual_role: ContextualRole = ContextualRole.PRIMARY
     """Role in current contextual HUD"""
     
+    # Phase 3: Semantic decoupling fields
+    domain: str | None = None
+    """Semantic domain (e.g., 'weather', 'finance', 'search')"""
+    
+    semantic_type: str | None = None
+    """Semantic type within domain (e.g., 'current_conditions', 'exchange_rate')"""
+    
+    capability_category: str | None = None
+    """Capability category (e.g., 'tool', 'llm', 'speech')"""
+    
+    capability_tags: tuple[str, ...] = field(default_factory=tuple)
+    """Capability tags for semantic grouping"""
+    
+    dependency_domains: tuple[str, ...] = field(default_factory=tuple)
+    """Domains of the dependencies"""
+    
     def __post_init__(self) -> None:
         """Validate dependency info after initialization."""
         if type(self.goal_id) is not str or not self.goal_id.strip():
@@ -580,6 +661,22 @@ class DependencyInfo:
             raise TypeError("is_synthesis must be a bool")
         if type(self.contextual_role) is not ContextualRole:
             raise TypeError("contextual_role must be a ContextualRole")
+        if self.domain is not None and (type(self.domain) is not str or not self.domain.strip()):
+            raise ValueError("domain must be a non-empty string or None")
+        if self.semantic_type is not None and (type(self.semantic_type) is not str or not self.semantic_type.strip()):
+            raise ValueError("semantic_type must be a non-empty string or None")
+        if self.capability_category is not None and (type(self.capability_category) is not str or not self.capability_category.strip()):
+            raise ValueError("capability_category must be a non-empty string or None")
+        if type(self.capability_tags) is not tuple:
+            raise TypeError("capability_tags must be a tuple")
+        for tag in self.capability_tags:
+            if type(tag) is not str:
+                raise TypeError("each capability_tag must be a string")
+        if type(self.dependency_domains) is not tuple:
+            raise TypeError("dependency_domains must be a tuple")
+        for d in self.dependency_domains:
+            if type(d) is not str:
+                raise TypeError("each dependency_domain must be a string")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

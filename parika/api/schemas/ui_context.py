@@ -94,6 +94,12 @@ class SurfaceItemSchema(ApiModel):
     relevance: float = Field(default=1.0, ge=0.0, le=1.0)
     freshness: FreshnessInfoSchema | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    
+    # Phase 3: Semantic decoupling fields
+    domain: str | None = None
+    semantic_type: str | None = None
+    capability_category: str | None = None
+    capability_tags: list[str] = Field(default_factory=list)
 
 
 class DomainInfoSchema(ApiModel):
@@ -109,6 +115,11 @@ class DomainInfoSchema(ApiModel):
     entities: list[EntityInfoSchema] = Field(default_factory=list)
     topics: list[TopicInfoSchema] = Field(default_factory=list)
     freshness: FreshnessInfoSchema | None = None
+    
+    # Phase 3: Semantic decoupling fields
+    domain_category: str | None = None
+    primary_entities: list[str] = Field(default_factory=list)
+    primary_topics: list[str] = Field(default_factory=list)
 
 
 class SynthesisInfoSchema(ApiModel):
@@ -121,6 +132,11 @@ class SynthesisInfoSchema(ApiModel):
     completed_dependencies: list[str] = Field(default_factory=list)
     failed_dependencies: list[str] = Field(default_factory=list)
     contextual_role: ContextualRole = ContextualRole.PRIMARY
+    
+    # Phase 3: Semantic decoupling fields
+    domain: str | None = None
+    semantic_type: str | None = None
+    dependency_domains: list[str] = Field(default_factory=list)
 
 
 class DependencyInfoSchema(ApiModel):
@@ -132,6 +148,13 @@ class DependencyInfoSchema(ApiModel):
     status: str
     is_synthesis: bool
     contextual_role: ContextualRole = ContextualRole.PRIMARY
+    
+    # Phase 3: Semantic decoupling fields
+    domain: str | None = None
+    semantic_type: str | None = None
+    capability_category: str | None = None
+    capability_tags: list[str] = Field(default_factory=list)
+    dependency_domains: list[str] = Field(default_factory=list)
 
 
 class UIContextResponse(ApiModel):
@@ -185,6 +208,10 @@ class UIContextResponse(ApiModel):
                         max_age_seconds=surface.freshness.max_age_seconds,
                     ) if surface.freshness else None,
                     metadata=dict(surface.metadata),
+                    domain=surface.domain,
+                    semantic_type=surface.semantic_type,
+                    capability_category=surface.capability_category,
+                    capability_tags=list(surface.capability_tags),
                 )
                 for surface in state.surfaces
             ],
@@ -219,6 +246,9 @@ class UIContextResponse(ApiModel):
                         status=domain.freshness.status,
                         max_age_seconds=domain.freshness.max_age_seconds,
                     ) if domain.freshness else None,
+                    domain_category=domain.domain_category,
+                    primary_entities=list(domain.primary_entities),
+                    primary_topics=list(domain.primary_topics),
                 )
                 for domain in state.domains
             ],
@@ -231,6 +261,9 @@ class UIContextResponse(ApiModel):
                     completed_dependencies=list(state.synthesis.completed_dependencies),
                     failed_dependencies=list(state.synthesis.failed_dependencies),
                     contextual_role=state.synthesis.contextual_role,
+                    domain=state.synthesis.domain,
+                    semantic_type=state.synthesis.semantic_type,
+                    dependency_domains=list(state.synthesis.dependency_domains),
                 )
                 if state.synthesis else None
             ),
@@ -242,6 +275,11 @@ class UIContextResponse(ApiModel):
                     status=dep.status,
                     is_synthesis=dep.is_synthesis,
                     contextual_role=dep.contextual_role,
+                    domain=dep.domain,
+                    semantic_type=dep.semantic_type,
+                    capability_category=dep.capability_category,
+                    capability_tags=list(dep.capability_tags),
+                    dependency_domains=list(dep.dependency_domains),
                 )
                 for dep in state.dependencies
             ],

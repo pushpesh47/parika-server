@@ -61,7 +61,22 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
                 "capability_id": surface.capability_id,
                 "label": surface.label,
                 "tier": surface.tier.value,
+                "contextual_role": surface.contextual_role.value,
+                "relevance": surface.relevance,
                 "metadata": dict(surface.metadata),
+                "domain": surface.domain,
+                "semantic_type": surface.semantic_type,
+                "capability_category": surface.capability_category,
+                "capability_tags": list(surface.capability_tags),
+                "freshness": (
+                    {
+                        "domain": surface.freshness.domain,
+                        "last_updated": surface.freshness.last_updated.isoformat() if surface.freshness.last_updated else None,
+                        "status": surface.freshness.status,
+                        "max_age_seconds": surface.freshness.max_age_seconds,
+                    }
+                    if surface.freshness else None
+                ),
             }
             for surface in state.surfaces
         ],
@@ -75,6 +90,39 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
                 "importance": domain.importance,
                 "status": domain.status,
                 "capability_ids": list(domain.capability_ids),
+                "contextual_role": domain.contextual_role.value,
+                "relevance": domain.relevance,
+                "entities": [
+                    {
+                        "name": e.name,
+                        "entity_type": e.entity_type.value,
+                        "domain": e.domain,
+                        "confidence": e.confidence,
+                        "metadata": dict(e.metadata),
+                    }
+                    for e in domain.entities
+                ],
+                "topics": [
+                    {
+                        "name": t.name,
+                        "domain": t.domain,
+                        "relevance": t.relevance,
+                        "source": t.source,
+                    }
+                    for t in domain.topics
+                ],
+                "freshness": (
+                    {
+                        "domain": domain.freshness.domain,
+                        "last_updated": domain.freshness.last_updated.isoformat() if domain.freshness.last_updated else None,
+                        "status": domain.freshness.status,
+                        "max_age_seconds": domain.freshness.max_age_seconds,
+                    }
+                    if domain.freshness else None
+                ),
+                "domain_category": domain.domain_category,
+                "primary_entities": list(domain.primary_entities),
+                "primary_topics": list(domain.primary_topics),
             }
             for domain in state.domains
         ],
@@ -86,6 +134,10 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
                 "depends_on": list(state.synthesis.depends_on),
                 "completed_dependencies": list(state.synthesis.completed_dependencies),
                 "failed_dependencies": list(state.synthesis.failed_dependencies),
+                "contextual_role": state.synthesis.contextual_role.value,
+                "domain": state.synthesis.domain,
+                "semantic_type": state.synthesis.semantic_type,
+                "dependency_domains": list(state.synthesis.dependency_domains),
             }
             if state.synthesis else None
         ),
@@ -96,9 +148,57 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
                 "depends_on": list(dep.depends_on),
                 "status": dep.status,
                 "is_synthesis": dep.is_synthesis,
+                "contextual_role": dep.contextual_role.value,
+                "domain": dep.domain,
+                "semantic_type": dep.semantic_type,
+                "capability_category": dep.capability_category,
+                "capability_tags": list(dep.capability_tags),
+                "dependency_domains": list(dep.dependency_domains),
             }
             for dep in state.dependencies
         ],
+        # Phase 2 fields
+        "user_intent": state.user_intent.value,
+        "conversational_context": (
+            {
+                "current_domain": state.conversational_context.current_domain,
+                "active_subject": state.conversational_context.active_subject,
+                "ongoing_task": state.conversational_context.ongoing_task,
+                "previous_domain": state.conversational_context.previous_domain,
+                "turn_count": state.conversational_context.turn_count,
+                "last_user_request": state.conversational_context.last_user_request,
+                "contextual_transition": state.conversational_context.contextual_transition.value,
+            }
+            if state.conversational_context else None
+        ),
+        "semantic_relevance": [
+            {
+                "domain": rel.domain,
+                "score": rel.score,
+                "signals": list(rel.signals),
+            }
+            for rel in state.semantic_relevance
+        ],
+        "entities": [
+            {
+                "name": e.name,
+                "entity_type": e.entity_type.value,
+                "domain": e.domain,
+                "confidence": e.confidence,
+                "metadata": dict(e.metadata),
+            }
+            for e in state.entities
+        ],
+        "topics": [
+            {
+                "name": t.name,
+                "domain": t.domain,
+                "relevance": t.relevance,
+                "source": t.source,
+            }
+            for t in state.topics
+        ],
+        "context_transition": state.context_transition.value,
     }
 
 

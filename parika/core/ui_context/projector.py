@@ -135,7 +135,6 @@ class UIContextProjector:
     # Event subscriptions - only events that can change semantic UI state
     _SUBSCRIBED_EVENTS = frozenset({
         # Task lifecycle events (high semantic significance)
-        "task.created",
         "task.started",
         "task.completed",
         "task.failed",
@@ -554,6 +553,13 @@ class UIContextProjector:
         if interaction_candidate is not None:
             return self._build_state_from_candidate(interaction_candidate, source_event)
         
+        # Special case: brain execution completed with real BrainResponse
+        # Use authoritative BrainResponse for final state
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None:
+                return self._build_state_from_brain_response(brain_response, source_event)
+        
         # Special case: no active tasks but we have recent task metadata
         # Preserve the last known semantic context as ambient instead of falling back
         if (self._last_active_task_metadata is not None and 
@@ -561,13 +567,6 @@ class UIContextProjector:
             self._current_state.context != "system"):
             # Build a state based on last known context
             return self._build_state_from_last_metadata()
-        
-        # Special case: brain execution completed with real BrainResponse
-        # Use authoritative BrainResponse for final state
-        if self._brain is not None:
-            brain_response = self._brain.last_response
-            if brain_response is not None:
-                return self._build_state_from_brain_response(brain_response, source_event)
         
         # Special case: brain execution just completed but no active tasks
         # Use last known active task metadata to preserve context
@@ -834,7 +833,7 @@ class UIContextProjector:
             context_transition=context_transition,
         )
     
-    def _build_state_from_brain_response(self, brain_response: BrainResponse) -> UIContextState:
+    def _build_state_from_brain_response(self, brain_response: BrainResponse, source_event: Any = None) -> UIContextState:
         """Build UIContextState from authoritative BrainResponse.
         
         This is used when a request completes and we have the authoritative
@@ -1039,12 +1038,26 @@ class UIContextProjector:
             # Get capability IDs for this domain
             domain_caps = tuple(g.capability_id for g in goals)
             
+            # Determine domain category from the first goal's capability
+            first_goal = goals[0] if goals else None
+            domain_category = None
+            primary_entities = ()
+            primary_topics = ()
+            
+            if first_goal:
+                cap_def = self._capability_registry.get(first_goal.capability_id) if self._capability_registry.contains(first_goal.capability_id) else None
+                if cap_def:
+                    domain_category = cap_def.category.value
+            
             domains.append(DomainInfo(
                 name=domain_name,
                 focus=focus,
                 importance=importance,
                 status=status,
                 capability_ids=domain_caps,
+                domain_category=domain_category,
+                primary_entities=primary_entities,
+                primary_topics=primary_topics,
             ))
         
         # Sort by importance descending
@@ -1087,6 +1100,17 @@ class UIContextProjector:
         else:
             synth_status = "failed"
         
+        # Determine synthesis domain and semantic type
+        synthesis_domain, synthesis_semantic_type, _, _ = self._get_semantic_info_from_capability(synthesis_result.capability_id)
+        
+        # Get dependency domains
+        dependency_domains = ()
+        for result in brain_response.results:
+            if result.goal_id in depends_on:
+                dep_domain, _, _, _ = self._get_semantic_info_from_capability(result.capability_id)
+                if dep_domain:
+                    dependency_domains += (dep_domain,)
+        
         return SynthesisInfo(
             goal_id=brain_response.synthesis_goal_id,
             capability_id=synthesis_result.capability_id,
@@ -1094,6 +1118,9 @@ class UIContextProjector:
             depends_on=depends_on,
             completed_dependencies=completed_deps,
             failed_dependencies=failed_deps,
+            domain=synthesis_domain,
+            semantic_type=synthesis_semantic_type,
+            dependency_domains=dependency_domains,
         )
     
     def _compute_dependencies_from_brain_response(self, brain_response: BrainResponse) -> tuple[DependencyInfo, ...]:
@@ -1117,12 +1144,31 @@ class UIContextProjector:
             # Use actual capability_id from GoalResult
             capability_id = result.capability_id
             
+            # Get semantic info from capability registry
+            domain, semantic_type, category, tags = self._get_semantic_info_from_capability(capability_id)
+            
+            # Get dependency domains
+            dependency_domains = ()
+            for dep_id in depends_on:
+                # Find the goal result for this dependency
+                for r in brain_response.results:
+                    if r.goal_id == dep_id:
+                        dep_domain, _, _, _ = self._get_semantic_info_from_capability(r.capability_id)
+                        if dep_domain:
+                            dependency_domains += (dep_domain,)
+                        break
+            
             deps.append(DependencyInfo(
                 goal_id=result.goal_id,
                 capability_id=capability_id,
                 depends_on=depends_on,
                 status=status,
                 is_synthesis=is_synthesis,
+                domain=domain,
+                semantic_type=semantic_type,
+                capability_category=category,
+                capability_tags=tags,
+                dependency_domains=dependency_domains,
             ))
         return tuple(deps)
     
@@ -1603,12 +1649,22 @@ class UIContextProjector:
             active_caps = activity.get("active_semantic_capabilities", [])
             domain_caps = tuple(cap for cap in active_caps if cap.startswith(domain_name + "."))
             
+            # Determine domain category from first capability
+            domain_category = None
+            if domain_caps:
+                cap_def = self._capability_registry.get(domain_caps[0]) if self._capability_registry.contains(domain_caps[0]) else None
+                if cap_def:
+                    domain_category = cap_def.category.value
+            
             domains.append(DomainInfo(
                 name=domain_name,
                 focus=focus,
                 importance=importance,
                 status=status,
                 capability_ids=domain_caps,
+                domain_category=domain_category,
+                primary_entities=(),
+                primary_topics=(),
             ))
         
         # Sort by importance descending
@@ -1668,7 +1724,7 @@ class UIContextProjector:
         if not synthesis_caps:
             return None
         
-        # Determine synthesis status from brain tracking
+        # Determine synthesis status from brain tracking or task status
         if self._brain_execution_active:
             # Check if synthesis goal is running
             if self._brain_synthesis_goal_id and self._brain_synthesis_goal_id in self._brain_goals:
@@ -1681,12 +1737,45 @@ class UIContextProjector:
             else:
                 synth_status = "failed"
         else:
-            synth_status = "pending"
+            # Check task status for chat.respond
+            tasks = self._task_manager.get_all()
+            chat_respond_task = None
+            for task in tasks.values():
+                if task.request.capability_id == "chat.respond":
+                    chat_respond_task = task
+                    break
+            
+            if chat_respond_task:
+                task_status = chat_respond_task.status.name
+                if task_status == "RUNNING":
+                    synth_status = "running"
+                elif task_status in ("PENDING", "WAITING"):
+                    synth_status = "waiting"
+                elif task_status == "COMPLETED":
+                    synth_status = "completed"
+                elif task_status == "FAILED":
+                    synth_status = "failed"
+                else:
+                    synth_status = "pending"
+            else:
+                synth_status = "pending"
         
         # Get dependencies from metadata (simplified)
         depends_on = ()
         completed_deps = ()
         failed_deps = ()
+        
+        # Determine synthesis domain and semantic type
+        synthesis_domain, synthesis_semantic_type, _, _ = self._get_semantic_info_from_capability("chat.respond")
+        
+        # Get dependency domains from active capabilities
+        dependency_domains = ()
+        active_caps = activity.get("active_semantic_capabilities", [])
+        for cap in active_caps:
+            if cap != "chat.respond":
+                dep_domain, _, _, _ = self._get_semantic_info_from_capability(cap)
+                if dep_domain:
+                    dependency_domains += (dep_domain,)
         
         return SynthesisInfo(
             goal_id=self._brain_synthesis_goal_id,
@@ -1695,6 +1784,9 @@ class UIContextProjector:
             depends_on=depends_on,
             completed_dependencies=completed_deps,
             failed_dependencies=failed_deps,
+            domain=synthesis_domain,
+            semantic_type=synthesis_semantic_type,
+            dependency_domains=dependency_domains,
         )
     
     def _compute_dependencies(self, metadata: MappingProxyType[str, Any]) -> tuple[DependencyInfo, ...]:
@@ -1750,12 +1842,30 @@ class UIContextProjector:
             # Get depends_on from tracking
             depends_on = goal_info.get('depends_on', ())
             
+            # Get semantic info from capability registry
+            domain, semantic_type, category, tags = self._get_semantic_info_from_capability(capability_id)
+            
+            # Get dependency domains
+            dependency_domains = ()
+            for dep_id in depends_on:
+                dep_goal_info = self._brain_goals.get(dep_id, {})
+                dep_cap_id = dep_goal_info.get("capability_id", "")
+                if dep_cap_id:
+                    dep_domain, _, _, _ = self._get_semantic_info_from_capability(dep_cap_id)
+                    if dep_domain:
+                        dependency_domains += (dep_domain,)
+            
             deps.append(DependencyInfo(
                 goal_id=goal_id,
                 capability_id=capability_id,
                 depends_on=depends_on,
                 status=status,
                 is_synthesis=is_synthesis,
+                domain=domain,
+                semantic_type=semantic_type,
+                capability_category=category,
+                capability_tags=tags,
+                dependency_domains=dependency_domains,
             ))
         
         return tuple(deps)
@@ -1952,11 +2062,17 @@ class UIContextProjector:
             # Only include if capability exists
             if self._capability_registry.contains(cap_id):
                 metadata = self._build_surface_metadata(cap_id, brain_goal_results, synthesis_goal_id)
+                # Get semantic info from capability registry
+                domain, semantic_type, category, tags = self._get_semantic_info_from_capability(cap_id)
                 surfaces.append(SurfaceItem(
                     capability_id=cap_id,
                     label=label,
                     tier=tier,
                     metadata=metadata,
+                    domain=domain,
+                    semantic_type=semantic_type,
+                    capability_category=category,
+                    capability_tags=tags,
                 ))
         
         # Include actively executing semantic capabilities from concurrent tasks
@@ -1973,11 +2089,17 @@ class UIContextProjector:
                     # Determine tier: PRIMARY if it's the primary context's domain, SECONDARY otherwise
                     tier = SurfaceTier.SECONDARY
                     metadata = self._build_surface_metadata(cap_id, brain_goal_results, synthesis_goal_id)
+                    # Get semantic info from capability registry
+                    domain, semantic_type, category, tags = self._get_semantic_info_from_capability(cap_id)
                     surfaces.append(SurfaceItem(
                         capability_id=cap_id,
                         label=label,
                         tier=tier,
                         metadata=metadata,
+                        domain=domain,
+                        semantic_type=semantic_type,
+                        capability_category=category,
+                        capability_tags=tags,
                     ))
         
         # Always add ambient system surfaces
@@ -1985,14 +2107,51 @@ class UIContextProjector:
             if self._capability_registry.contains(cap_id):
                 # Avoid duplicates
                 if not any(s.capability_id == cap_id for s in surfaces):
+                    domain, semantic_type, category, tags = self._get_semantic_info_from_capability(cap_id)
                     surfaces.append(SurfaceItem(
                         capability_id=cap_id,
                         label=label,
                         tier=tier,
                         metadata=MappingProxyType({}),
+                        domain=domain,
+                        semantic_type=semantic_type,
+                        capability_category=category,
+                        capability_tags=tags,
                     ))
         
         return tuple(surfaces)
+    
+    def _get_semantic_info_from_capability(self, capability_id: str) -> tuple[str | None, str | None, str | None, tuple[str, ...]]:
+        """Extract semantic information from capability registry.
+        
+        Returns:
+            tuple of (domain, semantic_type, category, tags)
+        """
+        if not self._capability_registry.contains(capability_id):
+            return None, None, None, ()
+        
+        cap_def = self._capability_registry.get(capability_id)
+        if cap_def is None:
+            return None, None, None, ()
+        
+        # Extract domain from tags (first non-network/tool tag)
+        domain = None
+        for tag in cap_def.tags:
+            if tag not in ("network", "tool", "local", "llm"):
+                domain = tag
+                break
+        
+        # Extract semantic type from capability_id (part after domain)
+        semantic_type = None
+        if "." in capability_id:
+            parts = capability_id.split(".", 1)
+            if len(parts) > 1:
+                semantic_type = parts[1].replace("_", " ")
+        
+        category = cap_def.category.value if cap_def.category else None
+        tags = tuple(cap_def.tags)
+        
+        return domain, semantic_type, category, tags
     
     def _build_surface_metadata(self, capability_id: str, brain_goal_results: dict[str, 'GoalResult'] | None, synthesis_goal_id: str | None = None) -> MappingProxyType[str, Any]:
         """Build semantic metadata for a surface item from authoritative GoalResult."""
@@ -2703,6 +2862,10 @@ class UIContextProjector:
                 entities=tuple(entities_by_domain.get(domain.name, [])),
                 topics=tuple(topics_by_domain.get(domain.name, [])),
                 freshness=freshness_by_domain.get(domain.name),
+                # Preserve Phase 3 fields
+                domain_category=domain.domain_category,
+                primary_entities=domain.primary_entities,
+                primary_topics=domain.primary_topics,
             )
             enhanced.append(enhanced_domain)
         
@@ -2746,6 +2909,11 @@ class UIContextProjector:
                 relevance=domain_relevance,
                 freshness=freshness,
                 metadata=surface.metadata,
+                # Preserve Phase 3 fields
+                domain=surface.domain,
+                semantic_type=surface.semantic_type,
+                capability_category=surface.capability_category,
+                capability_tags=surface.capability_tags,
             )
             enhanced.append(enhanced_surface)
         
@@ -2776,6 +2944,10 @@ class UIContextProjector:
             completed_dependencies=synthesis.completed_dependencies,
             failed_dependencies=synthesis.failed_dependencies,
             contextual_role=contextual_role,
+            # Preserve Phase 3 fields
+            domain=synthesis.domain,
+            semantic_type=synthesis.semantic_type,
+            dependency_domains=synthesis.dependency_domains,
         )
     
     def _enhance_dependencies_with_phase2(
@@ -2806,6 +2978,12 @@ class UIContextProjector:
                 status=dep.status,
                 is_synthesis=dep.is_synthesis,
                 contextual_role=contextual_role,
+                # Preserve Phase 3 fields
+                domain=dep.domain,
+                semantic_type=dep.semantic_type,
+                capability_category=dep.capability_category,
+                capability_tags=dep.capability_tags,
+                dependency_domains=dep.dependency_domains,
             )
             enhanced.append(enhanced_dep)
         
