@@ -107,6 +107,262 @@ class SurfaceTier(StrEnum):
     AMBIENT = "ambient"
 
 
+class ContextualRole(StrEnum):
+    """
+    Contextual role of a surface/domain in the current HUD.
+    
+    PRIMARY: The main focus of current interaction
+    SECONDARY: Supporting information for the primary task
+    AMBIENT: Background context that persists but is not the focus
+    """
+    
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    AMBIENT = "ambient"
+
+
+class UserIntent(StrEnum):
+    """
+    High-level user intent derived from execution state.
+    
+    Derived deterministically from goal/capability patterns,
+    NOT from LLM classification.
+    """
+    
+    REQUESTING_INFORMATION = "requesting_information"
+    MONITORING = "monitoring"
+    EXECUTING_ACTION = "executing_action"
+    CREATING = "creating"
+    RESEARCHING = "researching"
+    COMMUNICATING = "communicating"
+    UNKNOWN = "unknown"
+
+
+class EntityType(StrEnum):
+    """
+    Type of entity extracted from context.
+    
+    Represents structured entities known to PARIKA.
+    """
+    
+    LOCATION = "location"
+    CURRENCY = "currency"
+    DATE_TIME = "date_time"
+    PERSON = "person"
+    ORGANIZATION = "organization"
+    EVENT = "event"
+    TOPIC = "topic"
+    MEASUREMENT = "measurement"
+    UNKNOWN = "unknown"
+
+
+class ContextTransition(StrEnum):
+    """
+    Type of context transition between turns.
+    """
+    
+    ENTERED = "entered"
+    CHANGED = "changed"
+    EXPANDED = "expanded"
+    NARROWED = "narrowed"
+    BECAME_AMBIENT = "became_ambient"
+    NONE = "none"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EntityInfo:
+    """
+    Structured entity information.
+    
+    Represents an entity known in the current context.
+    """
+    
+    name: str
+    """Entity name (e.g., 'Patna', 'USD', 'Jharkhand protest')"""
+    
+    entity_type: EntityType
+    """Type of entity"""
+    
+    domain: str
+    """Domain this entity belongs to (e.g., 'weather', 'finance', 'news')"""
+    
+    confidence: float
+    """Confidence this entity is relevant (0.0 to 1.0)"""
+    
+    metadata: MappingProxyType[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    """Additional entity metadata (e.g., coordinates for location)"""
+    
+    def __post_init__(self) -> None:
+        """Validate entity info after initialization."""
+        if type(self.name) is not str or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+        if type(self.entity_type) is not EntityType:
+            raise TypeError("entity_type must be an EntityType")
+        if type(self.domain) is not str or not self.domain.strip():
+            raise ValueError("domain must be a non-empty string")
+        if type(self.confidence) is not float:
+            raise TypeError("confidence must be a float")
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError("confidence must be between 0.0 and 1.0")
+        if type(self.metadata) is not MappingProxyType:
+            raise TypeError("metadata must be a MappingProxyType")
+        
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(dict(self.metadata)),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TopicInfo:
+    """
+    Topic/subject information for contextual understanding.
+    
+    Represents a semantic subject, not implementation details.
+    """
+    
+    name: str
+    """Topic name (e.g., 'weather', 'finance', 'current_events', 'coding')"""
+    
+    domain: str
+    """Associated domain"""
+    
+    relevance: float
+    """Relevance score (0.0 to 1.0)"""
+    
+    source: str
+    """Source of topic: 'capability', 'goal', 'conversation', 'memory', 'knowledge'"""
+    
+    def __post_init__(self) -> None:
+        """Validate topic info after initialization."""
+        if type(self.name) is not str or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+        if type(self.domain) is not str or not self.domain.strip():
+            raise ValueError("domain must be a non-empty string")
+        if type(self.relevance) is not float:
+            raise TypeError("relevance must be a float")
+        if not (0.0 <= self.relevance <= 1.0):
+            raise ValueError("relevance must be between 0.0 and 1.0")
+        if type(self.source) is not str:
+            raise TypeError("source must be a string")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationalContext:
+    """
+    Conversational continuity information.
+    
+    Tracks context evolution across turns without exposing raw history.
+    """
+    
+    current_domain: str | None
+    """Current primary conversational domain"""
+    
+    active_subject: str | None
+    """Active subject of conversation (e.g., 'weather in Patna')"""
+    
+    ongoing_task: str | None
+    """Ongoing task description if any"""
+    
+    previous_domain: str | None
+    """Previous turn's primary domain"""
+    
+    turn_count: int
+    """Number of turns in current context session"""
+    
+    last_user_request: str | None
+    """Last user request text (truncated)"""
+    
+    contextual_transition: ContextTransition = ContextTransition.NONE
+    """Type of context transition from previous turn"""
+    
+    def __post_init__(self) -> None:
+        """Validate conversational context after initialization."""
+        if self.current_domain is not None and (type(self.current_domain) is not str or not self.current_domain.strip()):
+            raise ValueError("current_domain must be a non-empty string or None")
+        if self.active_subject is not None and (type(self.active_subject) is not str or not self.active_subject.strip()):
+            raise ValueError("active_subject must be a non-empty string or None")
+        if self.ongoing_task is not None and (type(self.ongoing_task) is not str or not self.ongoing_task.strip()):
+            raise ValueError("ongoing_task must be a non-empty string or None")
+        if self.previous_domain is not None and (type(self.previous_domain) is not str or not self.previous_domain.strip()):
+            raise ValueError("previous_domain must be a non-empty string or None")
+        if type(self.turn_count) is not int:
+            raise TypeError("turn_count must be an integer")
+        if self.turn_count < 0:
+            raise ValueError("turn_count must be non-negative")
+        if self.last_user_request is not None and type(self.last_user_request) is not str:
+            raise TypeError("last_user_request must be a string or None")
+        if type(self.contextual_transition) is not ContextTransition:
+            raise TypeError("contextual_transition must be a ContextTransition")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SemanticRelevance:
+    """
+    Semantic relevance scoring for domains/surfaces.
+    
+    Based on deterministic signals, not arbitrary scores.
+    """
+    
+    domain: str
+    """Domain name"""
+    
+    score: float
+    """Relevance score (0.0 to 1.0)"""
+    
+    signals: tuple[str, ...]
+    """Signals that contributed to this score"""
+    
+    def __post_init__(self) -> None:
+        """Validate semantic relevance after initialization."""
+        if type(self.domain) is not str or not self.domain.strip():
+            raise ValueError("domain must be a non-empty string")
+        if type(self.score) is not float:
+            raise TypeError("score must be a float")
+        if not (0.0 <= self.score <= 1.0):
+            raise ValueError("score must be between 0.0 and 1.0")
+        if type(self.signals) is not tuple:
+            raise TypeError("signals must be a tuple")
+        for signal in self.signals:
+            if type(signal) is not str:
+                raise TypeError("each signal must be a string")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FreshnessInfo:
+    """
+    Freshness information for time-sensitive domains.
+    
+    Uses existing timestamps, does not create new caching.
+    """
+    
+    domain: str
+    """Domain name"""
+    
+    last_updated: datetime | None
+    """When this domain's information was last retrieved"""
+    
+    status: str
+    """Freshness status: 'fresh', 'recent', 'stale', 'unavailable'"""
+    
+    max_age_seconds: float | None
+    """Maximum age for this domain to be considered fresh"""
+    
+    def __post_init__(self) -> None:
+        """Validate freshness info after initialization."""
+        if type(self.domain) is not str or not self.domain.strip():
+            raise ValueError("domain must be a non-empty string")
+        if self.last_updated is not None and type(self.last_updated) is not datetime:
+            raise TypeError("last_updated must be a datetime or None")
+        if type(self.status) is not str:
+            raise TypeError("status must be a string")
+        if self.max_age_seconds is not None and type(self.max_age_seconds) is not float:
+            raise TypeError("max_age_seconds must be a float or None")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SurfaceItem:
     """
@@ -125,6 +381,15 @@ class SurfaceItem:
     tier: SurfaceTier
     """Semantic tier: primary, secondary, or ambient"""
     
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    """Role in current contextual HUD"""
+    
+    relevance: float = 1.0
+    """Semantic relevance to current context (0.0 to 1.0)"""
+    
+    freshness: FreshnessInfo | None = None
+    """Freshness information if applicable"""
+    
     metadata: MappingProxyType[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -138,6 +403,14 @@ class SurfaceItem:
             raise ValueError("label cannot be empty")
         if type(self.tier) is not SurfaceTier:
             raise TypeError("tier must be a SurfaceTier")
+        if type(self.contextual_role) is not ContextualRole:
+            raise TypeError("contextual_role must be a ContextualRole")
+        if type(self.relevance) is not float:
+            raise TypeError("relevance must be a float")
+        if not (0.0 <= self.relevance <= 1.0):
+            raise ValueError("relevance must be between 0.0 and 1.0")
+        if self.freshness is not None and type(self.freshness) is not FreshnessInfo:
+            raise TypeError("freshness must be a FreshnessInfo or None")
         if type(self.metadata) is not MappingProxyType:
             raise TypeError("metadata must be a MappingProxyType")
         
@@ -171,6 +444,21 @@ class DomainInfo:
     capability_ids: tuple[str, ...]
     """Capability IDs associated with this domain"""
     
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    """Role in current contextual HUD"""
+    
+    relevance: float = 1.0
+    """Semantic relevance to current context (0.0 to 1.0)"""
+    
+    entities: tuple[EntityInfo, ...] = field(default_factory=tuple)
+    """Entities associated with this domain"""
+    
+    topics: tuple[TopicInfo, ...] = field(default_factory=tuple)
+    """Topics associated with this domain"""
+    
+    freshness: FreshnessInfo | None = None
+    """Freshness information if applicable"""
+    
     def __post_init__(self) -> None:
         """Validate domain info after initialization."""
         if type(self.name) is not str or not self.name.strip():
@@ -185,6 +473,24 @@ class DomainInfo:
             raise TypeError("status must be a string")
         if type(self.capability_ids) is not tuple:
             raise TypeError("capability_ids must be a tuple")
+        if type(self.contextual_role) is not ContextualRole:
+            raise TypeError("contextual_role must be a ContextualRole")
+        if type(self.relevance) is not float:
+            raise TypeError("relevance must be a float")
+        if not (0.0 <= self.relevance <= 1.0):
+            raise ValueError("relevance must be between 0.0 and 1.0")
+        if type(self.entities) is not tuple:
+            raise TypeError("entities must be a tuple")
+        for entity in self.entities:
+            if type(entity) is not EntityInfo:
+                raise TypeError("each entity must be an EntityInfo")
+        if type(self.topics) is not tuple:
+            raise TypeError("topics must be a tuple")
+        for topic in self.topics:
+            if type(topic) is not TopicInfo:
+                raise TypeError("each topic must be a TopicInfo")
+        if self.freshness is not None and type(self.freshness) is not FreshnessInfo:
+            raise TypeError("freshness must be a FreshnessInfo or None")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -213,6 +519,9 @@ class SynthesisInfo:
     failed_dependencies: tuple[str, ...]
     """Goal IDs of failed dependencies"""
     
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    """Role in current contextual HUD"""
+    
     def __post_init__(self) -> None:
         """Validate synthesis info after initialization."""
         if self.goal_id is not None and type(self.goal_id) is not str:
@@ -227,6 +536,8 @@ class SynthesisInfo:
             raise TypeError("completed_dependencies must be a tuple")
         if type(self.failed_dependencies) is not tuple:
             raise TypeError("failed_dependencies must be a tuple")
+        if type(self.contextual_role) is not ContextualRole:
+            raise TypeError("contextual_role must be a ContextualRole")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -252,6 +563,9 @@ class DependencyInfo:
     is_synthesis: bool
     """Whether this goal is a synthesis goal"""
     
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    """Role in current contextual HUD"""
+    
     def __post_init__(self) -> None:
         """Validate dependency info after initialization."""
         if type(self.goal_id) is not str or not self.goal_id.strip():
@@ -264,6 +578,8 @@ class DependencyInfo:
             raise TypeError("status must be a string")
         if type(self.is_synthesis) is not bool:
             raise TypeError("is_synthesis must be a bool")
+        if type(self.contextual_role) is not ContextualRole:
+            raise TypeError("contextual_role must be a ContextualRole")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -289,6 +605,14 @@ class UIContextState:
         domains: Multiple active semantic domains with importance
         synthesis: Synthesis goal information
         dependencies: Dependency relationships between goals
+        
+        # Phase 2 additions:
+        user_intent: High-level user intent derived from execution state
+        conversational_context: Conversational continuity across turns
+        semantic_relevance: Relevance scores for active domains
+        entities: Structured entities in current context
+        topics: Semantic topics/subjects in current context
+        context_transition: Transition type from previous turn
     """
     
     version: int
@@ -334,6 +658,25 @@ class UIContextState:
     
     dependencies: tuple[DependencyInfo, ...] = field(default_factory=tuple)
     """Dependency relationships between goals"""
+    
+    # Phase 2 fields
+    user_intent: UserIntent = UserIntent.UNKNOWN
+    """High-level user intent derived from execution state"""
+    
+    conversational_context: ConversationalContext | None = None
+    """Conversational continuity across turns"""
+    
+    semantic_relevance: tuple[SemanticRelevance, ...] = field(default_factory=tuple)
+    """Relevance scores for active domains"""
+    
+    entities: tuple[EntityInfo, ...] = field(default_factory=tuple)
+    """Structured entities in current context"""
+    
+    topics: tuple[TopicInfo, ...] = field(default_factory=tuple)
+    """Semantic topics/subjects in current context"""
+    
+    context_transition: ContextTransition = ContextTransition.NONE
+    """Transition type from previous turn"""
 
     def __post_init__(self) -> None:
         """Validate UI context state after initialization."""
@@ -393,6 +736,34 @@ class UIContextState:
         for dep in self.dependencies:
             if type(dep) is not DependencyInfo:
                 raise TypeError("each dependency must be a DependencyInfo")
+        
+        # Phase 2 validation
+        if type(self.user_intent) is not UserIntent:
+            raise TypeError("user_intent must be a UserIntent")
+        
+        if self.conversational_context is not None and type(self.conversational_context) is not ConversationalContext:
+            raise TypeError("conversational_context must be a ConversationalContext or None")
+        
+        if type(self.semantic_relevance) is not tuple:
+            raise TypeError("semantic_relevance must be a tuple")
+        for rel in self.semantic_relevance:
+            if type(rel) is not SemanticRelevance:
+                raise TypeError("each semantic_relevance must be a SemanticRelevance")
+        
+        if type(self.entities) is not tuple:
+            raise TypeError("entities must be a tuple")
+        for entity in self.entities:
+            if type(entity) is not EntityInfo:
+                raise TypeError("each entity must be an EntityInfo")
+        
+        if type(self.topics) is not tuple:
+            raise TypeError("topics must be a tuple")
+        for topic in self.topics:
+            if type(topic) is not TopicInfo:
+                raise TypeError("each topic must be a TopicInfo")
+        
+        if type(self.context_transition) is not ContextTransition:
+            raise TypeError("context_transition must be a ContextTransition")
         
         object.__setattr__(
             self,

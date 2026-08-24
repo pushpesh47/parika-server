@@ -8,7 +8,7 @@ Subscribes to EventBus events, reads state, and maintains an immutable snapshot.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, TYPE_CHECKING
@@ -27,20 +27,30 @@ from .exceptions import UIContextNotReadyError, UIContextProjectionError
 from .state import (
     AttentionLevel,
     ContextSource,
+    ContextTransition,
+    ContextualRole,
     DependencyInfo,
     DomainInfo,
+    EntityInfo,
+    EntityType,
     FocusArea,
+    FreshnessInfo,
     RequestStatus,
+    SemanticRelevance,
     SurfaceItem,
     SurfaceTier,
     SynthesisInfo,
+    TopicInfo,
     UIContextState,
     UrgencyLevel,
+    UserIntent,
+    ConversationalContext,
 )
 
 if TYPE_CHECKING:
     from parika.core.brain.brain import Brain
     from parika.core.brain.brain_response import BrainResponse
+    from parika.core.planner.goal import GoalResult
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -55,6 +65,14 @@ class _ContextCandidate:
     metadata: MappingProxyType[str, Any]
     attention: AttentionLevel = AttentionLevel.PRIMARY
     urgency: UrgencyLevel = UrgencyLevel.NORMAL
+    
+    # Phase 2: Additional fields for contextual intelligence
+    user_intent: UserIntent = UserIntent.UNKNOWN
+    entities: tuple[EntityInfo, ...] = field(default_factory=tuple)
+    topics: tuple[TopicInfo, ...] = field(default_factory=tuple)
+    semantic_relevance: tuple[SemanticRelevance, ...] = field(default_factory=tuple)
+    conversational_context: ConversationalContext | None = None
+    context_transition: ContextTransition = ContextTransition.NONE
 
 
 # Transport/orchestration capability IDs that should NOT become the primary
@@ -270,7 +288,7 @@ class UIContextProjector:
         self._track_brain_execution(payload)
         
         try:
-            self._recompute_and_publish()
+            self._recompute_and_publish(payload)
         except Exception:
             self._logger.exception("Error recomputing UI context from event")
     
@@ -341,9 +359,9 @@ class UIContextProjector:
             if brain_response.synthesis_goal_id == result.goal_id:
                 self._brain_goals[result.goal_id]['is_synthesis'] = True
     
-    def _recompute_and_publish(self) -> None:
+    def _recompute_and_publish(self, source_event: Any = None) -> None:
         """Recompute semantic state and publish if changed."""
-        new_state = self._compute_semantic_state()
+        new_state = self._compute_semantic_state(source_event)
         
         with self._lock:
             if self._current_state is None:
@@ -361,7 +379,7 @@ class UIContextProjector:
             previous_version = self._current_state.version
             self._version += 1
             
-            # Create new state with incremented version
+            # Create new state with incremented version (including Phase 2 fields)
             changed_state = UIContextState(
                 version=self._version,
                 context=new_state.context,
@@ -377,13 +395,20 @@ class UIContextProjector:
                 domains=new_state.domains,
                 synthesis=new_state.synthesis,
                 dependencies=new_state.dependencies,
+                # Phase 2 fields
+                user_intent=new_state.user_intent,
+                conversational_context=new_state.conversational_context,
+                semantic_relevance=new_state.semantic_relevance,
+                entities=new_state.entities,
+                topics=new_state.topics,
+                context_transition=new_state.context_transition,
             )
             
             changed_fields = self._compute_changed_fields(self._current_state, changed_state)
-            source_event = getattr(new_state, '_source_event', None)
+            source_event_name = getattr(source_event, 'source_id', None) if source_event else getattr(new_state, '_source_event', None)
             
             self._current_state = changed_state
-            self._publish_change(changed_state, previous_version, changed_fields, source_event)
+            self._publish_change(changed_state, previous_version, changed_fields, source_event_name)
     
     def _is_semantic_noop(self, old_state: UIContextState, new_state: UIContextState) -> bool:
         """Check if two states are semantically identical (no-op)."""
@@ -498,7 +523,7 @@ class UIContextProjector:
             sorted(changed_fields),
         )
     
-    def _compute_semantic_state(self) -> UIContextState:
+    def _compute_semantic_state(self, source_event: Any = None) -> UIContextState:
         """
         Compute the current semantic UI state from Core signals.
         
@@ -512,29 +537,37 @@ class UIContextProjector:
         # Try to resolve from active task (highest priority)
         task_candidate = self._resolve_from_active_task()
         if task_candidate is not None:
-            return self._build_state_from_candidate(task_candidate)
+            return self._build_state_from_candidate(task_candidate, source_event)
         
         # Try to resolve from active workflow
         workflow_candidate = self._resolve_from_active_workflow()
         if workflow_candidate is not None:
-            return self._build_state_from_candidate(workflow_candidate)
+            return self._build_state_from_candidate(workflow_candidate, source_event)
         
         # Try to resolve from ContextManager
         context_candidate = self._resolve_from_context_manager()
         if context_candidate is not None:
-            return self._build_state_from_candidate(context_candidate)
+            return self._build_state_from_candidate(context_candidate, source_event)
         
         # Try to resolve from interaction state
         interaction_candidate = self._resolve_from_interaction_state()
         if interaction_candidate is not None:
-            return self._build_state_from_candidate(interaction_candidate)
+            return self._build_state_from_candidate(interaction_candidate, source_event)
+        
+        # Special case: no active tasks but we have recent task metadata
+        # Preserve the last known semantic context as ambient instead of falling back
+        if (self._last_active_task_metadata is not None and 
+            self._current_state is not None and
+            self._current_state.context != "system"):
+            # Build a state based on last known context
+            return self._build_state_from_last_metadata()
         
         # Special case: brain execution completed with real BrainResponse
         # Use authoritative BrainResponse for final state
         if self._brain is not None:
             brain_response = self._brain.last_response
             if brain_response is not None:
-                return self._build_state_from_brain_response(brain_response)
+                return self._build_state_from_brain_response(brain_response, source_event)
         
         # Special case: brain execution just completed but no active tasks
         # Use last known active task metadata to preserve context
@@ -544,9 +577,12 @@ class UIContextProjector:
             # Build a state based on last known context
             return self._build_state_from_last_metadata()
         
+        
         # Fallback
         return self._build_fallback_state()
-    
+
+    # Task resolution
+
     def _resolve_from_active_task(self) -> _ContextCandidate | None:
         """Resolve semantic context from active tasks."""
         tasks = self._task_manager.get_all()
@@ -658,6 +694,8 @@ class UIContextProjector:
             metadata=metadata,
             attention=attention,
             urgency=urgency,
+            # Phase 2: These will be computed in _build_state_from_candidate
+            # but we can pre-compute some if needed
         )
     
     def _resolve_from_active_workflow(self) -> _ContextCandidate | None:
@@ -747,6 +785,31 @@ class UIContextProjector:
     
     def _build_fallback_state(self) -> UIContextState:
         """Build fallback semantic state."""
+        candidate = _ContextCandidate(
+            context="system",
+            confidence=0.3,
+            source=ContextSource.FALLBACK,
+            focus=FocusArea.GENERAL,
+            surfaces=self._build_surfaces_for_context("system"),
+            metadata=MappingProxyType({}),
+        )
+        
+        # Phase 2: Minimal contextual intelligence for fallback
+        user_intent = UserIntent.UNKNOWN
+        entities = ()
+        topics = ()
+        semantic_relevance = ()
+        freshness_infos = ()
+        
+        # Empty domains for fallback
+        domains = ()
+        synthesis = None
+        dependencies = ()
+        
+        # Conversational context
+        conversational_context = self._compute_conversational_context(candidate, self._current_state)
+        context_transition = conversational_context.contextual_transition
+        
         return UIContextState(
             version=self._version + 1,
             context="system",
@@ -755,13 +818,20 @@ class UIContextProjector:
             attention=AttentionLevel.AMBIENT,
             urgency=self._determine_urgency(),
             focus=FocusArea.GENERAL,
-            surfaces=self._build_surfaces_for_context("system"),
+            surfaces=candidate.surfaces,
             timestamp=datetime.now(UTC),
             metadata=MappingProxyType({}),
             request_status=RequestStatus.FAILED,
-            domains=(),
-            synthesis=None,
-            dependencies=(),
+            domains=domains,
+            synthesis=synthesis,
+            dependencies=dependencies,
+            # Phase 2 fields
+            user_intent=user_intent,
+            conversational_context=conversational_context,
+            semantic_relevance=semantic_relevance,
+            entities=entities,
+            topics=topics,
+            context_transition=context_transition,
         )
     
     def _build_state_from_brain_response(self, brain_response: BrainResponse) -> UIContextState:
@@ -811,6 +881,96 @@ class UIContextProjector:
         # Build metadata from BrainResponse
         metadata = self._build_metadata_from_brain_response(brain_response)
         
+        # ========== Phase 2: Compute contextual intelligence ==========
+        user_intent = self._compute_user_intent(
+            _ContextCandidate(
+                context=context,
+                confidence=confidence,
+                source=ContextSource.TASK,
+                focus=focus,
+                surfaces=surfaces,
+                metadata=metadata,
+            ),
+            brain_response,
+        )
+        
+        entities = self._compute_entities(
+            _ContextCandidate(
+                context=context,
+                confidence=confidence,
+                source=ContextSource.TASK,
+                focus=focus,
+                surfaces=surfaces,
+                metadata=metadata,
+            ),
+            brain_response,
+        )
+        
+        topics = self._compute_topics(
+            _ContextCandidate(
+                context=context,
+                confidence=confidence,
+                source=ContextSource.TASK,
+                focus=focus,
+                surfaces=surfaces,
+                metadata=metadata,
+            ),
+            brain_response,
+        )
+        
+        semantic_relevance = self._compute_semantic_relevance(
+            _ContextCandidate(
+                context=context,
+                confidence=confidence,
+                source=ContextSource.TASK,
+                focus=focus,
+                surfaces=surfaces,
+                metadata=metadata,
+            ),
+            brain_response,
+        )
+        
+        freshness_infos = self._compute_freshness(
+            _ContextCandidate(
+                context=context,
+                confidence=confidence,
+                source=ContextSource.TASK,
+                focus=focus,
+                surfaces=surfaces,
+                metadata=metadata,
+            ),
+            brain_response,
+        )
+        
+        # Enhance domains with Phase 2 info
+        domains = self._enhance_domains_with_phase2(
+            domains, 
+            _ContextCandidate(context=context, confidence=confidence, source=ContextSource.TASK, focus=focus, surfaces=surfaces, metadata=metadata),
+            entities, topics, freshness_infos, semantic_relevance
+        )
+        
+        # Enhance surfaces with Phase 2 info
+        surfaces = self._enhance_surfaces_with_phase2(
+            surfaces,
+            _ContextCandidate(context=context, confidence=confidence, source=ContextSource.TASK, focus=focus, surfaces=surfaces, metadata=metadata),
+            freshness_infos, semantic_relevance, brain_response
+        )
+        
+        # Enhance synthesis with Phase 2 info
+        synthesis = self._enhance_synthesis_with_phase2(synthesis, _ContextCandidate(context=context, confidence=confidence, source=ContextSource.TASK, focus=focus, surfaces=surfaces, metadata=metadata))
+        
+        # Enhance dependencies with Phase 2 info
+        dependencies = self._enhance_dependencies_with_phase2(dependencies, _ContextCandidate(context=context, confidence=confidence, source=ContextSource.TASK, focus=focus, surfaces=surfaces, metadata=metadata))
+        
+        # Conversational context
+        conversational_context = self._compute_conversational_context(
+            _ContextCandidate(context=context, confidence=confidence, source=ContextSource.TASK, focus=focus, surfaces=surfaces, metadata=metadata),
+            self._current_state,
+        )
+        
+        # Context transition
+        context_transition = conversational_context.contextual_transition
+        
         return UIContextState(
             version=self._version + 1,
             context=context,
@@ -826,6 +986,13 @@ class UIContextProjector:
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
+            # Phase 2 fields
+            user_intent=user_intent,
+            conversational_context=conversational_context,
+            semantic_relevance=semantic_relevance,
+            entities=entities,
+            topics=topics,
+            context_transition=context_transition,
         )
     
     def _compute_domains_from_brain_response(self, brain_response: BrainResponse) -> tuple[DomainInfo, ...]:
@@ -1035,6 +1202,43 @@ class UIContextProjector:
         active_capabilities = metadata.get("activity", {}).get("active_capabilities", [])
         surfaces = self._build_surfaces_for_context(current.context, set(active_capabilities))
         
+        # ========== Phase 2: Compute contextual intelligence ==========
+        # For last metadata state, we don't have brain response
+        brain_response = None
+        
+        candidate = _ContextCandidate(
+            context=current.context,
+            confidence=current.confidence,
+            source=current.source,
+            focus=current.focus,
+            surfaces=surfaces,
+            metadata=metadata,
+        )
+        
+        user_intent = self._compute_user_intent(candidate, brain_response)
+        entities = self._compute_entities(candidate, brain_response)
+        topics = self._compute_topics(candidate, brain_response)
+        semantic_relevance = self._compute_semantic_relevance(candidate, brain_response)
+        freshness_infos = self._compute_freshness(candidate, brain_response)
+        
+        # Enhance domains with Phase 2 info
+        domains = self._enhance_domains_with_phase2(domains, candidate, entities, topics, freshness_infos, semantic_relevance)
+        
+        # Enhance surfaces with Phase 2 info
+        surfaces = self._enhance_surfaces_with_phase2(surfaces, candidate, freshness_infos, semantic_relevance, brain_response)
+        
+        # Enhance synthesis with Phase 2 info
+        synthesis = self._enhance_synthesis_with_phase2(synthesis, candidate)
+        
+        # Enhance dependencies with Phase 2 info
+        dependencies = self._enhance_dependencies_with_phase2(dependencies, candidate)
+        
+        # Conversational context
+        conversational_context = self._compute_conversational_context(candidate, self._current_state)
+        
+        # Context transition
+        context_transition = conversational_context.contextual_transition
+        
         return UIContextState(
             version=self._version + 1,
             context=current.context,
@@ -1050,15 +1254,69 @@ class UIContextProjector:
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
+            # Phase 2 fields
+            user_intent=user_intent,
+            conversational_context=conversational_context,
+            semantic_relevance=semantic_relevance,
+            entities=entities,
+            topics=topics,
+            context_transition=context_transition,
         )
     
-    def _build_state_from_candidate(self, candidate: _ContextCandidate) -> UIContextState:
+    def _build_state_from_candidate(self, candidate: _ContextCandidate, source_event: Any = None) -> UIContextState:
         """Build UIContextState from a resolved candidate."""
         # Compute Phase 1 fields from candidate metadata and brain execution state
         request_status = self._compute_request_status(candidate.metadata)
         domains = self._compute_domains(candidate.metadata)
         synthesis = self._compute_synthesis(candidate.metadata)
         dependencies = self._compute_dependencies(candidate.metadata)
+        
+        # ========== Phase 2: Compute contextual intelligence ==========
+        # Try to get brain response for enhanced computation
+        brain_response = None
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+        
+        # If candidate already has Phase 2 fields, use them
+        if candidate.user_intent != UserIntent.UNKNOWN:
+            user_intent = candidate.user_intent
+        else:
+            user_intent = self._compute_user_intent(candidate, brain_response)
+        
+        if candidate.entities:
+            entities = candidate.entities
+        else:
+            entities = self._compute_entities(candidate, brain_response)
+        
+        if candidate.topics:
+            topics = candidate.topics
+        else:
+            topics = self._compute_topics(candidate, brain_response)
+        
+        if candidate.semantic_relevance:
+            semantic_relevance = candidate.semantic_relevance
+        else:
+            semantic_relevance = self._compute_semantic_relevance(candidate, brain_response)
+        
+        freshness_infos = self._compute_freshness(candidate, brain_response)
+        
+        # Enhance domains with Phase 2 info
+        domains = self._enhance_domains_with_phase2(domains, candidate, entities, topics, freshness_infos, semantic_relevance)
+        
+        # Enhance surfaces with Phase 2 info
+        surfaces = self._enhance_surfaces_with_phase2(candidate.surfaces, candidate, freshness_infos, semantic_relevance, brain_response)
+        
+        # Enhance synthesis with Phase 2 info
+        synthesis = self._enhance_synthesis_with_phase2(synthesis, candidate)
+        
+        # Enhance dependencies with Phase 2 info
+        dependencies = self._enhance_dependencies_with_phase2(dependencies, candidate)
+        
+        # Conversational context
+        conversational_context = self._compute_conversational_context(candidate, self._current_state, source_event)
+        
+        # Context transition
+        context_transition = conversational_context.contextual_transition
         
         return UIContextState(
             version=self._version + 1,
@@ -1068,13 +1326,20 @@ class UIContextProjector:
             attention=candidate.attention,
             urgency=candidate.urgency,
             focus=candidate.focus,
-            surfaces=candidate.surfaces,
+            surfaces=surfaces,
             timestamp=datetime.now(UTC),
             metadata=candidate.metadata,
             request_status=request_status,
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
+            # Phase 2 fields
+            user_intent=user_intent,
+            conversational_context=conversational_context,
+            semantic_relevance=semantic_relevance,
+            entities=entities,
+            topics=topics,
+            context_transition=context_transition,
         )
     
 
@@ -1207,7 +1472,14 @@ class UIContextProjector:
         if self._brain is not None:
             brain_response = self._brain.last_response
             if brain_response is not None:
-                return brain_response.status
+                # Convert BrainResponse.RequestStatus to UIContextState.RequestStatus
+                brain_status = brain_response.status
+                if brain_status.value == "success":
+                    return RequestStatus.SUCCESS
+                elif brain_status.value == "partial_success":
+                    return RequestStatus.PARTIAL_SUCCESS
+                else:
+                    return RequestStatus.FAILED
         
         # If we have brain execution tracking, use it
         if self._brain_execution_succeeded is not None:
@@ -1751,6 +2023,793 @@ class UIContextProjector:
             metadata_dict["depends_on"] = goal_result.depends_on
         
         return MappingProxyType(metadata_dict)
+    
+    # ============================================================
+    # Phase 2: Contextual Intelligence Computation Methods
+    # ============================================================
+    
+    def _compute_user_intent(
+        self,
+        candidate: _ContextCandidate,
+        brain_response: 'BrainResponse | None' = None,
+    ) -> UserIntent:
+        """
+        Derive user intent from existing structured execution state.
+        
+        DOES NOT use LLM classification - derives deterministically from:
+        - Active capabilities and their categories
+        - Goal dependencies (synthesis vs data gathering)
+        - Request patterns
+        """
+        # Check if we have a synthesis goal with dependencies
+        if brain_response and brain_response.synthesis_goal_id:
+            # Synthesis implies the user wants a comprehensive response
+            return UserIntent.REQUESTING_INFORMATION
+        
+        # Check active capabilities
+        metadata = candidate.metadata
+        activity = metadata.get("activity", {})
+        active_semantic_caps = activity.get("active_semantic_capabilities", [])
+        active_all_caps = activity.get("active_capabilities", [])
+        
+        # Check for research-like patterns (multiple data gathering capabilities)
+        data_gathering_domains = {"weather", "finance", "search", "news", "web"}
+        active_domains = set()
+        for cap in active_semantic_caps:
+            domain = cap.split(".")[0] if "." in cap else cap
+            active_domains.add(domain)
+        
+        if len(active_domains & data_gathering_domains) >= 2:
+            return UserIntent.RESEARCHING
+        
+        # Check for creation (file write, code edit, expense add)
+        creation_caps = {"filesystem.write", "coding.edit", "expense.add", "media.play"}
+        if any(cap in active_semantic_caps for cap in creation_caps):
+            return UserIntent.CREATING
+        
+        # Check for execution actions (shell, file operations)
+        execution_caps = {"shell.execute", "filesystem.read", "filesystem.list"}
+        if any(cap in active_semantic_caps for cap in execution_caps):
+            return UserIntent.EXECUTING_ACTION
+        
+        # Check for communication (chat.respond without deps, voice)
+        communication_caps = {"chat.respond", "voice.text_to_speech"}
+        if any(cap in active_semantic_caps for cap in communication_caps):
+            if not (brain_response and brain_response.synthesis_goal_id):
+                return UserIntent.COMMUNICATING
+        
+        # Check for monitoring (system.status, runtime.info - recurring system checks)
+        # weather.current is NOT monitoring - it's a one-time information request
+        monitoring_caps = {"system.status", "runtime.info"}
+        if any(cap in active_all_caps for cap in monitoring_caps) and len(active_semantic_caps) <= 1:
+            return UserIntent.MONITORING
+        
+        # Default: requesting information
+        if active_semantic_caps:
+            return UserIntent.REQUESTING_INFORMATION
+        
+        return UserIntent.UNKNOWN
+    
+    def _compute_conversational_context(
+        self,
+        candidate: _ContextCandidate,
+        previous_state: UIContextState | None,
+        source_event: Any = None,
+    ) -> ConversationalContext:
+        """
+        Compute conversational continuity across turns.
+        
+        Uses existing session state and turn information.
+        Does NOT expose raw conversation history.
+        """
+        current_domain = candidate.context if candidate.context != "system" else None
+        
+        # Use conversational context's current_domain as previous_domain when available
+        # This tracks the last meaningful domain, not intermediate recomputation states
+        previous_domain = None
+        if previous_state and previous_state.conversational_context:
+            previous_domain = previous_state.conversational_context.current_domain
+        elif previous_state and previous_state.context != "system":
+            previous_domain = previous_state.context
+        
+        # Track the last non-system domain for previous_domain when current becomes system
+        if current_domain is None and previous_state and previous_state.conversational_context:
+            previous_domain = previous_state.conversational_context.current_domain
+        
+        # Detect if previous_state represents an internal recomputation
+        # (context differs from conversational_context's current_domain)
+        internal_recomputation = False
+        if (previous_state and previous_state.conversational_context and 
+            previous_state.context != "system" and
+            previous_state.context != previous_state.conversational_context.current_domain):
+            internal_recomputation = True
+        
+        # Determine transition type
+        transition = ContextTransition.NONE
+        if previous_state is None:
+            transition = ContextTransition.ENTERED
+        elif previous_domain != current_domain:
+            if previous_domain is None:
+                transition = ContextTransition.ENTERED
+            elif current_domain is None:
+                transition = ContextTransition.BECAME_AMBIENT
+            else:
+                transition = ContextTransition.CHANGED
+        else:
+            # Same domain - preserve previous transition if it was a meaningful change
+            # Only update to EXPANDED/NARROWED if domains actually expanded/narrowed
+            # Otherwise keep NONE (no new transition)
+            prev_domains = {d.name for d in previous_state.domains}
+            curr_domains = set()
+            activity = candidate.metadata.get("activity", {})
+            active_domains = activity.get("active_domains", [])
+            curr_domains = {d.get("context") for d in active_domains if d.get("context")}
+            
+            if curr_domains > prev_domains:
+                transition = ContextTransition.EXPANDED
+            elif curr_domains < prev_domains:
+                transition = ContextTransition.NARROWED
+            else:
+                # Domain unchanged - preserve previous transition if it was ENTERED/CHANGED
+                # This prevents internal events from resetting the transition
+                if previous_state.conversational_context and previous_state.conversational_context.contextual_transition in (ContextTransition.ENTERED, ContextTransition.CHANGED):
+                    transition = previous_state.conversational_context.contextual_transition
+                else:
+                    transition = ContextTransition.NONE
+        
+        # If this is an internal recomputation (domain changed but previous_state was internal),
+        # don't update the conversational context's current_domain - keep the last meaningful one
+        effective_current_domain = current_domain
+        if internal_recomputation and previous_state and previous_state.conversational_context:
+            effective_current_domain = previous_state.conversational_context.current_domain
+        
+        # Build active subject from primary capability
+        active_subject = None
+        if candidate.context not in ("system", "chat", "voice"):
+            # Try to extract subject from task metadata
+            task_info = candidate.metadata.get("task", {})
+            cap_id = task_info.get("capability_id", "")
+            if cap_id:
+                active_subject = f"{candidate.context}: {cap_id}"
+        
+        # Ongoing task from brain execution state
+        ongoing_task = None
+        if self._brain_execution_active:
+            ongoing_task = f"Processing {len(self._brain_goals)} goals"
+        elif self._brain_execution_succeeded is not None:
+            if self._brain_execution_succeeded:
+                ongoing_task = "Request completed"
+            else:
+                ongoing_task = "Request failed"
+        
+        # Turn count from metadata or estimate
+        turn_count = 0
+        if previous_state and previous_state.conversational_context:
+            turn_count = previous_state.conversational_context.turn_count + 1
+        elif previous_state:
+            turn_count = 1
+        
+        # Last user request (truncated)
+        last_user_request = None
+        # This would come from the interaction state or session
+        # For now, we can extract from task metadata if available
+        
+        return ConversationalContext(
+            current_domain=effective_current_domain,
+            active_subject=active_subject,
+            ongoing_task=ongoing_task,
+            previous_domain=previous_domain,
+            turn_count=turn_count,
+            last_user_request=last_user_request,
+            contextual_transition=transition,
+        )
+    
+    def _compute_entities(
+        self,
+        candidate: _ContextCandidate,
+        brain_response: 'BrainResponse | None' = None,
+    ) -> tuple[EntityInfo, ...]:
+        """
+        Extract structured entities from existing context.
+        
+        Does NOT create new entity extraction - uses existing structured data from:
+        - Task inputs (location, currency codes, dates)
+        - Goal results (returned data)
+        - Memory/Knowledge context
+        """
+        entities = []
+        
+        # Extract from task metadata (inputs to capabilities)
+        activity = candidate.metadata.get("activity", {})
+        active_semantic_caps = activity.get("active_semantic_capabilities", [])
+        
+        # We need to get actual task inputs from TaskManager
+        # For now, extract from known patterns in capability IDs and metadata
+        
+        # Check brain response for actual goal inputs/results
+        if brain_response:
+            for result in brain_response.results:
+                if result.succeeded and result.response:
+                    outputs = result.response.outputs
+                    # Extract entities from result data
+                    entities.extend(self._extract_entities_from_result(
+                        result.capability_id, outputs
+                    ))
+        
+        # Extract from task manager tasks (inputs)
+        tasks = self._task_manager.get_all()
+        for task in tasks.values():
+            inputs = task.request.inputs
+            if isinstance(inputs, (dict, MappingProxyType)):
+                entities.extend(self._extract_entities_from_inputs(
+                    task.request.capability_id, dict(inputs)
+                ))
+        
+        # Deduplicate by name+type+domain
+        seen = set()
+        unique_entities = []
+        for entity in entities:
+            key = (entity.name, entity.entity_type, entity.domain)
+            if key not in seen:
+                seen.add(key)
+                unique_entities.append(entity)
+        
+        return tuple(unique_entities)
+    
+    def _extract_entities_from_inputs(
+        self,
+        capability_id: str,
+        inputs: dict[str, Any],
+    ) -> list[EntityInfo]:
+        """Extract entities from capability inputs."""
+        entities = []
+        domain, _, _ = self._infer_context_from_capability(capability_id, None)
+        
+        # Location entities
+        if "location" in inputs:
+            loc = inputs["location"]
+            if isinstance(loc, str) and loc.strip():
+                entities.append(EntityInfo(
+                    name=loc.strip(),
+                    entity_type=EntityType.LOCATION,
+                    domain=domain,
+                    confidence=0.9,
+                    metadata=MappingProxyType({"source": "task_input"}),
+                ))
+        
+        # Currency entities
+        for currency_field in ("from", "to", "currency", "base", "target"):
+            if currency_field in inputs:
+                curr = inputs[currency_field]
+                if isinstance(curr, str) and curr.strip():
+                    entities.append(EntityInfo(
+                        name=curr.strip().upper(),
+                        entity_type=EntityType.CURRENCY,
+                        domain=domain,
+                        confidence=0.9,
+                        metadata=MappingProxyType({"source": "task_input", "field": currency_field}),
+                    ))
+        
+        # Date/time entities
+        for date_field in ("date", "start_date", "end_date", "days", "time"):
+            if date_field in inputs:
+                val = inputs[date_field]
+                if isinstance(val, (str, int)) and str(val).strip():
+                    entities.append(EntityInfo(
+                        name=str(val).strip(),
+                        entity_type=EntityType.DATE_TIME,
+                        domain=domain,
+                        confidence=0.8,
+                        metadata=MappingProxyType({"source": "task_input", "field": date_field}),
+                    ))
+        
+        # Query/search entities
+        if "query" in inputs or "search" in inputs or "topic" in inputs:
+            query = inputs.get("query") or inputs.get("search") or inputs.get("topic")
+            if isinstance(query, str) and query.strip():
+                entities.append(EntityInfo(
+                    name=query.strip()[:100],  # Truncate long queries
+                    entity_type=EntityType.TOPIC,
+                    domain=domain,
+                    confidence=0.7,
+                    metadata=MappingProxyType({"source": "task_input", "field": "query"}),
+                ))
+        
+        # Amount/measurement entities
+        if "amount" in inputs:
+            amt = inputs["amount"]
+            if isinstance(amt, (int, float)):
+                entities.append(EntityInfo(
+                    name=str(amt),
+                    entity_type=EntityType.MEASUREMENT,
+                    domain=domain,
+                    confidence=0.8,
+                    metadata=MappingProxyType({"source": "task_input", "field": "amount"}),
+                ))
+        
+        return entities
+    
+    def _extract_entities_from_result(
+        self,
+        capability_id: str,
+        outputs: dict[str, Any],
+    ) -> list[EntityInfo]:
+        """Extract entities from capability result outputs."""
+        entities = []
+        domain, _, _ = self._infer_context_from_capability(capability_id, None)
+        
+        # For weather results, extract location
+        if "weather" in capability_id:
+            if "location" in outputs:
+                loc = outputs["location"]
+                if isinstance(loc, str) and loc.strip():
+                    entities.append(EntityInfo(
+                        name=loc.strip(),
+                        entity_type=EntityType.LOCATION,
+                        domain=domain,
+                        confidence=0.95,
+                        metadata=MappingProxyType({"source": "goal_result"}),
+                    ))
+            # Temperature, condition as measurements
+            for field in ("temp", "temperature", "condition", "humidity"):
+                if field in outputs:
+                    val = outputs[field]
+                    if val is not None:
+                        entities.append(EntityInfo(
+                            name=f"{field}: {val}",
+                            entity_type=EntityType.MEASUREMENT,
+                            domain=domain,
+                            confidence=0.85,
+                            metadata=MappingProxyType({"source": "goal_result", "field": field}),
+                        ))
+        
+        # For finance results, extract currencies and rates
+        if "finance" in capability_id or "exchange" in capability_id or "currency" in capability_id:
+            for field in ("from", "to", "base", "target", "rate", "amount"):
+                if field in outputs:
+                    val = outputs[field]
+                    if isinstance(val, str) and val.strip():
+                        entities.append(EntityInfo(
+                            name=val.strip().upper(),
+                            entity_type=EntityType.CURRENCY if field in ("from", "to", "base", "target") else EntityType.MEASUREMENT,
+                            domain=domain,
+                            confidence=0.9,
+                            metadata=MappingProxyType({"source": "goal_result", "field": field}),
+                        ))
+                    elif isinstance(val, (int, float)):
+                        entities.append(EntityInfo(
+                            name=str(val),
+                            entity_type=EntityType.MEASUREMENT,
+                            domain=domain,
+                            confidence=0.85,
+                            metadata=MappingProxyType({"source": "goal_result", "field": field}),
+                        ))
+        
+        # For web search, extract topics from results
+        if "web.search" in capability_id or "news" in capability_id:
+            if "results" in outputs:
+                results = outputs["results"]
+                if isinstance(results, list):
+                    for i, result in enumerate(results[:3]):  # Top 3 results
+                        if isinstance(result, str) and result.strip():
+                            # Extract key terms (simplified)
+                            words = result.split()[:10]
+                            topic_name = " ".join(words)
+                            entities.append(EntityInfo(
+                                name=topic_name[:100],
+                                entity_type=EntityType.TOPIC,
+                                domain=domain,
+                                confidence=0.6,
+                                metadata=MappingProxyType({"source": "goal_result", "result_index": i}),
+                            ))
+        
+        return entities
+    
+    def _compute_topics(
+        self,
+        candidate: _ContextCandidate,
+        brain_response: 'BrainResponse | None' = None,
+    ) -> tuple[TopicInfo, ...]:
+        """
+        Compute semantic topics from existing structured data.
+        
+        Uses:
+        - Active domains from goals/capabilities
+        - Capability categories
+        - Memory/Knowledge context (if available)
+        Does NOT introduce new topic modeling.
+        """
+        topics = []
+        
+        # Get topics from active domains
+        activity = candidate.metadata.get("activity", {})
+        active_domains = activity.get("active_domains", [])
+        
+        for domain_info in active_domains:
+            domain_name = domain_info.get("context", "")
+            if not domain_name:
+                continue
+            
+            # Map domain to semantic topic
+            topic_name = self._map_domain_to_topic(domain_name)
+            if topic_name:
+                topics.append(TopicInfo(
+                    name=topic_name,
+                    domain=domain_name,
+                    relevance=domain_info.get("task_count", 1) / max(1, sum(d.get("task_count", 1) for d in active_domains)),
+                    source="capability",
+                ))
+        
+        # Add synthesis as a topic if present
+        if brain_response and brain_response.synthesis_goal_id:
+            topics.append(TopicInfo(
+                name="synthesis",
+                domain="chat",
+                relevance=0.9,
+                source="goal",
+            ))
+        
+        # Deduplicate
+        seen = set()
+        unique_topics = []
+        for topic in topics:
+            key = (topic.name, topic.domain)
+            if key not in seen:
+                seen.add(key)
+                unique_topics.append(topic)
+        
+        return tuple(unique_topics)
+    
+    def _map_domain_to_topic(self, domain: str) -> str | None:
+        """Map capability domain to semantic topic."""
+        domain_lower = domain.lower()
+        
+        topic_mapping = {
+            "weather": "weather",
+            "expense": "finance",
+            "finance": "finance",
+            "currency": "finance",
+            "exchange": "finance",
+            "media": "media",
+            "chat": "communication",
+            "file": "filesystem",
+            "filesystem": "filesystem",
+            "code": "coding",
+            "coding": "coding",
+            "document": "document",
+            "pdf": "document",
+            "ocr": "document",
+            "vision": "image",
+            "image": "image",
+            "video": "video",
+            "voice": "voice",
+            "speech": "voice",
+            "news": "current_events",
+            "search": "research",
+            "web": "research",
+        }
+        
+        return topic_mapping.get(domain_lower, domain_lower)
+    
+    def _compute_semantic_relevance(
+        self,
+        candidate: _ContextCandidate,
+        brain_response: 'BrainResponse | None' = None,
+    ) -> tuple[SemanticRelevance, ...]:
+        """
+        Compute semantic relevance scores for active domains.
+        
+        Based on deterministic signals:
+        - Current user request (primary domain)
+        - Active execution (running tasks)
+        - Dependency relationships (synthesis dependencies)
+        - Request status (failed goals may be more relevant for visibility)
+        - Recency
+        - Domain continuity
+        """
+        relevance_scores = []
+        
+        activity = candidate.metadata.get("activity", {})
+        active_domains = activity.get("active_domains", [])
+        task_counts = activity.get("task_counts", {})
+        
+        total_tasks = sum(d.get("task_count", 0) for d in active_domains)
+        if total_tasks == 0:
+            total_tasks = 1
+        
+        for domain_info in active_domains:
+            domain_name = domain_info.get("context", "")
+            if not domain_name:
+                continue
+            
+            task_count = domain_info.get("task_count", 0)
+            signals = []
+            score = 0.0
+            
+            # Signal 1: Primary context domain gets base relevance
+            if domain_name == candidate.context:
+                score += 0.4
+                signals.append("primary_context")
+            
+            # Signal 2: Task proportion
+            task_proportion = task_count / total_tasks
+            score += task_proportion * 0.3
+            if task_proportion > 0:
+                signals.append(f"task_proportion_{task_proportion:.1f}")
+            
+            # Signal 3: Has running tasks
+            running_count = task_counts.get("running", 0)
+            if running_count > 0:
+                score += 0.1
+                signals.append("has_running_tasks")
+            
+            # Signal 4: Has failed tasks (higher visibility needed)
+            failed_count = task_counts.get("failed", 0)
+            if failed_count > 0:
+                score += 0.15
+                signals.append("has_failed_tasks")
+            
+            # Signal 5: Is synthesis dependency
+            if brain_response and brain_response.synthesis_goal_id:
+                for result in brain_response.results:
+                    if result.goal_id == brain_response.synthesis_goal_id:
+                        if domain_name in [self._infer_context_from_capability(dep_id.split("-")[0] if "-" in dep_id else dep_id, None)[0] 
+                                          for dep_id in result.depends_on]:
+                            score += 0.1
+                            signals.append("synthesis_dependency")
+            
+            # Signal 6: Domain continuity (same as previous turn)
+            # This would be checked against previous state
+            
+            # Clamp score
+            score = min(1.0, score)
+            
+            relevance_scores.append(SemanticRelevance(
+                domain=domain_name,
+                score=score,
+                signals=tuple(signals),
+            ))
+        
+        # Sort by score descending
+        relevance_scores.sort(key=lambda r: r.score, reverse=True)
+        
+        return tuple(relevance_scores)
+    
+    def _compute_freshness(
+        self,
+        candidate: _ContextCandidate,
+        brain_response: 'BrainResponse | None' = None,
+    ) -> tuple[FreshnessInfo, ...]:
+        """
+        Compute freshness for time-sensitive domains.
+        
+        Uses existing timestamps from goal results and task completion.
+        Does NOT create new caching system.
+        """
+        freshness_infos = []
+        
+        # Domain freshness configs (max age for "fresh" status)
+        freshness_config = {
+            "weather": 1800,      # 30 minutes
+            "finance": 300,       # 5 minutes
+            "currency": 300,      # 5 minutes
+            "exchange": 300,      # 5 minutes
+            "news": 3600,         # 1 hour
+            "search": 1800,       # 30 minutes
+            "web": 1800,          # 30 minutes
+        }
+        
+        activity = candidate.metadata.get("activity", {})
+        active_domains = activity.get("active_domains", [])
+        
+        # Check brain response for actual completion times
+        completion_times = {}
+        if brain_response:
+            for result in brain_response.results:
+                if result.succeeded and result.task_id:
+                    # We'd need task completion time - use current time as approximation
+                    domain, _, _ = self._infer_context_from_capability(result.capability_id, None)
+                    if domain not in completion_times:
+                        completion_times[domain] = datetime.now(UTC)
+        
+        # Also check task manager for completed task times
+        tasks = self._task_manager.get_all()
+        for task in tasks.values():
+            if task.status.name == "COMPLETED" and task.completed_at:
+                domain, _, _ = self._infer_context_from_capability(task.request.capability_id, None)
+                if domain not in completion_times or task.completed_at > completion_times[domain]:
+                    completion_times[domain] = task.completed_at
+        
+        now = datetime.now(UTC)
+        
+        for domain_info in active_domains:
+            domain_name = domain_info.get("context", "")
+            if not domain_name:
+                continue
+            
+            max_age = freshness_config.get(domain_name)
+            last_updated = completion_times.get(domain_name)
+            
+            if last_updated is None:
+                status = "unavailable"
+            elif max_age is None:
+                status = "fresh"  # No freshness requirement
+            else:
+                age_seconds = (now - last_updated).total_seconds()
+                if age_seconds <= max_age:
+                    status = "fresh"
+                elif age_seconds <= max_age * 4:
+                    status = "recent"
+                else:
+                    status = "stale"
+            
+            freshness_infos.append(FreshnessInfo(
+                domain=domain_name,
+                last_updated=last_updated,
+                status=status,
+                max_age_seconds=float(max_age) if max_age else None,
+            ))
+        
+        return tuple(freshness_infos)
+    
+    def _enhance_domains_with_phase2(
+        self,
+        domains: tuple[DomainInfo, ...],
+        candidate: _ContextCandidate,
+        entities: tuple[EntityInfo, ...],
+        topics: tuple[TopicInfo, ...],
+        freshness_infos: tuple[FreshnessInfo, ...],
+        semantic_relevance: tuple[SemanticRelevance, ...],
+    ) -> tuple[DomainInfo, ...]:
+        """Enhance existing domains with Phase 2 information."""
+        enhanced = []
+        
+        # Create lookup maps
+        entities_by_domain = {}
+        for entity in entities:
+            if entity.domain not in entities_by_domain:
+                entities_by_domain[entity.domain] = []
+            entities_by_domain[entity.domain].append(entity)
+        
+        topics_by_domain = {}
+        for topic in topics:
+            if topic.domain not in topics_by_domain:
+                topics_by_domain[topic.domain] = []
+            topics_by_domain[topic.domain].append(topic)
+        
+        freshness_by_domain = {f.domain: f for f in freshness_infos}
+        relevance_by_domain = {r.domain: r.score for r in semantic_relevance}
+        
+        for domain in domains:
+            # Determine contextual role based on relevance and status
+            relevance_score = relevance_by_domain.get(domain.name, domain.relevance)
+            
+            if domain.name == candidate.context:
+                contextual_role = ContextualRole.PRIMARY
+            elif relevance_score > 0.5:
+                contextual_role = ContextualRole.SECONDARY
+            else:
+                contextual_role = ContextualRole.AMBIENT
+            
+            # Update domain with Phase 2 info
+            enhanced_domain = DomainInfo(
+                name=domain.name,
+                focus=domain.focus,
+                importance=domain.importance,
+                status=domain.status,
+                capability_ids=domain.capability_ids,
+                contextual_role=contextual_role,
+                relevance=relevance_score,
+                entities=tuple(entities_by_domain.get(domain.name, [])),
+                topics=tuple(topics_by_domain.get(domain.name, [])),
+                freshness=freshness_by_domain.get(domain.name),
+            )
+            enhanced.append(enhanced_domain)
+        
+        return tuple(enhanced)
+    
+    def _enhance_surfaces_with_phase2(
+        self,
+        surfaces: tuple[SurfaceItem, ...],
+        candidate: _ContextCandidate,
+        freshness_infos: tuple[FreshnessInfo, ...],
+        semantic_relevance: tuple[SemanticRelevance, ...],
+        brain_response: 'BrainResponse | None' = None,
+    ) -> tuple[SurfaceItem, ...]:
+        """Enhance existing surfaces with Phase 2 information."""
+        enhanced = []
+        
+        freshness_by_domain = {f.domain: f for f in freshness_infos}
+        relevance_by_domain = {r.domain: r.score for r in semantic_relevance}
+        
+        for surface in surfaces:
+            # Determine domain for this surface
+            domain, _, _ = self._infer_context_from_capability(surface.capability_id, None)
+            
+            # Determine contextual role
+            domain_relevance = relevance_by_domain.get(domain, 1.0)
+            if surface.tier == SurfaceTier.PRIMARY and domain == candidate.context:
+                contextual_role = ContextualRole.PRIMARY
+            elif surface.tier == SurfaceTier.PRIMARY:
+                contextual_role = ContextualRole.SECONDARY
+            else:
+                contextual_role = ContextualRole.AMBIENT
+            
+            # Get freshness for this surface's domain
+            freshness = freshness_by_domain.get(domain)
+            
+            enhanced_surface = SurfaceItem(
+                capability_id=surface.capability_id,
+                label=surface.label,
+                tier=surface.tier,
+                contextual_role=contextual_role,
+                relevance=domain_relevance,
+                freshness=freshness,
+                metadata=surface.metadata,
+            )
+            enhanced.append(enhanced_surface)
+        
+        return tuple(enhanced)
+    
+    def _enhance_synthesis_with_phase2(
+        self,
+        synthesis: SynthesisInfo | None,
+        candidate: _ContextCandidate,
+    ) -> SynthesisInfo | None:
+        """Enhance synthesis with Phase 2 contextual role."""
+        if synthesis is None:
+            return None
+        
+        # Synthesis is typically PRIMARY when active, SECONDARY when waiting, AMBIENT when completed
+        if synthesis.status in ("running", "waiting"):
+            contextual_role = ContextualRole.PRIMARY
+        elif synthesis.status == "completed":
+            contextual_role = ContextualRole.SECONDARY
+        else:
+            contextual_role = ContextualRole.AMBIENT
+        
+        return SynthesisInfo(
+            goal_id=synthesis.goal_id,
+            capability_id=synthesis.capability_id,
+            status=synthesis.status,
+            depends_on=synthesis.depends_on,
+            completed_dependencies=synthesis.completed_dependencies,
+            failed_dependencies=synthesis.failed_dependencies,
+            contextual_role=contextual_role,
+        )
+    
+    def _enhance_dependencies_with_phase2(
+        self,
+        dependencies: tuple[DependencyInfo, ...],
+        candidate: _ContextCandidate,
+    ) -> tuple[DependencyInfo, ...]:
+        """Enhance dependencies with Phase 2 contextual role."""
+        enhanced = []
+        
+        for dep in dependencies:
+            # Determine contextual role based on status and synthesis
+            if dep.is_synthesis:
+                contextual_role = ContextualRole.PRIMARY
+            elif dep.status in ("running", "waiting"):
+                contextual_role = ContextualRole.SECONDARY
+            elif dep.status == "completed":
+                contextual_role = ContextualRole.SECONDARY
+            elif dep.status == "failed":
+                contextual_role = ContextualRole.PRIMARY  # Failed deps need attention
+            else:
+                contextual_role = ContextualRole.AMBIENT
+            
+            enhanced_dep = DependencyInfo(
+                goal_id=dep.goal_id,
+                capability_id=dep.capability_id,
+                depends_on=dep.depends_on,
+                status=dep.status,
+                is_synthesis=dep.is_synthesis,
+                contextual_role=contextual_role,
+            )
+            enhanced.append(enhanced_dep)
+        
+        return tuple(enhanced)
     
     def get_current_state(self) -> UIContextState:
         """

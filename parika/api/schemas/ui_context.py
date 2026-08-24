@@ -15,16 +15,73 @@ from .common import ApiModel
 from parika.core.ui_context.state import (
     AttentionLevel,
     ContextSource,
+    ContextTransition,
+    ContextualRole,
     DependencyInfo,
     DomainInfo,
+    EntityInfo,
+    EntityType,
     FocusArea,
+    FreshnessInfo,
     RequestStatus,
+    SemanticRelevance,
     SurfaceItem,
     SurfaceTier,
     SynthesisInfo,
+    TopicInfo,
     UIContextState,
     UrgencyLevel,
+    UserIntent,
+    ConversationalContext,
 )
+
+
+class FreshnessInfoSchema(ApiModel):
+    """Wire-format freshness info."""
+    
+    domain: str
+    last_updated: datetime | None = None
+    status: str
+    max_age_seconds: float | None = None
+
+
+class EntityInfoSchema(ApiModel):
+    """Wire-format entity info."""
+    
+    name: str
+    entity_type: EntityType
+    domain: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TopicInfoSchema(ApiModel):
+    """Wire-format topic info."""
+    
+    name: str
+    domain: str
+    relevance: float = Field(ge=0.0, le=1.0)
+    source: str
+
+
+class ConversationalContextSchema(ApiModel):
+    """Wire-format conversational context."""
+    
+    current_domain: str | None = None
+    active_subject: str | None = None
+    ongoing_task: str | None = None
+    previous_domain: str | None = None
+    turn_count: int = 0
+    last_user_request: str | None = None
+    contextual_transition: ContextTransition = ContextTransition.NONE
+
+
+class SemanticRelevanceSchema(ApiModel):
+    """Wire-format semantic relevance."""
+    
+    domain: str
+    score: float = Field(ge=0.0, le=1.0)
+    signals: list[str] = Field(default_factory=list)
 
 
 class SurfaceItemSchema(ApiModel):
@@ -33,6 +90,9 @@ class SurfaceItemSchema(ApiModel):
     capability_id: str
     label: str
     tier: SurfaceTier
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    relevance: float = Field(default=1.0, ge=0.0, le=1.0)
+    freshness: FreshnessInfoSchema | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -44,6 +104,11 @@ class DomainInfoSchema(ApiModel):
     importance: float = Field(ge=0.0, le=1.0)
     status: str
     capability_ids: list[str]
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
+    relevance: float = Field(default=1.0, ge=0.0, le=1.0)
+    entities: list[EntityInfoSchema] = Field(default_factory=list)
+    topics: list[TopicInfoSchema] = Field(default_factory=list)
+    freshness: FreshnessInfoSchema | None = None
 
 
 class SynthesisInfoSchema(ApiModel):
@@ -55,6 +120,7 @@ class SynthesisInfoSchema(ApiModel):
     depends_on: list[str] = Field(default_factory=list)
     completed_dependencies: list[str] = Field(default_factory=list)
     failed_dependencies: list[str] = Field(default_factory=list)
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
 
 
 class DependencyInfoSchema(ApiModel):
@@ -65,6 +131,7 @@ class DependencyInfoSchema(ApiModel):
     depends_on: list[str] = Field(default_factory=list)
     status: str
     is_synthesis: bool
+    contextual_role: ContextualRole = ContextualRole.PRIMARY
 
 
 class UIContextResponse(ApiModel):
@@ -85,6 +152,14 @@ class UIContextResponse(ApiModel):
     synthesis: SynthesisInfoSchema | None = None
     dependencies: list[DependencyInfoSchema] = Field(default_factory=list)
     
+    # Phase 2 fields
+    user_intent: UserIntent = UserIntent.UNKNOWN
+    conversational_context: ConversationalContextSchema | None = None
+    semantic_relevance: list[SemanticRelevanceSchema] = Field(default_factory=list)
+    entities: list[EntityInfoSchema] = Field(default_factory=list)
+    topics: list[TopicInfoSchema] = Field(default_factory=list)
+    context_transition: ContextTransition = ContextTransition.NONE
+    
     @classmethod
     def from_state(cls, state: UIContextState) -> "UIContextResponse":
         """Create response from UIContextState."""
@@ -101,6 +176,14 @@ class UIContextResponse(ApiModel):
                     capability_id=surface.capability_id,
                     label=surface.label,
                     tier=surface.tier,
+                    contextual_role=surface.contextual_role,
+                    relevance=surface.relevance,
+                    freshness=FreshnessInfoSchema(
+                        domain=surface.freshness.domain,
+                        last_updated=surface.freshness.last_updated,
+                        status=surface.freshness.status,
+                        max_age_seconds=surface.freshness.max_age_seconds,
+                    ) if surface.freshness else None,
                     metadata=dict(surface.metadata),
                 )
                 for surface in state.surfaces
@@ -115,6 +198,27 @@ class UIContextResponse(ApiModel):
                     importance=domain.importance,
                     status=domain.status,
                     capability_ids=list(domain.capability_ids),
+                    contextual_role=domain.contextual_role,
+                    relevance=domain.relevance,
+                    entities=[EntityInfoSchema(
+                        name=e.name,
+                        entity_type=e.entity_type,
+                        domain=e.domain,
+                        confidence=e.confidence,
+                        metadata=dict(e.metadata),
+                    ) for e in domain.entities],
+                    topics=[TopicInfoSchema(
+                        name=t.name,
+                        domain=t.domain,
+                        relevance=t.relevance,
+                        source=t.source,
+                    ) for t in domain.topics],
+                    freshness=FreshnessInfoSchema(
+                        domain=domain.freshness.domain,
+                        last_updated=domain.freshness.last_updated,
+                        status=domain.freshness.status,
+                        max_age_seconds=domain.freshness.max_age_seconds,
+                    ) if domain.freshness else None,
                 )
                 for domain in state.domains
             ],
@@ -126,6 +230,7 @@ class UIContextResponse(ApiModel):
                     depends_on=list(state.synthesis.depends_on),
                     completed_dependencies=list(state.synthesis.completed_dependencies),
                     failed_dependencies=list(state.synthesis.failed_dependencies),
+                    contextual_role=state.synthesis.contextual_role,
                 )
                 if state.synthesis else None
             ),
@@ -136,7 +241,49 @@ class UIContextResponse(ApiModel):
                     depends_on=list(dep.depends_on),
                     status=dep.status,
                     is_synthesis=dep.is_synthesis,
+                    contextual_role=dep.contextual_role,
                 )
                 for dep in state.dependencies
             ],
+            user_intent=state.user_intent,
+            conversational_context=(
+                ConversationalContextSchema(
+                    current_domain=state.conversational_context.current_domain,
+                    active_subject=state.conversational_context.active_subject,
+                    ongoing_task=state.conversational_context.ongoing_task,
+                    previous_domain=state.conversational_context.previous_domain,
+                    turn_count=state.conversational_context.turn_count,
+                    last_user_request=state.conversational_context.last_user_request,
+                    contextual_transition=state.conversational_context.contextual_transition,
+                )
+                if state.conversational_context else None
+            ),
+            semantic_relevance=[
+                SemanticRelevanceSchema(
+                    domain=rel.domain,
+                    score=rel.score,
+                    signals=list(rel.signals),
+                )
+                for rel in state.semantic_relevance
+            ],
+            entities=[
+                EntityInfoSchema(
+                    name=e.name,
+                    entity_type=e.entity_type,
+                    domain=e.domain,
+                    confidence=e.confidence,
+                    metadata=dict(e.metadata),
+                )
+                for e in state.entities
+            ],
+            topics=[
+                TopicInfoSchema(
+                    name=t.name,
+                    domain=t.domain,
+                    relevance=t.relevance,
+                    source=t.source,
+                )
+                for t in state.topics
+            ],
+            context_transition=state.context_transition,
         )

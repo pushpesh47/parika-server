@@ -23,6 +23,15 @@ from parika.core.ui_context.state import (
     DomainInfo,
     SynthesisInfo,
     DependencyInfo,
+    UserIntent,
+    ConversationalContext,
+    ContextTransition,
+    EntityInfo,
+    EntityType,
+    TopicInfo,
+    SemanticRelevance,
+    FreshnessInfo,
+    ContextualRole,
 )
 from parika.core.ui_context.events import UIContextChanged, UI_CONTEXT_CHANGED_EVENT
 from parika.core.ui_context.exceptions import UIContextNotReadyError
@@ -2219,3 +2228,807 @@ class TestEndToEndRegression:
         assert not projector._surfaces_equal(previous_state.surfaces, updated_surfaces)
         
         print("✓ Surface metadata test passed!")
+
+
+class TestPhase2ContextualIntelligence:
+    """Tests for Phase 2 Contextual Intelligence features."""
+    
+    def _register_phase2_capabilities(self, capability_registry):
+        """Register capabilities needed for Phase 2 tests."""
+        from parika.core.capability_registry.capability_definition import CapabilityDefinition
+        from parika.core.capability_registry.capability_category import CapabilityCategory
+        
+        # Weather capabilities
+        capability_registry.register(CapabilityDefinition(
+            id="weather.current",
+            name="Weather Current",
+            description="Get current weather",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"weather", "network"}),
+        ))
+        capability_registry.register(CapabilityDefinition(
+            id="weather.forecast",
+            name="Weather Forecast",
+            description="Get weather forecast",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"weather", "network"}),
+        ))
+        
+        # Finance capabilities
+        capability_registry.register(CapabilityDefinition(
+            id="finance.exchange_rate",
+            name="Exchange Rate",
+            description="Get exchange rate",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"finance", "network"}),
+        ))
+        
+        # Web search
+        capability_registry.register(CapabilityDefinition(
+            id="web.search",
+            name="Web Search",
+            description="Search the web",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"web", "network", "search"}),
+        ))
+        
+        # Chat respond
+        capability_registry.register(CapabilityDefinition(
+            id="chat.respond",
+            name="Chat Respond",
+            description="Chat response",
+            category=CapabilityCategory.LLM,
+            tags=frozenset({"chat", "llm"}),
+        ))
+        
+        # News
+        capability_registry.register(CapabilityDefinition(
+            id="news.latest",
+            name="Latest News",
+            description="Latest news",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"news", "network"}),
+        ))
+        
+        # Coding
+        capability_registry.register(CapabilityDefinition(
+            id="coding.execute_task",
+            name="Coding Execute Task",
+            description="Execute a coding task",
+            category=CapabilityCategory.LLM,
+            tags=frozenset({"coding", "llm"}),
+        ))
+        
+        # File system
+        capability_registry.register(CapabilityDefinition(
+            id="filesystem.read",
+            name="Read File",
+            description="Read file",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"filesystem", "local"}),
+        ))
+        capability_registry.register(CapabilityDefinition(
+            id="filesystem.write",
+            name="Write File",
+            description="Write file",
+            category=CapabilityCategory.TOOL,
+            tags=frozenset({"filesystem", "local"}),
+        ))
+    
+    def _create_task_with_metadata(
+        self,
+        task_manager,
+        capability_id: str,
+        status: TaskStatus = TaskStatus.RUNNING,
+        agent_id: str | None = None,
+        agent_specialization: str | None = None,
+        agent_confidence: float | None = None,
+        parent_task_id: str | None = None,
+        inputs: dict | None = None,
+    ) -> Task:
+        """Create a task with agent metadata in request."""
+        metadata = {}
+        if agent_id:
+            metadata["agent_id"] = agent_id
+        if agent_specialization:
+            metadata["agent_specialization"] = agent_specialization
+        if agent_confidence is not None:
+            metadata["agent_confidence"] = agent_confidence
+        
+        request = TaskRequest(
+            capability_id=capability_id,
+            metadata=metadata,
+            inputs=inputs or {},
+        )
+        task = task_manager.create(request, parent_task_id=parent_task_id)
+        
+        # Manually set status for testing (bypassing execution)
+        task.status = status
+        if status == TaskStatus.RUNNING:
+            task.started_at = datetime.now(UTC)
+        elif status == TaskStatus.COMPLETED:
+            task.completed_at = datetime.now(UTC)
+        elif status == TaskStatus.FAILED:
+            task.completed_at = datetime.now(UTC)
+            task.failure = RuntimeError("Test failure")
+        
+        return task
+    
+    def test_user_intent_requesting_information(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test user intent detection for information requests."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Single weather task - requesting information
+        self._create_task_with_metadata(
+            task_manager, "weather.current", TaskStatus.RUNNING,
+            inputs={"location": "Patna, Bihar"}
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        assert state.user_intent == UserIntent.REQUESTING_INFORMATION
+    
+    def test_user_intent_researching(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test user intent detection for researching (multiple data gathering)."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Multiple data gathering tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "web.search", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        assert state.user_intent == UserIntent.RESEARCHING
+    
+    def test_user_intent_creating(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test user intent detection for creating."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # File write task - creating
+        self._create_task_with_metadata(
+            task_manager, "filesystem.write", TaskStatus.RUNNING,
+            inputs={"path": "/tmp/test.txt", "content": "hello"}
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        assert state.user_intent == UserIntent.CREATING
+    
+    def test_conversational_context_continuity(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test conversational context tracks continuity across turns."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # First turn - weather
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state1 = projector.get_current_state()
+        assert state1.conversational_context is not None
+        assert state1.conversational_context.current_domain == "weather"
+        assert state1.conversational_context.turn_count >= 0
+        assert state1.context_transition == ContextTransition.ENTERED
+        
+        # Simulate completion
+        tasks = task_manager.get_all()
+        for task in tasks.values():
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now(UTC)
+        event_bus.publish("task.completed", None)
+        
+        from parika.core.utilities.progress import ProgressEvent, ProgressStage
+        event_bus.publish("brain.execution.completed", ProgressEvent(
+            source_id="brain.execution",
+            stage=ProgressStage.COMPLETED,
+            progress_id="test-1",
+            message="completed",
+            metadata={"succeeded": True, "request_id": "req-1"},
+        ))
+        
+        state2 = projector.get_current_state()
+        # Context should still show weather (ambient)
+        assert state2.conversational_context is not None
+        assert state2.conversational_context.previous_domain == "weather"
+    
+    def test_context_transition_detection(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test context transition detection between domains."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # First turn - weather
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        state1 = projector.get_current_state()
+        
+        # Clear and switch to coding
+        tasks = task_manager.get_all()
+        for task in tasks.values():
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now(UTC)
+        event_bus.publish("task.completed", None)
+        
+        from parika.core.utilities.progress import ProgressEvent, ProgressStage
+        event_bus.publish("brain.execution.completed", ProgressEvent(
+            source_id="brain.execution",
+            stage=ProgressStage.COMPLETED,
+            progress_id="test-1",
+            message="completed",
+            metadata={"succeeded": True, "request_id": "req-1"},
+        ))
+        
+        # Second turn - coding
+        self._create_task_with_metadata(task_manager, "coding.execute_task", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        state2 = projector.get_current_state()
+        
+        # Should detect context change
+        assert state2.context_transition in (ContextTransition.CHANGED, ContextTransition.ENTERED)
+        assert state2.conversational_context.previous_domain == "weather"
+        assert state2.conversational_context.current_domain == "code"
+    
+    def test_entity_extraction_from_inputs(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test entity extraction from task inputs."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Task with location and currency inputs
+        self._create_task_with_metadata(
+            task_manager, "weather.current", TaskStatus.RUNNING,
+            inputs={"location": "Patna, Bihar"}
+        )
+        self._create_task_with_metadata(
+            task_manager, "finance.exchange_rate", TaskStatus.RUNNING,
+            inputs={"from": "USD", "to": "INR", "amount": 100}
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Should have entities
+        assert len(state.entities) > 0
+        entity_names = {e.name for e in state.entities}
+        assert "Patna, Bihar" in entity_names or "PATNA, BIHAR" in entity_names
+        assert "USD" in entity_names
+        assert "INR" in entity_names
+        
+        # Check entity types
+        location_entities = [e for e in state.entities if e.entity_type == EntityType.LOCATION]
+        currency_entities = [e for e in state.entities if e.entity_type == EntityType.CURRENCY]
+        assert len(location_entities) > 0
+        assert len(currency_entities) > 0
+    
+    def test_topic_projection(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test topic/subject projection from active domains."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Multi-domain tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "web.search", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Should have topics
+        assert len(state.topics) > 0
+        topic_names = {t.name for t in state.topics}
+        assert "weather" in topic_names
+        assert "finance" in topic_names
+        assert "research" in topic_names or "search" in topic_names
+    
+    def test_semantic_relevance_scoring(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test semantic relevance scores for active domains."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Primary domain (weather) with more tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "weather.forecast", TaskStatus.RUNNING)
+        # Secondary domain (finance) with fewer tasks
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Should have semantic relevance
+        assert len(state.semantic_relevance) > 0
+        
+        # Primary domain should have higher relevance
+        weather_relevance = next((r for r in state.semantic_relevance if r.domain == "weather"), None)
+        finance_relevance = next((r for r in state.semantic_relevance if r.domain == "finance"), None)
+        
+        assert weather_relevance is not None
+        assert finance_relevance is not None
+        assert weather_relevance.score >= finance_relevance.score
+        
+        # Check signals are present
+        assert "primary_context" in weather_relevance.signals
+        assert len(weather_relevance.signals) > 0
+    
+    def test_freshness_tracking(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test freshness information for time-sensitive domains."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Weather and finance tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Check domain freshness
+        weather_domain = next((d for d in state.domains if d.name == "weather"), None)
+        finance_domain = next((d for d in state.domains if d.name == "finance"), None)
+        
+        assert weather_domain is not None
+        assert finance_domain is not None
+        
+        # Freshness should be present for time-sensitive domains
+        if weather_domain.freshness:
+            assert weather_domain.freshness.status in ("fresh", "recent", "stale", "unavailable")
+            assert weather_domain.freshness.max_age_seconds is not None
+        
+        if finance_domain.freshness:
+            assert finance_domain.freshness.status in ("fresh", "recent", "stale", "unavailable")
+            assert finance_domain.freshness.max_age_seconds is not None
+    
+    def test_contextual_role_assignment(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test contextual role assignment (primary/secondary/ambient)."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Primary domain with multiple tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "weather.forecast", TaskStatus.RUNNING)
+        # Secondary domain
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Check domain contextual roles
+        weather_domain = next((d for d in state.domains if d.name == "weather"), None)
+        finance_domain = next((d for d in state.domains if d.name == "finance"), None)
+        
+        assert weather_domain is not None
+        assert finance_domain is not None
+        
+        # Primary domain should be PRIMARY
+        assert weather_domain.contextual_role == ContextualRole.PRIMARY
+        # Secondary domain should be SECONDARY or AMBIENT
+        assert finance_domain.contextual_role in (ContextualRole.SECONDARY, ContextualRole.AMBIENT)
+        
+        # Check surface contextual roles
+        weather_surfaces = [s for s in state.surfaces if s.capability_id.startswith("weather.")]
+        finance_surfaces = [s for s in state.surfaces if s.capability_id.startswith("finance.")]
+        
+        for s in weather_surfaces:
+            assert s.contextual_role == ContextualRole.PRIMARY
+        
+        for s in finance_surfaces:
+            assert s.contextual_role in (ContextualRole.SECONDARY, ContextualRole.AMBIENT)
+    
+    def test_surface_relevance_metadata(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test surface relevance and freshness metadata."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Check surface relevance
+        for surface in state.surfaces:
+            assert 0.0 <= surface.relevance <= 1.0
+            assert surface.contextual_role in ContextualRole
+        
+        # Primary domain surfaces should have higher relevance
+        weather_surfaces = [s for s in state.surfaces if s.capability_id.startswith("weather.")]
+        for s in weather_surfaces:
+            assert s.relevance > 0.5
+    
+    def test_ambient_context_persistence(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test ambient context persists after task completion."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Active weather task
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        state1 = projector.get_current_state()
+        
+        assert state1.attention == AttentionLevel.PRIMARY
+        assert state1.context == "weather"
+        
+        # Complete the task
+        tasks = task_manager.get_all()
+        for task in tasks.values():
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now(UTC)
+        event_bus.publish("task.completed", None)
+        
+        from parika.core.utilities.progress import ProgressEvent, ProgressStage
+        event_bus.publish("brain.execution.completed", ProgressEvent(
+            source_id="brain.execution",
+            stage=ProgressStage.COMPLETED,
+            progress_id="test-ambient",
+            message="completed",
+            metadata={"succeeded": True, "request_id": "req-ambient"},
+        ))
+        
+        state2 = projector.get_current_state()
+        
+        # Context should become ambient but still show weather
+        assert state2.attention == AttentionLevel.AMBIENT
+        assert state2.context == "weather"
+        # Domains should still be present
+        assert len(state2.domains) > 0
+        # Surfaces should still be present
+        assert len(state2.surfaces) > 0
+    
+    def test_multi_domain_context_representation(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test multiple domains simultaneously represented."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Complex multi-domain request
+        self._create_task_with_metadata(
+            task_manager, "weather.current", TaskStatus.RUNNING,
+            agent_id="agent.weather", agent_specialization="system"
+        )
+        self._create_task_with_metadata(
+            task_manager, "finance.exchange_rate", TaskStatus.RUNNING,
+            agent_id="agent.finance", agent_specialization="finance"
+        )
+        self._create_task_with_metadata(
+            task_manager, "web.search", TaskStatus.RUNNING,
+            agent_id="agent.research", agent_specialization="research"
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Should have all three domains
+        domain_names = {d.name for d in state.domains}
+        assert "weather" in domain_names
+        assert "finance" in domain_names
+        assert "search" in domain_names or "web" in domain_names
+        
+        # Each domain should have proper structure
+        for domain in state.domains:
+            assert 0.0 <= domain.importance <= 1.0
+            assert isinstance(domain.focus, FocusArea)
+            assert domain.status in ("running", "waiting", "completed", "failed")
+            assert isinstance(domain.capability_ids, tuple)
+            assert domain.contextual_role in ContextualRole
+            assert 0.0 <= domain.relevance <= 1.0
+        
+        # Entities from all domains
+        assert len(state.entities) > 0
+        
+        # Topics from all domains
+        assert len(state.topics) >= 2
+    
+    def test_synthesis_contextual_role(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test synthesis goal contextual role."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Data gathering + synthesis
+        self._create_task_with_metadata(
+            task_manager, "weather.current", TaskStatus.RUNNING,
+            agent_id="agent.weather"
+        )
+        self._create_task_with_metadata(
+            task_manager, "chat.respond", TaskStatus.RUNNING,
+            agent_id="agent.synthesis"
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Synthesis should be represented
+        assert state.synthesis is not None
+        assert state.synthesis.capability_id == "chat.respond"
+        # Active synthesis should be PRIMARY
+        assert state.synthesis.contextual_role == ContextualRole.PRIMARY
+    
+    def test_dependency_contextual_roles(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test dependency contextual roles (failed deps get attention)."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        # This test would require a real BrainResponse to properly test
+        # For now, verify the structure exists
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Dependencies should have contextual_role field
+        for dep in state.dependencies:
+            assert dep.contextual_role in ContextualRole
+    
+    def test_ui_overload_control_signals(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test signals for UI overload control (relevance, attention, tier, freshness, role)."""
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        # Many concurrent tasks
+        self._create_task_with_metadata(task_manager, "weather.current", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "weather.forecast", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "finance.exchange_rate", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "web.search", TaskStatus.RUNNING)
+        self._create_task_with_metadata(task_manager, "coding.execute_task", TaskStatus.RUNNING)
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        
+        # Should have all signals for client-side prioritization
+        assert len(state.semantic_relevance) > 0
+        
+        # All domains have relevance scores
+        for rel in state.semantic_relevance:
+            assert 0.0 <= rel.score <= 1.0
+            assert len(rel.signals) > 0
+        
+        # All domains have contextual roles
+        for domain in state.domains:
+            assert domain.contextual_role in ContextualRole
+            assert 0.0 <= domain.relevance <= 1.0
+        
+        # All surfaces have relevance and contextual roles
+        for surface in state.surfaces:
+            assert 0.0 <= surface.relevance <= 1.0
+            assert surface.contextual_role in ContextualRole
+            assert surface.tier in SurfaceTier
+        
+        # Freshness for time-sensitive domains
+        for domain in state.domains:
+            if domain.freshness:
+                assert domain.freshness.status in ("fresh", "recent", "stale", "unavailable")
+        
+        print("✓ UI overload control signals test passed!")
+    
+    def test_rest_api_includes_phase2_fields(self, event_bus, logger, task_manager, workflow_engine, context_manager, state_manager, capability_registry):
+        """Test REST API response includes Phase 2 fields."""
+        from parika.api.schemas.ui_context import UIContextResponse
+        
+        self._register_phase2_capabilities(capability_registry)
+        
+        projector = UIContextProjector(
+            event_bus=event_bus,
+            logger=logger,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
+            context_manager=context_manager,
+            state_manager=state_manager,
+            capability_registry=capability_registry,
+        )
+        projector.start()
+        
+        self._create_task_with_metadata(
+            task_manager, "weather.current", TaskStatus.RUNNING,
+            inputs={"location": "Patna, Bihar"}
+        )
+        event_bus.publish("task.started", None)
+        
+        state = projector.get_current_state()
+        response = UIContextResponse.from_state(state)
+        
+        # Phase 2 fields should be present
+        assert response.user_intent is not None
+        assert response.conversational_context is not None
+        assert isinstance(response.semantic_relevance, list)
+        assert isinstance(response.entities, list)
+        assert isinstance(response.topics, list)
+        assert response.context_transition is not None
+        
+        # Check nested structures
+        if response.conversational_context:
+            assert response.conversational_context.current_domain == "weather"
+            assert response.conversational_context.contextual_transition == ContextTransition.ENTERED
+        
+        # Entities should be serialized
+        if response.entities:
+            for entity in response.entities:
+                assert entity.name
+                assert entity.entity_type in EntityType
+                assert entity.domain
+                assert 0.0 <= entity.confidence <= 1.0
+        
+        # Topics should be serialized
+        if response.topics:
+            for topic in response.topics:
+                assert topic.name
+                assert topic.domain
+                assert 0.0 <= topic.relevance <= 1.0
+        
+        # Semantic relevance should be serialized
+        for rel in response.semantic_relevance:
+            assert rel.domain
+            assert 0.0 <= rel.score <= 1.0
+            assert isinstance(rel.signals, list)
+        
+        # Domain Phase 2 fields
+        for domain in response.domains:
+            assert domain.contextual_role in ContextualRole
+            assert 0.0 <= domain.relevance <= 1.0
+            assert isinstance(domain.entities, list)
+            assert isinstance(domain.topics, list)
+        
+        # Surface Phase 2 fields
+        for surface in response.surfaces:
+            assert surface.contextual_role in ContextualRole
+            assert 0.0 <= surface.relevance <= 1.0
+            assert surface.tier in SurfaceTier
+        
+        print("✓ REST API Phase 2 fields test passed!")

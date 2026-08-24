@@ -311,7 +311,7 @@ Other important folders:
 ### Step 1 — Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/pushpesh47/parika-server.git
 cd parika
 ```
 
