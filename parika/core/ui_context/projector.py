@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
@@ -27,12 +27,20 @@ from .exceptions import UIContextNotReadyError, UIContextProjectionError
 from .state import (
     AttentionLevel,
     ContextSource,
+    DependencyInfo,
+    DomainInfo,
     FocusArea,
+    RequestStatus,
     SurfaceItem,
     SurfaceTier,
+    SynthesisInfo,
     UIContextState,
     UrgencyLevel,
 )
+
+if TYPE_CHECKING:
+    from parika.core.brain.brain import Brain
+    from parika.core.brain.brain_response import BrainResponse
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,6 +131,16 @@ class UIContextProjector:
         "capability.execution.started",
         "capability.execution.completed",
         "capability.execution.failed",
+        # Brain execution events (request-level status)
+        "brain.execution.started",
+        "brain.execution.completed",
+        "brain.execution.failed",
+        "brain.planning.started",
+        "brain.planning.completed",
+        "brain.planning.failed",
+        "brain.execute_goal.started",
+        "brain.execute_goal.completed",
+        "brain.execute_goal.failed",
         # Context registry events (may indicate context changes)
         "context.registered",
         "context.updated",
@@ -139,6 +157,7 @@ class UIContextProjector:
         context_manager: ContextManager,
         state_manager: StateManager,
         capability_registry: CapabilityRegistry,
+        brain: "Brain | None" = None,
     ) -> None:
         """
         Initialize the UI Context Projector.
@@ -151,6 +170,7 @@ class UIContextProjector:
             context_manager: ContextManager for reading runtime contexts
             state_manager: StateManager for reading operational state
             capability_registry: CapabilityRegistry for capability metadata
+            brain: Optional Brain reference to access real execution state (BrainResponse)
         """
         self._event_bus = event_bus
         self._logger = logger.get_logger(__name__)
@@ -159,12 +179,23 @@ class UIContextProjector:
         self._context_manager = context_manager
         self._state_manager = state_manager
         self._capability_registry = capability_registry
+        self._brain = brain
         
         self._lock = threading.RLock()
         self._current_state: UIContextState | None = None
         self._version = 0
         self._subscribed = False
         self._shutdown = False
+        
+        # Brain execution tracking state
+        self._brain_execution_active = False
+        self._brain_execution_succeeded: bool | None = None
+        self._brain_request_id: str | None = None
+        self._brain_goals: dict[str, dict[str, Any]] = {}  # goal_id -> goal info
+        self._brain_synthesis_goal_id: str | None = None
+        
+        # Last active task metadata (for request status after completion)
+        self._last_active_task_metadata: MappingProxyType[str, Any] | None = None
         
         # Initialize with fallback state
         self._initialize_fallback_state()
@@ -184,6 +215,10 @@ class UIContextProjector:
             surfaces=fallback_surfaces,
             timestamp=datetime.now(UTC),
             metadata=MappingProxyType({}),
+            request_status=RequestStatus.FAILED,
+            domains=(),
+            synthesis=None,
+            dependencies=(),
         )
         self._version = 0
         self._logger.info("UI Context Projector initialized with fallback state")
@@ -214,15 +249,97 @@ class UIContextProjector:
         self._shutdown = True
         self._logger.info("UI Context Projector stopped")
     
+    def set_brain(self, brain: "Brain") -> None:
+        """Set the Brain reference for accessing real execution state.
+        
+        This is called after the Brain is constructed, since the Brain
+        is created after the Projector in the runtime initialization order.
+        
+        Args:
+            brain: The Brain instance to use for accessing real execution state.
+        """
+        self._brain = brain
+        self._logger.debug("Brain reference set on UI Context Projector")
+    
     def _on_core_event(self, payload: Any) -> None:
         """Handle Core events that may affect semantic UI state."""
         if self._shutdown:
             return
         
+        # Track brain execution events for request-level status
+        self._track_brain_execution(payload)
+        
         try:
             self._recompute_and_publish()
         except Exception:
             self._logger.exception("Error recomputing UI context from event")
+    
+    def _track_brain_execution(self, payload: Any) -> None:
+        """Track brain execution progress events for request-level status."""
+        # ProgressEvent has source_id field that identifies the event type
+        source_id = getattr(payload, 'source_id', None)
+        if not source_id or not source_id.startswith('brain.'):
+            return
+        
+        stage = getattr(payload, 'stage', None)
+        metadata = getattr(payload, 'metadata', {})
+        
+        if source_id == 'brain.execution':
+            if stage and stage.value == 'started':
+                self._brain_execution_active = True
+                self._brain_execution_succeeded = None
+                self._brain_request_id = metadata.get('request_id')
+                self._brain_goals = {}
+                self._brain_synthesis_goal_id = None
+            elif stage and stage.value == 'completed':
+                self._brain_execution_active = False
+                self._brain_execution_succeeded = metadata.get('succeeded', False)
+                # Use real BrainResponse for accurate state
+                if self._brain is not None:
+                    brain_response = self._brain.last_response
+                    if brain_response is not None:
+                        # Verify this response matches the request_id from the event
+                        if brain_response.request_id == self._brain_request_id:
+                            self._apply_brain_response(brain_response)
+            elif stage and stage.value == 'failed':
+                self._brain_execution_active = False
+                self._brain_execution_succeeded = False
+        elif source_id == 'brain.planning' and stage and stage.value == 'completed':
+            # Planning completed - we could extract goal info from metadata if available
+            pass
+        elif source_id == 'brain.execute_goal':
+            # Track individual goal execution
+            goal_id = metadata.get('goal_id')
+            capability_id = metadata.get('capability_id')
+            if goal_id and stage:
+                if goal_id not in self._brain_goals:
+                    self._brain_goals[goal_id] = {'capability_id': capability_id, 'status': 'pending'}
+                if stage.value == 'started':
+                    self._brain_goals[goal_id]['status'] = 'running'
+                elif stage.value == 'completed':
+                    self._brain_goals[goal_id]['status'] = 'completed'
+                elif stage.value == 'failed':
+                    self._brain_goals[goal_id]['status'] = 'failed'
+    
+    def _apply_brain_response(self, brain_response: BrainResponse) -> None:
+        """Apply real BrainResponse state to projector tracking."""
+        # Extract synthesis goal ID from BrainResponse
+        self._brain_synthesis_goal_id = brain_response.synthesis_goal_id
+        
+        # Build goal tracking from actual GoalResults
+        self._brain_goals = {}
+        for result in brain_response.results:
+            self._brain_goals[result.goal_id] = {
+                'capability_id': result.capability_id,
+                'status': 'completed' if result.succeeded else ('skipped' if result.skipped else 'failed'),
+                'task_id': result.task_id,
+                'skipped': result.skipped,
+                'failure': result.failure,
+                'depends_on': result.depends_on,
+            }
+            # If this is the synthesis goal, mark it
+            if brain_response.synthesis_goal_id == result.goal_id:
+                self._brain_goals[result.goal_id]['is_synthesis'] = True
     
     def _recompute_and_publish(self) -> None:
         """Recompute semantic state and publish if changed."""
@@ -256,6 +373,10 @@ class UIContextProjector:
                 surfaces=new_state.surfaces,
                 timestamp=new_state.timestamp,
                 metadata=new_state.metadata,
+                request_status=new_state.request_status,
+                domains=new_state.domains,
+                synthesis=new_state.synthesis,
+                dependencies=new_state.dependencies,
             )
             
             changed_fields = self._compute_changed_fields(self._current_state, changed_state)
@@ -273,15 +394,55 @@ class UIContextProjector:
             old_state.attention == new_state.attention and
             old_state.urgency == new_state.urgency and
             old_state.focus == new_state.focus and
-            self._surfaces_equal(old_state.surfaces, new_state.surfaces)
+            self._surfaces_equal(old_state.surfaces, new_state.surfaces) and
+            old_state.request_status == new_state.request_status and
+            self._domains_equal(old_state.domains, new_state.domains) and
+            self._synthesis_equal(old_state.synthesis, new_state.synthesis) and
+            self._dependencies_equal(old_state.dependencies, new_state.dependencies)
         )
+    
+    def _domains_equal(self, old: tuple[DomainInfo, ...], new: tuple[DomainInfo, ...]) -> bool:
+        """Check if domain tuples are semantically equal."""
+        if len(old) != len(new):
+            return False
+        for o, n in zip(old, new):
+            if (o.name != n.name or o.focus != n.focus or o.importance != n.importance or
+                o.status != n.status or o.capability_ids != n.capability_ids):
+                return False
+        return True
+    
+    def _synthesis_equal(self, old: SynthesisInfo | None, new: SynthesisInfo | None) -> bool:
+        """Check if synthesis info is semantically equal."""
+        if old is None and new is None:
+            return True
+        if old is None or new is None:
+            return False
+        return (
+            old.goal_id == new.goal_id and
+            old.capability_id == new.capability_id and
+            old.status == new.status and
+            old.depends_on == new.depends_on and
+            old.completed_dependencies == new.completed_dependencies and
+            old.failed_dependencies == new.failed_dependencies
+        )
+    
+    def _dependencies_equal(self, old: tuple[DependencyInfo, ...], new: tuple[DependencyInfo, ...]) -> bool:
+        """Check if dependency tuples are semantically equal."""
+        if len(old) != len(new):
+            return False
+        for o, n in zip(old, new):
+            if (o.goal_id != n.goal_id or o.capability_id != n.capability_id or
+                o.depends_on != n.depends_on or o.status != n.status or
+                o.is_synthesis != n.is_synthesis):
+                return False
+        return True
     
     def _surfaces_equal(self, old: tuple[SurfaceItem, ...], new: tuple[SurfaceItem, ...]) -> bool:
         """Check if surface tuples are semantically equal."""
         if len(old) != len(new):
             return False
         for o, n in zip(old, new):
-            if o.capability_id != n.capability_id or o.label != n.label or o.tier != n.tier:
+            if o.capability_id != n.capability_id or o.label != n.label or o.tier != n.tier or o.metadata != n.metadata:
                 return False
         return True
     
@@ -304,6 +465,14 @@ class UIContextProjector:
             fields.add("surfaces")
         if old.metadata != new.metadata:
             fields.add("metadata")
+        if old.request_status != new.request_status:
+            fields.add("request_status")
+        if not self._domains_equal(old.domains, new.domains):
+            fields.add("domains")
+        if not self._synthesis_equal(old.synthesis, new.synthesis):
+            fields.add("synthesis")
+        if not self._dependencies_equal(old.dependencies, new.dependencies):
+            fields.add("dependencies")
         return frozenset(fields)
     
     def _publish_change(
@@ -360,6 +529,21 @@ class UIContextProjector:
         if interaction_candidate is not None:
             return self._build_state_from_candidate(interaction_candidate)
         
+        # Special case: brain execution completed with real BrainResponse
+        # Use authoritative BrainResponse for final state
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None:
+                return self._build_state_from_brain_response(brain_response)
+        
+        # Special case: brain execution just completed but no active tasks
+        # Use last known active task metadata to preserve context
+        if (self._brain_execution_succeeded is not None and 
+            self._last_active_task_metadata is not None and
+            self._current_state is not None):
+            # Build a state based on last known context
+            return self._build_state_from_last_metadata()
+        
         # Fallback
         return self._build_fallback_state()
     
@@ -389,18 +573,23 @@ class UIContextProjector:
         if not all_candidate_tasks:
             return None
         
+        # Build task info tuples for all tasks (for metadata)
+        all_task_infos = []
+        for task in all_candidate_tasks:
+            capability_id = task.request.capability_id
+            capability_def = self._capability_registry.get(capability_id) if self._capability_registry.contains(capability_id) else None
+            all_task_infos.append((task, capability_id, capability_def))
+        
         # Classify tasks by capability type
         semantic_tasks = []
         transport_tasks = []
         
-        for task in all_candidate_tasks:
-            capability_id = task.request.capability_id
-            capability_def = self._capability_registry.get(capability_id) if self._capability_registry.contains(capability_id) else None
-            
+        for task_info in all_task_infos:
+            task, capability_id, capability_def = task_info
             if _is_semantic_capability(capability_id, capability_def):
-                semantic_tasks.append((task, capability_id, capability_def))
+                semantic_tasks.append(task_info)
             else:
-                transport_tasks.append((task, capability_id, capability_def))
+                transport_tasks.append(task_info)
         
         # Prefer semantic tasks over transport tasks
         candidate_tasks = semantic_tasks if semantic_tasks else transport_tasks
@@ -454,8 +643,11 @@ class UIContextProjector:
         # Determine urgency - check for critical system events
         urgency = self._determine_urgency()
         
-        # Build enriched metadata with multi-agent information
-        metadata = self._build_enriched_metadata(primary_task, capability_id, candidate_tasks)
+        # Build enriched metadata with multi-agent information (include all tasks for complete picture)
+        metadata = self._build_enriched_metadata(primary_task, capability_id, all_task_infos)
+        
+        # Store for request status after task completion
+        self._last_active_task_metadata = metadata
         
         return _ContextCandidate(
             context=context,
@@ -566,10 +758,308 @@ class UIContextProjector:
             surfaces=self._build_surfaces_for_context("system"),
             timestamp=datetime.now(UTC),
             metadata=MappingProxyType({}),
+            request_status=RequestStatus.FAILED,
+            domains=(),
+            synthesis=None,
+            dependencies=(),
+        )
+    
+    def _build_state_from_brain_response(self, brain_response: BrainResponse) -> UIContextState:
+        """Build UIContextState from authoritative BrainResponse.
+        
+        This is used when a request completes and we have the authoritative
+        BrainResponse with all goal results, synthesis info, and status.
+        """
+        # Convert BrainResponse RequestStatus to UIContextState RequestStatus
+        brain_status = brain_response.status
+        if brain_status.value == "success":
+            request_status = RequestStatus.SUCCESS
+        elif brain_status.value == "partial_success":
+            request_status = RequestStatus.PARTIAL_SUCCESS
+        else:
+            request_status = RequestStatus.FAILED
+        
+        domains = self._compute_domains_from_brain_response(brain_response)
+        synthesis = self._compute_synthesis_from_brain_response(brain_response)
+        dependencies = self._compute_dependencies_from_brain_response(brain_response)
+        
+        # Determine primary context from the goals
+        if brain_response.results:
+            # Use the first non-synthesis goal for primary context, or synthesis if all are synthesis
+            primary_goal = None
+            for result in brain_response.results:
+                if result.goal_id != brain_response.synthesis_goal_id:
+                    primary_goal = result
+                    break
+            if primary_goal is None:
+                primary_goal = brain_response.results[0]
+            
+            context, focus, confidence = self._infer_context_from_capability(primary_goal.capability_id, None)
+        else:
+            context = "system"
+            focus = FocusArea.GENERAL
+            confidence = 0.3
+        
+        # Build surfaces from all goal capability IDs
+        all_capability_ids = {result.capability_id for result in brain_response.results}
+        
+        # Build goal results dict by capability_id for surface metadata enrichment
+        brain_goal_results = {result.goal_id: result for result in brain_response.results}
+        
+        surfaces = self._build_surfaces_for_context(context, all_capability_ids, brain_goal_results, brain_response.synthesis_goal_id)
+        
+        # Build metadata from BrainResponse
+        metadata = self._build_metadata_from_brain_response(brain_response)
+        
+        return UIContextState(
+            version=self._version + 1,
+            context=context,
+            confidence=confidence,
+            source=ContextSource.TASK,
+            attention=AttentionLevel.AMBIENT,  # Request completed
+            urgency=self._determine_urgency(),
+            focus=focus,
+            surfaces=surfaces,
+            timestamp=datetime.now(UTC),
+            metadata=metadata,
+            request_status=request_status,
+            domains=domains,
+            synthesis=synthesis,
+            dependencies=dependencies,
+        )
+    
+    def _compute_domains_from_brain_response(self, brain_response: BrainResponse) -> tuple[DomainInfo, ...]:
+        """Compute domains from BrainResponse goal results."""
+        if not brain_response.results:
+            return ()
+        
+        # Group goals by domain
+        domain_goals: dict[str, list[GoalResult]] = {}
+        for result in brain_response.results:
+            domain_name, _, _ = self._infer_context_from_capability(result.capability_id, None)
+            if domain_name not in domain_goals:
+                domain_goals[domain_name] = []
+            domain_goals[domain_name].append(result)
+        
+        domains = []
+        total_goals = len(brain_response.results)
+        
+        for domain_name, goals in domain_goals.items():
+            focus_str = "general"
+            try:
+                focus = FocusArea(focus_str)
+            except ValueError:
+                focus = FocusArea.GENERAL
+            
+            importance = len(goals) / total_goals if total_goals > 0 else 0.5
+            
+            # Determine domain status from actual goal states
+            failed_count = sum(1 for g in goals if not g.succeeded and not g.skipped)
+            completed_count = sum(1 for g in goals if g.succeeded)
+            skipped_count = sum(1 for g in goals if g.skipped)
+            
+            if failed_count > 0 and completed_count > 0:
+                status = "partial"
+            elif completed_count == len(goals):
+                status = "completed"
+            elif failed_count > 0 and completed_count == 0:
+                status = "failed"
+            elif skipped_count > 0:
+                status = "skipped"
+            else:
+                status = "completed"
+            
+            # Get capability IDs for this domain
+            domain_caps = tuple(g.capability_id for g in goals)
+            
+            domains.append(DomainInfo(
+                name=domain_name,
+                focus=focus,
+                importance=importance,
+                status=status,
+                capability_ids=domain_caps,
+            ))
+        
+        # Sort by importance descending
+        domains.sort(key=lambda d: d.importance, reverse=True)
+        return tuple(domains)
+    
+    def _compute_synthesis_from_brain_response(self, brain_response: BrainResponse) -> SynthesisInfo | None:
+        """Compute synthesis info from BrainResponse."""
+        if brain_response.synthesis_goal_id is None:
+            return None
+        
+        # Find the synthesis goal result
+        synthesis_result = None
+        for result in brain_response.results:
+            if result.goal_id == brain_response.synthesis_goal_id:
+                synthesis_result = result
+                break
+        
+        if synthesis_result is None:
+            return None
+        
+        # Get dependencies from the synthesis goal's actual depends_on
+        depends_on = synthesis_result.depends_on
+        
+        # Build completed/failed dependencies from actual goal results
+        completed_deps = ()
+        failed_deps = ()
+        for result in brain_response.results:
+            if result.goal_id in depends_on:
+                if result.succeeded:
+                    completed_deps += (result.goal_id,)
+                else:
+                    failed_deps += (result.goal_id,)
+        
+        # Determine synthesis status
+        if synthesis_result.succeeded:
+            synth_status = "completed"
+        elif synthesis_result.skipped:
+            synth_status = "skipped"
+        else:
+            synth_status = "failed"
+        
+        return SynthesisInfo(
+            goal_id=brain_response.synthesis_goal_id,
+            capability_id=synthesis_result.capability_id,
+            status=synth_status,
+            depends_on=depends_on,
+            completed_dependencies=completed_deps,
+            failed_dependencies=failed_deps,
+        )
+    
+    def _compute_dependencies_from_brain_response(self, brain_response: BrainResponse) -> tuple[DependencyInfo, ...]:
+        """Compute dependencies from BrainResponse goal results."""
+        deps = []
+        for result in brain_response.results:
+            # Determine status from GoalResult
+            if result.skipped:
+                status = "skipped"
+            elif result.succeeded:
+                status = "completed"
+            else:
+                status = "failed"
+            
+            # Determine if this is the synthesis goal
+            is_synthesis = (brain_response.synthesis_goal_id == result.goal_id)
+            
+            # Use actual depends_on from GoalResult
+            depends_on = result.depends_on
+            
+            # Use actual capability_id from GoalResult
+            capability_id = result.capability_id
+            
+            deps.append(DependencyInfo(
+                goal_id=result.goal_id,
+                capability_id=capability_id,
+                depends_on=depends_on,
+                status=status,
+                is_synthesis=is_synthesis,
+            ))
+        return tuple(deps)
+    
+    def _build_metadata_from_brain_response(self, brain_response: BrainResponse) -> MappingProxyType[str, Any]:
+        """Build metadata from BrainResponse."""
+        active_agents_list = []
+        active_domains_list = []
+        active_semantic_capabilities = []
+        active_all_capabilities = []
+        task_counts = {
+            "running": 0,
+            "waiting": 0,
+            "completed": 0,
+            "pending": 0,
+            "failed": 0,
+            "total": len(brain_response.results),
+        }
+        
+        # Update task counts from goal results
+        for result in brain_response.results:
+            if result.succeeded:
+                task_counts["completed"] += 1
+            elif result.skipped:
+                task_counts["pending"] += 1  # Skipped counted as pending
+            else:
+                task_counts["failed"] += 1
+        
+        # Build active capabilities
+        for result in brain_response.results:
+            cap_id = result.capability_id
+            active_all_capabilities.append(cap_id)
+            # Check if semantic
+            if not _is_transport_capability(cap_id, None):
+                active_semantic_capabilities.append(cap_id)
+        
+        # Build domains
+        domain_map = {}
+        for result in brain_response.results:
+            domain_name, domain_focus, _ = self._infer_context_from_capability(result.capability_id, None)
+            if domain_name not in domain_map:
+                domain_map[domain_name] = {"context": domain_name, "focus": domain_focus.value, "task_count": 0}
+            domain_map[domain_name]["task_count"] += 1
+        
+        for domain_info in domain_map.values():
+            active_domains_list.append(domain_info)
+        
+        metadata_dict = {
+            "task": {
+                "id": brain_response.request_id,
+                "capability_id": brain_response.synthesis_goal_id or "unknown",
+                "status": "COMPLETED",
+            },
+            "agent": {},
+            "activity": {
+                "active_agents": active_agents_list,
+                "active_domains": active_domains_list,
+                "active_semantic_capabilities": sorted(active_semantic_capabilities),
+                "active_capabilities": sorted(active_all_capabilities),
+                "task_counts": task_counts,
+            },
+        }
+        
+        return MappingProxyType(metadata_dict)
+    
+    def _build_state_from_last_metadata(self) -> UIContextState:
+        """Build UIContextState from last known active task metadata."""
+        metadata = self._last_active_task_metadata
+        # Use current state's context/focus as base, but with updated request_status
+        current = self._current_state
+        
+        request_status = self._compute_request_status(metadata)
+        domains = self._compute_domains(metadata)
+        synthesis = self._compute_synthesis(metadata)
+        dependencies = self._compute_dependencies(metadata)
+        
+        # Rebuild surfaces from active capabilities in metadata
+        active_capabilities = metadata.get("activity", {}).get("active_capabilities", [])
+        surfaces = self._build_surfaces_for_context(current.context, set(active_capabilities))
+        
+        return UIContextState(
+            version=self._version + 1,
+            context=current.context,
+            confidence=current.confidence,
+            source=current.source,
+            attention=AttentionLevel.AMBIENT,  # No active tasks
+            urgency=self._determine_urgency(),
+            focus=current.focus,
+            surfaces=surfaces,
+            timestamp=datetime.now(UTC),
+            metadata=metadata,
+            request_status=request_status,
+            domains=domains,
+            synthesis=synthesis,
+            dependencies=dependencies,
         )
     
     def _build_state_from_candidate(self, candidate: _ContextCandidate) -> UIContextState:
         """Build UIContextState from a resolved candidate."""
+        # Compute Phase 1 fields from candidate metadata and brain execution state
+        request_status = self._compute_request_status(candidate.metadata)
+        domains = self._compute_domains(candidate.metadata)
+        synthesis = self._compute_synthesis(candidate.metadata)
+        dependencies = self._compute_dependencies(candidate.metadata)
+        
         return UIContextState(
             version=self._version + 1,
             context=candidate.context,
@@ -581,6 +1071,10 @@ class UIContextProjector:
             surfaces=candidate.surfaces,
             timestamp=datetime.now(UTC),
             metadata=candidate.metadata,
+            request_status=request_status,
+            domains=domains,
+            synthesis=synthesis,
+            dependencies=dependencies,
         )
     
 
@@ -601,6 +1095,7 @@ class UIContextProjector:
         active_agents: dict[str, dict[str, Any]] = {}
         active_domains: dict[str, dict[str, Any]] = {}
         active_semantic_capabilities: set[str] = set()
+        active_all_capabilities: set[str] = set()
         
         running_count = 0
         waiting_count = 0
@@ -627,6 +1122,9 @@ class UIContextProjector:
             # Track active semantic capabilities
             if _is_semantic_capability(cap_id, cap_def):
                 active_semantic_capabilities.add(cap_id)
+            
+            # Track all active capabilities (including transport)
+            active_all_capabilities.add(cap_id)
             
             # Track active agents
             if agent_id:
@@ -690,6 +1188,7 @@ class UIContextProjector:
                 "active_agents": active_agents_list,
                 "active_domains": active_domains_list,
                 "active_semantic_capabilities": sorted(active_semantic_capabilities),
+                "active_capabilities": sorted(active_all_capabilities),
                 "task_counts": {
                     "running": running_count,
                     "waiting": waiting_count,
@@ -701,7 +1200,294 @@ class UIContextProjector:
         }
         
         return MappingProxyType(metadata_dict)
-
+    
+    def _compute_request_status(self, metadata: MappingProxyType[str, Any]) -> RequestStatus:
+        """Compute request-level status from metadata and brain execution state."""
+        # If we have a real BrainResponse, use its authoritative status
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None:
+                return brain_response.status
+        
+        # If we have brain execution tracking, use it
+        if self._brain_execution_succeeded is not None:
+            # For brain execution completion, get current task counts directly
+            # since stored metadata may be stale (captured when tasks were RUNNING)
+            tasks = self._task_manager.get_all()
+            failed_count = sum(1 for t in tasks.values() if t.status.name == "FAILED")
+            completed_count = sum(1 for t in tasks.values() if t.status.name == "COMPLETED")
+            running_count = sum(1 for t in tasks.values() if t.status.name == "RUNNING")
+            
+            # If brain execution completed and we have failed tasks but synthesis succeeded
+            if self._brain_execution_succeeded:
+                # Check if any non-synthesis goals failed
+                if failed_count > 0:
+                    return RequestStatus.PARTIAL_SUCCESS
+                return RequestStatus.SUCCESS
+            else:
+                return RequestStatus.FAILED
+        
+        # Fallback: infer from task counts in metadata
+        activity = metadata.get("activity", {})
+        task_counts = activity.get("task_counts", {})
+        failed_count = task_counts.get("failed", 0)
+        completed_count = task_counts.get("completed", 0)
+        running_count = task_counts.get("running", 0)
+        
+        if failed_count > 0 and completed_count > 0:
+            return RequestStatus.PARTIAL_SUCCESS
+        elif completed_count > 0 and failed_count == 0 and running_count == 0:
+            return RequestStatus.SUCCESS
+        else:
+            return RequestStatus.FAILED
+    
+    def _compute_domains(self, metadata: MappingProxyType[str, Any]) -> tuple[DomainInfo, ...]:
+        """Compute multiple semantic domains from metadata."""
+        # If we have a real BrainResponse, use its authoritative goal results for domain status
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None:
+                # Group goals by domain
+                domain_goals: dict[str, list[GoalResult]] = {}
+                for result in brain_response.results:
+                    domain_name, _, _ = self._infer_context_from_capability(result.capability_id, None)
+                    if domain_name not in domain_goals:
+                        domain_goals[domain_name] = []
+                    domain_goals[domain_name].append(result)
+                
+                domains = []
+                total_goals = len(brain_response.results)
+                
+                for domain_name, goals in domain_goals.items():
+                    focus_str = "general"
+                    try:
+                        focus = FocusArea(focus_str)
+                    except ValueError:
+                        focus = FocusArea.GENERAL
+                    
+                    importance = len(goals) / total_goals if total_goals > 0 else 0.5
+                    
+                    # Determine domain status from actual goal states
+                    goal_statuses = [g.succeeded for g in goals]
+                    failed_count = sum(1 for g in goals if not g.succeeded and not g.skipped)
+                    completed_count = sum(1 for g in goals if g.succeeded)
+                    skipped_count = sum(1 for g in goals if g.skipped)
+                    running_count = 0  # All goals in BrainResponse are terminal
+                    
+                    if failed_count > 0 and completed_count > 0:
+                        status = "partial"
+                    elif completed_count == len(goals):
+                        status = "completed"
+                    elif failed_count > 0 and completed_count == 0:
+                        status = "failed"
+                    elif skipped_count > 0:
+                        status = "skipped"
+                    else:
+                        status = "completed"
+                    
+                    # Get capability IDs for this domain
+                    domain_caps = tuple(g.capability_id for g in goals)
+                    
+                    domains.append(DomainInfo(
+                        name=domain_name,
+                        focus=focus,
+                        importance=importance,
+                        status=status,
+                        capability_ids=domain_caps,
+                    ))
+                
+                # Sort by importance descending
+                domains.sort(key=lambda d: d.importance, reverse=True)
+                return tuple(domains)
+        
+        # Fallback to heuristic-based detection
+        activity = metadata.get("activity", {})
+        active_domains = activity.get("active_domains", [])
+        
+        if not active_domains:
+            return ()
+        
+        domains = []
+        total_tasks = sum(d.get("task_count", 0) for d in active_domains)
+        
+        for domain_info in active_domains:
+            domain_name = domain_info.get("context", "unknown")
+            focus_str = domain_info.get("focus", "general")
+            task_count = domain_info.get("task_count", 0)
+            
+            # Map focus string to FocusArea
+            try:
+                focus = FocusArea(focus_str)
+            except ValueError:
+                focus = FocusArea.GENERAL
+            
+            # Importance based on task count proportion
+            importance = task_count / total_tasks if total_tasks > 0 else 0.5
+            
+            # Determine status from task counts (simplified)
+            status = "running"  # default
+            
+            # Get capability IDs for this domain from active_semantic_capabilities
+            active_caps = activity.get("active_semantic_capabilities", [])
+            domain_caps = tuple(cap for cap in active_caps if cap.startswith(domain_name + "."))
+            
+            domains.append(DomainInfo(
+                name=domain_name,
+                focus=focus,
+                importance=importance,
+                status=status,
+                capability_ids=domain_caps,
+            ))
+        
+        # Sort by importance descending
+        domains.sort(key=lambda d: d.importance, reverse=True)
+        return tuple(domains)
+    
+    def _compute_synthesis(self, metadata: MappingProxyType[str, Any]) -> SynthesisInfo | None:
+        """Compute synthesis goal information from metadata."""
+        # If we have a real BrainResponse, use its authoritative data
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None and brain_response.synthesis_goal_id is not None:
+                # Find the synthesis goal result
+                synthesis_result = None
+                for result in brain_response.results:
+                    if result.goal_id == brain_response.synthesis_goal_id:
+                        synthesis_result = result
+                        break
+                
+                if synthesis_result is not None:
+                    # Get dependencies from the synthesis goal's actual depends_on
+                    depends_on = synthesis_result.depends_on
+                    completed_deps = ()
+                    failed_deps = ()
+                    
+                    # Build completed/failed dependencies from actual goal results
+                    for result in brain_response.results:
+                        if result.goal_id in depends_on:
+                            if result.succeeded:
+                                completed_deps += (result.goal_id,)
+                            else:
+                                failed_deps += (result.goal_id,)
+                    
+                    # Determine synthesis status
+                    if synthesis_result.succeeded:
+                        synth_status = "completed"
+                    elif synthesis_result.skipped:
+                        synth_status = "skipped"
+                    else:
+                        synth_status = "failed"
+                    
+                    return SynthesisInfo(
+                        goal_id=brain_response.synthesis_goal_id,
+                        capability_id=synthesis_result.capability_id,
+                        status=synth_status,
+                        depends_on=depends_on,
+                        completed_dependencies=completed_deps,
+                        failed_dependencies=failed_deps,
+                    )
+        
+        # Fallback to heuristic-based detection
+        activity = metadata.get("activity", {})
+        active_capabilities = activity.get("active_capabilities", [])
+        
+        # Check if there's a synthesis capability (chat.respond)
+        synthesis_caps = [cap for cap in active_capabilities if cap == "chat.respond"]
+        if not synthesis_caps:
+            return None
+        
+        # Determine synthesis status from brain tracking
+        if self._brain_execution_active:
+            # Check if synthesis goal is running
+            if self._brain_synthesis_goal_id and self._brain_synthesis_goal_id in self._brain_goals:
+                synth_status = self._brain_goals[self._brain_synthesis_goal_id].get("status", "pending")
+            else:
+                synth_status = "waiting"
+        elif self._brain_execution_succeeded is not None:
+            if self._brain_execution_succeeded:
+                synth_status = "completed"
+            else:
+                synth_status = "failed"
+        else:
+            synth_status = "pending"
+        
+        # Get dependencies from metadata (simplified)
+        depends_on = ()
+        completed_deps = ()
+        failed_deps = ()
+        
+        return SynthesisInfo(
+            goal_id=self._brain_synthesis_goal_id,
+            capability_id="chat.respond",
+            status=synth_status,
+            depends_on=depends_on,
+            completed_dependencies=completed_deps,
+            failed_dependencies=failed_deps,
+        )
+    
+    def _compute_dependencies(self, metadata: MappingProxyType[str, Any]) -> tuple[DependencyInfo, ...]:
+        """Compute dependency relationships from metadata."""
+        # If we have a real BrainResponse, use its authoritative goal results
+        if self._brain is not None:
+            brain_response = self._brain.last_response
+            if brain_response is not None:
+                deps = []
+                for result in brain_response.results:
+                    # Determine status from GoalResult
+                    if result.skipped:
+                        status = "skipped"
+                    elif result.succeeded:
+                        status = "completed"
+                    else:
+                        status = "failed"
+                    
+                    # Determine if this is the synthesis goal
+                    is_synthesis = (brain_response.synthesis_goal_id == result.goal_id)
+                    
+                    # Get depends_on from the actual GoalResult
+                    depends_on = result.depends_on
+                    
+                    # Use actual capability_id from GoalResult
+                    capability_id = result.capability_id
+                    
+                    deps.append(DependencyInfo(
+                        goal_id=result.goal_id,
+                        capability_id=capability_id,
+                        depends_on=depends_on,
+                        status=status,
+                        is_synthesis=is_synthesis,
+                    ))
+                return tuple(deps)
+        
+        # Fallback to heuristic-based detection
+        activity = metadata.get("activity", {})
+        active_semantic_capabilities = activity.get("active_semantic_capabilities", [])
+        
+        if not active_semantic_capabilities:
+            return ()
+        
+        # Build dependency info from tracked brain goals
+        deps = []
+        for goal_id, goal_info in self._brain_goals.items():
+            capability_id = goal_info.get("capability_id", "unknown")
+            status = goal_info.get("status", "pending")
+            
+            # Determine if this is a synthesis goal
+            is_synthesis = (capability_id == "chat.respond")
+            
+            # Get depends_on from tracking
+            depends_on = goal_info.get('depends_on', ())
+            
+            deps.append(DependencyInfo(
+                goal_id=goal_id,
+                capability_id=capability_id,
+                depends_on=depends_on,
+                status=status,
+                is_synthesis=is_synthesis,
+            ))
+        
+        return tuple(deps)
+    
     def _infer_context_from_capability(
         self,
         capability_id: str,
@@ -722,6 +1508,10 @@ class UIContextProjector:
             if "summarize" in capability_lower or "monthly" in capability_lower:
                 return "expense", FocusArea.MONTHLY_SUMMARY, 0.95
             return "expense", FocusArea.GENERAL, 0.9
+        
+        # Finance capabilities
+        if "finance" in capability_lower or "exchange" in capability_lower or "currency" in capability_lower:
+            return "finance", FocusArea.GENERAL, 0.9
         
         # Media capabilities
         if "media" in capability_lower:
@@ -817,7 +1607,7 @@ class UIContextProjector:
         
         return UrgencyLevel.NORMAL
     
-    def _build_surfaces_for_context(self, context: str, active_capability_ids: set[str] | None = None) -> tuple[SurfaceItem, ...]:
+    def _build_surfaces_for_context(self, context: str, active_capability_ids: set[str] | None = None, brain_goal_results: dict[str, 'GoalResult'] | None = None, synthesis_goal_id: str | None = None) -> tuple[SurfaceItem, ...]:
         """Build semantic surfaces for a given context."""
         surfaces = []
         
@@ -889,11 +1679,12 @@ class UIContextProjector:
         for cap_id, label, tier in surface_defs:
             # Only include if capability exists
             if self._capability_registry.contains(cap_id):
+                metadata = self._build_surface_metadata(cap_id, brain_goal_results, synthesis_goal_id)
                 surfaces.append(SurfaceItem(
                     capability_id=cap_id,
                     label=label,
                     tier=tier,
-                    metadata=MappingProxyType({}),
+                    metadata=metadata,
                 ))
         
         # Include actively executing semantic capabilities from concurrent tasks
@@ -909,11 +1700,12 @@ class UIContextProjector:
                     label = cap_def.name if cap_def else cap_id.replace(".", " ").title()
                     # Determine tier: PRIMARY if it's the primary context's domain, SECONDARY otherwise
                     tier = SurfaceTier.SECONDARY
+                    metadata = self._build_surface_metadata(cap_id, brain_goal_results, synthesis_goal_id)
                     surfaces.append(SurfaceItem(
                         capability_id=cap_id,
                         label=label,
                         tier=tier,
-                        metadata=MappingProxyType({}),
+                        metadata=metadata,
                     ))
         
         # Always add ambient system surfaces
@@ -929,6 +1721,36 @@ class UIContextProjector:
                     ))
         
         return tuple(surfaces)
+    
+    def _build_surface_metadata(self, capability_id: str, brain_goal_results: dict[str, 'GoalResult'] | None, synthesis_goal_id: str | None = None) -> MappingProxyType[str, Any]:
+        """Build semantic metadata for a surface item from authoritative GoalResult."""
+        if brain_goal_results is None:
+            return MappingProxyType({})
+        
+        # Find the GoalResult for this capability
+        goal_result = None
+        for result in brain_goal_results.values():
+            if result.capability_id == capability_id:
+                goal_result = result
+                break
+        
+        if goal_result is None:
+            return MappingProxyType({})
+        
+        # Build metadata from authoritative GoalResult
+        metadata_dict = {
+            "status": "completed" if goal_result.succeeded else ("skipped" if goal_result.skipped else "failed"),
+            "domain": self._infer_context_from_capability(capability_id, None)[0],
+            "execution_state": "completed" if goal_result.succeeded else ("skipped" if goal_result.skipped else "failed"),
+            "result_available": goal_result.succeeded and goal_result.response is not None,
+            "is_synthesis": goal_result.goal_id == synthesis_goal_id,
+        }
+        
+        # Add dependency information if available
+        if hasattr(goal_result, 'depends_on') and goal_result.depends_on:
+            metadata_dict["depends_on"] = goal_result.depends_on
+        
+        return MappingProxyType(metadata_dict)
     
     def get_current_state(self) -> UIContextState:
         """

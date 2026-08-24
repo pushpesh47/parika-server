@@ -11,9 +11,13 @@ from .projector import UIContextProjector
 from .state import (
     AttentionLevel,
     ContextSource,
+    DependencyInfo,
+    DomainInfo,
     FocusArea,
+    RequestStatus,
     SurfaceItem,
     SurfaceTier,
+    SynthesisInfo,
     UIContextState,
     UrgencyLevel,
 )
@@ -29,7 +33,11 @@ __all__ = [
     "ContextSource",
     "AttentionLevel",
     "UrgencyLevel",
+    "RequestStatus",
     "FocusArea",
     "SurfaceTier",
     "SurfaceItem",
+    "DomainInfo",
+    "SynthesisInfo",
+    "DependencyInfo",
 ]

@@ -13,7 +13,13 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from parika.core.ui_context.state import UIContextState
+from parika.core.ui_context.state import (
+    UIContextState,
+    RequestStatus,
+    DomainInfo,
+    SynthesisInfo,
+    DependencyInfo,
+)
 from parika.interfaces.runtime import ParikaRuntime
 
 from ..auth.exceptions import AuthenticationError
@@ -61,6 +67,38 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
         ],
         "timestamp": state.timestamp.isoformat(),
         "metadata": dict(state.metadata),
+        "request_status": state.request_status.value,
+        "domains": [
+            {
+                "name": domain.name,
+                "focus": domain.focus.value,
+                "importance": domain.importance,
+                "status": domain.status,
+                "capability_ids": list(domain.capability_ids),
+            }
+            for domain in state.domains
+        ],
+        "synthesis": (
+            {
+                "goal_id": state.synthesis.goal_id,
+                "capability_id": state.synthesis.capability_id,
+                "status": state.synthesis.status,
+                "depends_on": list(state.synthesis.depends_on),
+                "completed_dependencies": list(state.synthesis.completed_dependencies),
+                "failed_dependencies": list(state.synthesis.failed_dependencies),
+            }
+            if state.synthesis else None
+        ),
+        "dependencies": [
+            {
+                "goal_id": dep.goal_id,
+                "capability_id": dep.capability_id,
+                "depends_on": list(dep.depends_on),
+                "status": dep.status,
+                "is_synthesis": dep.is_synthesis,
+            }
+            for dep in state.dependencies
+        ],
     }
 
 

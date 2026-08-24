@@ -53,6 +53,18 @@ class UrgencyLevel(StrEnum):
     CRITICAL = "critical"
 
 
+class RequestStatus(StrEnum):
+    """
+    Overall request-level status.
+    
+    Mirrors BrainResponse.RequestStatus for semantic consistency.
+    """
+    
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    FAILED = "failed"
+
+
 class FocusArea(StrEnum):
     """
     Semantic sub-context focus areas.
@@ -78,6 +90,7 @@ class FocusArea(StrEnum):
     VOICE_INPUT = "voice_input"
     SETTINGS = "settings"
     HELP = "help"
+    SYNTHESIS = "synthesis"
 
 
 class SurfaceTier(StrEnum):
@@ -136,6 +149,124 @@ class SurfaceItem:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DomainInfo:
+    """
+    Semantic domain information for multi-domain context.
+    
+    Represents a contextual domain active in the current request.
+    """
+    
+    name: str
+    """Domain name (e.g., 'weather', 'finance', 'news')"""
+    
+    focus: FocusArea
+    """Primary focus area within this domain"""
+    
+    importance: float
+    """Relative importance (0.0 to 1.0)"""
+    
+    status: str
+    """Execution status: 'running', 'waiting', 'completed', 'failed'"""
+    
+    capability_ids: tuple[str, ...]
+    """Capability IDs associated with this domain"""
+    
+    def __post_init__(self) -> None:
+        """Validate domain info after initialization."""
+        if type(self.name) is not str or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+        if type(self.focus) is not FocusArea:
+            raise TypeError("focus must be a FocusArea")
+        if type(self.importance) is not float:
+            raise TypeError("importance must be a float")
+        if not (0.0 <= self.importance <= 1.0):
+            raise ValueError("importance must be between 0.0 and 1.0")
+        if type(self.status) is not str:
+            raise TypeError("status must be a string")
+        if type(self.capability_ids) is not tuple:
+            raise TypeError("capability_ids must be a tuple")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SynthesisInfo:
+    """
+    Synthesis goal information.
+    
+    Represents the synthesis activity in a multi-goal request.
+    """
+    
+    goal_id: str | None
+    """Synthesis goal identifier"""
+    
+    capability_id: str | None
+    """Synthesis capability ID (typically 'chat.respond')"""
+    
+    status: str
+    """Synthesis status: 'pending', 'waiting', 'running', 'completed', 'failed'"""
+    
+    depends_on: tuple[str, ...]
+    """Goal IDs this synthesis depends on"""
+    
+    completed_dependencies: tuple[str, ...]
+    """Goal IDs of completed dependencies"""
+    
+    failed_dependencies: tuple[str, ...]
+    """Goal IDs of failed dependencies"""
+    
+    def __post_init__(self) -> None:
+        """Validate synthesis info after initialization."""
+        if self.goal_id is not None and type(self.goal_id) is not str:
+            raise TypeError("goal_id must be a string or None")
+        if self.capability_id is not None and type(self.capability_id) is not str:
+            raise TypeError("capability_id must be a string or None")
+        if type(self.status) is not str:
+            raise TypeError("status must be a string")
+        if type(self.depends_on) is not tuple:
+            raise TypeError("depends_on must be a tuple")
+        if type(self.completed_dependencies) is not tuple:
+            raise TypeError("completed_dependencies must be a tuple")
+        if type(self.failed_dependencies) is not tuple:
+            raise TypeError("failed_dependencies must be a tuple")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DependencyInfo:
+    """
+    Dependency relationship information.
+    
+    Represents the dependency graph between goals.
+    """
+    
+    goal_id: str
+    """Goal identifier"""
+    
+    capability_id: str
+    """Capability ID for this goal"""
+    
+    depends_on: tuple[str, ...]
+    """Goal IDs this goal depends on"""
+    
+    status: str
+    """Goal status: 'pending', 'waiting', 'running', 'completed', 'failed', 'skipped'"""
+    
+    is_synthesis: bool
+    """Whether this goal is a synthesis goal"""
+    
+    def __post_init__(self) -> None:
+        """Validate dependency info after initialization."""
+        if type(self.goal_id) is not str or not self.goal_id.strip():
+            raise ValueError("goal_id must be a non-empty string")
+        if type(self.capability_id) is not str or not self.capability_id.strip():
+            raise ValueError("capability_id must be a non-empty string")
+        if type(self.depends_on) is not tuple:
+            raise TypeError("depends_on must be a tuple")
+        if type(self.status) is not str:
+            raise TypeError("status must be a string")
+        if type(self.is_synthesis) is not bool:
+            raise TypeError("is_synthesis must be a bool")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class UIContextState:
     """
     Immutable semantic UI context snapshot.
@@ -154,13 +285,17 @@ class UIContextState:
         surfaces: Semantic capabilities/information organized by tier
         timestamp: UTC timestamp of this snapshot
         metadata: Additional semantic metadata
+        request_status: Overall request-level status (success/partial_success/failed)
+        domains: Multiple active semantic domains with importance
+        synthesis: Synthesis goal information
+        dependencies: Dependency relationships between goals
     """
     
     version: int
     """Monotonically increasing semantic version"""
     
     context: str
-    """Current semantic domain"""
+    """Current semantic domain (primary domain for backward compatibility)"""
     
     confidence: float
     """Context confidence (0.0 <= confidence <= 1.0)"""
@@ -187,6 +322,18 @@ class UIContextState:
         default_factory=lambda: MappingProxyType({})
     )
     """Additional semantic metadata"""
+    
+    request_status: RequestStatus = RequestStatus.FAILED
+    """Overall request-level status"""
+    
+    domains: tuple[DomainInfo, ...] = field(default_factory=tuple)
+    """Multiple active semantic domains with importance"""
+    
+    synthesis: SynthesisInfo | None = None
+    """Synthesis goal information"""
+    
+    dependencies: tuple[DependencyInfo, ...] = field(default_factory=tuple)
+    """Dependency relationships between goals"""
 
     def __post_init__(self) -> None:
         """Validate UI context state after initialization."""
@@ -228,6 +375,24 @@ class UIContextState:
         
         if type(self.metadata) is not MappingProxyType:
             raise TypeError("metadata must be a MappingProxyType")
+        
+        if type(self.request_status) is not RequestStatus:
+            raise TypeError("request_status must be a RequestStatus")
+        
+        if type(self.domains) is not tuple:
+            raise TypeError("domains must be a tuple")
+        for domain in self.domains:
+            if type(domain) is not DomainInfo:
+                raise TypeError("each domain must be a DomainInfo")
+        
+        if self.synthesis is not None and type(self.synthesis) is not SynthesisInfo:
+            raise TypeError("synthesis must be a SynthesisInfo or None")
+        
+        if type(self.dependencies) is not tuple:
+            raise TypeError("dependencies must be a tuple")
+        for dep in self.dependencies:
+            if type(dep) is not DependencyInfo:
+                raise TypeError("each dependency must be a DependencyInfo")
         
         object.__setattr__(
             self,

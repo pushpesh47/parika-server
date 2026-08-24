@@ -32,6 +32,11 @@ class GoalResult:
     Identifier of the Goal this result was produced for.
     """
 
+    capability_id: str
+    """
+    Capability identifier that was executed for this Goal.
+    """
+
     task_id: str | None
     """
     Identifier of the Task created for this Goal.
@@ -65,6 +70,11 @@ class GoalResult:
     """
     Human-readable explanation of why the Goal was skipped, if
     `skipped` is True.
+    """
+
+    depends_on: tuple[str, ...] = ()
+    """
+    Goal identifiers that this Goal depends on (from ExecutionPlan).
     """
 
     @property

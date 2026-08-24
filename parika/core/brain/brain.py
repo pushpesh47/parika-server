@@ -218,6 +218,9 @@ class Brain:
         )
         self._agent_orchestrator = agent_orchestrator
         self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
+        
+        # Store the last BrainResponse for UI Context projection
+        self._last_response: BrainResponse | None = None
 
     def _find_synthesis_goal_id(self, request: BrainRequest) -> str | None:
         """
@@ -466,6 +469,9 @@ class Brain:
             synthesis_goal_id=self._find_synthesis_goal_id(request),
         )
 
+        # Store the response for UI Context projection
+        self._last_response = response
+
         self._logger.debug(
             "Brain completed request '%s' (succeeded=%s).",
             request.id,
@@ -475,9 +481,24 @@ class Brain:
         progress.completed(
             message=f"succeeded={response.succeeded}",
             succeeded=response.succeeded,
+            request_id=request.id,
         )
 
         return response
+    
+    @property
+    def last_response(self) -> BrainResponse | None:
+        """
+        Get the last BrainResponse produced by this Brain instance.
+        
+        This is used by the UI Context Projector to project the real
+        execution state (request status, synthesis, dependencies, etc.)
+        without duplicating Brain logic in the projector.
+        
+        Returns:
+            The most recent BrainResponse, or None if no request has been handled yet.
+        """
+        return self._last_response
 
     def _root_progress_reporter(self) -> ProgressReporter:
         """
@@ -541,18 +562,22 @@ class Brain:
 
             return GoalResult(
                 goal_id=goal.id,
+                capability_id=goal.capability_id,
                 task_id=task.id,
                 status=self._task_manager.get(task.id).status,
                 failure=ex,
+                depends_on=tuple(step.depends_on),
             )
 
         goal_progress.completed()
 
         return GoalResult(
             goal_id=goal.id,
+            capability_id=goal.capability_id,
             task_id=executed_task.id,
             status=executed_task.status,
             response=executed_task.response,
+            depends_on=tuple(step.depends_on),
         )
 
     async def _supervise_async(
@@ -699,16 +724,20 @@ class Brain:
                                         goal_progress.failed(message=str(ex))
                                         return GoalResult(
                                             goal_id=goal.id,
+                                            capability_id=goal.capability_id,
                                             task_id=task.id,
                                             status=self._task_manager.get(task.id).status,
                                             failure=ex,
+                                            depends_on=tuple(step.depends_on),
                                         )
                                     goal_progress.completed()
                                     return GoalResult(
                                         goal_id=goal.id,
+                                        capability_id=goal.capability_id,
                                         task_id=executed_task.id,
                                         status=executed_task.status,
                                         response=executed_task.response,
+                                        depends_on=tuple(step.depends_on),
                                     )
                                 running[goal_id] = asyncio.create_task(execute_synthesis())
                                 pending_goals.remove(goal_id)
@@ -716,6 +745,7 @@ class Brain:
                                 # Regular goal: skip it
                                 results[goal_id] = GoalResult(
                                     goal_id=goal_id,
+                                    capability_id=goals_by_id[goal_id].capability_id,
                                     task_id=None,
                                     status=None,
                                     skipped=True,
@@ -723,6 +753,7 @@ class Brain:
                                         "Skipped because dependency/dependencies "
                                         f"failed: {sorted(failed_deps)}."
                                     ),
+                                    depends_on=tuple(deps[goal_id]),
                                 )
                                 failed_goal_ids.add(goal_id)
                                 completed_goal_ids.add(goal_id)
@@ -741,6 +772,7 @@ class Brain:
                 final_results.append(
                     GoalResult(
                         goal_id=goal_id,
+                        capability_id=goals_by_id[goal_id].capability_id,
                         task_id=None,
                         status=None,
                         skipped=True,
@@ -748,6 +780,7 @@ class Brain:
                             "Skipped because dependency/dependencies "
                             f"failed: {sorted(set(step.depends_on) & failed_goal_ids)}."
                         ),
+                        depends_on=tuple(step.depends_on),
                     )
                 )
                 failed_goal_ids.add(goal_id)
@@ -756,10 +789,12 @@ class Brain:
                 final_results.append(
                     GoalResult(
                         goal_id=goal_id,
+                        capability_id=goals_by_id[goal_id].capability_id,
                         task_id=None,
                         status=None,
                         skipped=True,
                         skip_reason="Execution incomplete",
+                        depends_on=tuple(step.depends_on),
                     )
                 )
         

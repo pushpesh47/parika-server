@@ -561,6 +561,9 @@ def build_default_runtime(
         agent_orchestrator=agent_orchestrator,
     )
 
+    # Set Brain reference on UI Context Projector for real execution state
+    ui_context_projector.set_brain(brain)
+
     for service_type, instance in (
         (Configuration, configuration),
         (Logger, logger),

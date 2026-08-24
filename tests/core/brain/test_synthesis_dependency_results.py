@@ -279,6 +279,7 @@ def test_chat_turn_result_succeeded_with_partial_failure():
     # Create goal results simulating the real scenario
     weather_current_result = GoalResult(
         goal_id="g1",
+        capability_id="weather.current",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": {"temp": 25, "condition": "sunny"}}),
@@ -286,6 +287,7 @@ def test_chat_turn_result_succeeded_with_partial_failure():
     
     weather_forecast_result = GoalResult(
         goal_id="g2",
+        capability_id="weather.forecast",
         task_id="t2",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": {"forecast": "sunny for 7 days"}}),
@@ -293,6 +295,7 @@ def test_chat_turn_result_succeeded_with_partial_failure():
     
     web_search_result = GoalResult(
         goal_id="g3",
+        capability_id="web.search",
         task_id="t3",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": {"results": ["protest info"]}}),
@@ -300,6 +303,7 @@ def test_chat_turn_result_succeeded_with_partial_failure():
     
     currency_result = GoalResult(
         goal_id="g4",
+        capability_id="finance.exchange_rate",
         task_id="t4",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Invalid currency code"),
@@ -308,6 +312,7 @@ def test_chat_turn_result_succeeded_with_partial_failure():
     # Synthesis goal produces ChatResult
     synthesis_result = GoalResult(
         goal_id="g5",
+        capability_id="chat.respond",
         task_id="t5",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -354,6 +359,7 @@ def test_chat_turn_result_succeeded_single_goal():
     # Single successful goal
     chat_result = GoalResult(
         goal_id="g1",
+        capability_id="chat.respond",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -377,6 +383,7 @@ def test_chat_turn_result_succeeded_single_goal():
     # Single failed goal
     failed_result = GoalResult(
         goal_id="g1",
+        capability_id="chat.respond",
         task_id="t1",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Provider unavailable"),
@@ -431,18 +438,21 @@ def test_brain_response_status_success_all_goals_succeed():
     # All goals succeed
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "data1"}),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "data2"}),
     )
     synthesis = GoalResult(
         goal_id="g3",
+        capability_id="chat.respond",
         task_id="t3",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -473,24 +483,28 @@ def test_brain_response_status_partial_success_synthesis_succeeds_some_goals_fai
     # Some goals succeed, one fails, synthesis succeeds
     weather_current = GoalResult(
         goal_id="g1",
+        capability_id="weather.current",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": {"temp": 25}}),
     )
     weather_forecast = GoalResult(
         goal_id="g2",
+        capability_id="weather.forecast",
         task_id="t2",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": {"forecast": "sunny"}}),
     )
     currency = GoalResult(
         goal_id="g3",
+        capability_id="finance.exchange_rate",
         task_id="t3",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Invalid currency code"),
     )
     synthesis = GoalResult(
         goal_id="g4",
+        capability_id="chat.respond",
         task_id="t4",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -521,24 +535,28 @@ def test_brain_response_status_partial_success_multiple_independent_goals_fail()
     # Multiple goals fail, synthesis succeeds
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "success1"}),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Error 1"),
     )
     goal3 = GoalResult(
         goal_id="g3",
+        capability_id="tool.example",
         task_id="t3",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Error 2"),
     )
     synthesis = GoalResult(
         goal_id="g4",
+        capability_id="chat.respond",
         task_id="t4",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -569,18 +587,21 @@ def test_brain_response_status_failed_synthesis_fails():
     # Some goals succeed, but synthesis fails
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "data1"}),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Goal 2 failed"),
     )
     synthesis = GoalResult(
         goal_id="g3",
+        capability_id="chat.respond",
         task_id="t3",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Synthesis failed"),
@@ -634,12 +655,14 @@ def test_brain_response_status_partial_success_no_synthesis_some_goals_succeed()
     # Some goals succeed, some fail, no synthesis goal
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "data1"}),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Goal 2 failed"),
@@ -663,12 +686,14 @@ def test_brain_response_status_failed_no_synthesis_all_goals_fail():
     
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Goal 1 failed"),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Goal 2 failed"),
@@ -697,18 +722,21 @@ def test_chat_turn_result_status_property():
     # PARTIAL_SUCCESS scenario
     goal1 = GoalResult(
         goal_id="g1",
+        capability_id="tool.example",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": "data1"}),
     )
     goal2 = GoalResult(
         goal_id="g2",
+        capability_id="tool.example",
         task_id="t2",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Goal 2 failed"),
     )
     synthesis = GoalResult(
         goal_id="g3",
+        capability_id="chat.respond",
         task_id="t3",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -741,6 +769,7 @@ def test_chat_turn_result_status_single_goal_success():
     
     chat_result = GoalResult(
         goal_id="g1",
+        capability_id="chat.respond",
         task_id="t1",
         status=TaskStatus.COMPLETED,
         response=TaskResponse(outputs={"result": ChatResult(
@@ -770,6 +799,7 @@ def test_chat_turn_result_status_single_goal_failure():
     
     failed_result = GoalResult(
         goal_id="g1",
+        capability_id="chat.respond",
         task_id="t1",
         status=TaskStatus.FAILED,
         failure=RuntimeError("Provider unavailable"),
