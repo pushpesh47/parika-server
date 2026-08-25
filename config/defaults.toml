@@ -844,10 +844,6 @@ reserved_for_response_tokens = 1024
 safety_reserve_tokens = 256
 warning_threshold = 0.8
 
-[ai]
-default_provider = ""
-default_model = ""
-temperature = 0.7
 
 ###############################################################################
 # Concurrency

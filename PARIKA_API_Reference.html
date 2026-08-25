@@ -1413,11 +1413,105 @@
                 }
               }
             }
+}
+      }
+    }
+  },
+  "/api/v1/ui/context": {
+    "get": {
+      "tags": [
+        "ui-context"
+      ],
+      "summary": "Get UI Context",
+      "description": "Get the current semantic UI context snapshot.\n\nReturns the server-side semantic state for the Contextual HUD.\nThe Web Client interprets this state using PARIKA Visual Grammar.\n\nResponse includes:\n- version: Monotonically increasing semantic version\n- context: Current semantic domain (weather, expense, chat, etc.)\n- confidence: Context confidence (0.0 to 1.0)\n- source: Why this context was selected (capability, workflow, task, interaction, system, fallback)\n- attention: Attention level (primary, secondary, ambient)\n- urgency: Urgency level (normal, elevated, critical)\n- focus: Current semantic sub-context focus\n- surfaces: Semantic capabilities organized by tier (primary, secondary, ambient)\n- timestamp: UTC timestamp of this snapshot\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: UI Context Projector not ready",
+      "operationId": "get_ui_context_api_v1_ui_context_get",
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UIContextResponse"
+              }
+            }
+          }
+        },
+        "401": {
+          "description": "Authentication required",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        },
+        "500": {
+          "description": "UI Context Projector not ready",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
           }
         }
       }
     }
   },
+  "/api/v1/ws/ui": {
+    "websocket": {
+      "tags": [
+        "ui-context"
+      ],
+      "summary": "UI Context WebSocket",
+      "description": "WebSocket endpoint for real-time semantic UI context updates.\n\nProtocol:\n\nServer -> Client (initial snapshot on connect):\n    {\n        \"type\": \"ui.context.snapshot\",\n        \"payload\": { ... UIContextState ... }\n    }\n\nServer -> Client (semantic change notifications):\n    {\n        \"type\": \"ui.context.changed\",\n        \"payload\": {\n            \"version\": 1,\n            \"previous_version\": 0,\n            \"changed_fields\": [\"context\", \"focus\"],\n            \"source_event\": \"task.started\",\n            \"timestamp\": \"...\",\n            \"state\": { ... full UIContextState ... }\n        }\n    }\n\nAuthentication:\n    Same as other WebSocket endpoints - Bearer token, X-API-Key, or query param token.",
+      "operationId": "websocket_ui_api_v1_ws_ui_websocket"
+    }
+  },
+  "/api/v1/ws/chat/{session_id}": {
+    "websocket": {
+      "tags": [
+        "chat"
+      ],
+      "summary": "Chat WebSocket",
+      "description": "WebSocket endpoint for streaming chat.\n\nStreams each token fragment as it arrives from the chat pipeline,\nthen sends one terminal `{\"type\": \"done\", ...}` message.\n\nProtocol:\n\nClient -> Server:\n    {\"text\": \"user message\"}\n\nServer -> Client (per token):\n    {\"type\": \"token\", \"content\": \"...\"}\n\nServer -> Client (terminal):\n    {\"type\": \"done\", \"done\": true, \"response\": { ... ChatResponseBody ... }}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
+      "operationId": "websocket_chat_api_v1_ws_chat_session_id_websocket",
+      "parameters": [
+        {
+          "name": "session_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        }
+      ]
+    }
+  },
+  "/api/v1/ws/media/{client_id}": {
+    "websocket": {
+      "tags": [
+        "media"
+      ],
+      "summary": "Media WebSocket",
+      "description": "WebSocket endpoint for bidirectional media control.\n\nProtocol:\n\nServer -> Client (commands):\n    {\"type\": \"media.play\", \"payload\": {\"source\": {...}}}\n    {\"type\": \"media.pause\"} / \"media.resume\" / \"media.stop\" /\n    \"media.skip\" / \"media.previous\" / \"media.mute\" /\n    \"media.unmute\" / \"media.show\" / \"media.hide\"\n    {\"type\": \"media.seek\", \"payload\": {\"position_seconds\": ...}}\n    {\"type\": \"media.set_volume\", \"payload\": {\"volume_percent\": ...}}\n\nClient -> Server (events):\n    {\"type\": \"media.ready\"}\n    {\"type\": \"media.state_changed\", \"payload\": {\"state\": {...}}}\n    {\"type\": \"media.position_changed\", \"payload\": {\"position\": ...}}\n    {\"type\": \"media.play_started\" | \"media.play_paused\" |\n      \"media.play_stopped\" | \"media.play_ended\" | \"media.buffering\"}\n    {\"type\": \"media.error\", \"payload\": {\"message\": \"...\"}}\n    {\"type\": \"media.source_changed\", \"payload\": {\"source\": {...}}}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
+      "operationId": "websocket_media_api_v1_ws_media_client_id_websocket",
+      "parameters": [
+        {
+          "name": "client_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "title": "Client Id"
+          }
+        }
+      ]
+    }
+  }
+},
   "components": {
     "schemas": {
       "CapabilitiesListResponse": {
@@ -4166,6 +4260,813 @@
         },
         "type": "object",
         "title": "WeatherErrorResponse"
+      },
+      "UIContextResponse": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "context": {
+            "type": "string",
+            "title": "Context"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "title": "Confidence"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "capability",
+              "workflow",
+              "task",
+              "interaction",
+              "system",
+              "fallback"
+            ],
+            "title": "Source"
+          },
+          "attention": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "secondary",
+              "ambient"
+            ],
+            "title": "Attention"
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "elevated",
+              "critical"
+            ],
+            "title": "Urgency"
+          },
+          "focus": {
+            "type": "string",
+            "enum": [
+              "none",
+              "weather",
+              "expense",
+              "chat",
+              "voice",
+              "media",
+              "web_search",
+              "document",
+              "vision",
+              "coding",
+              "repository",
+              "system",
+              "unknown"
+            ],
+            "title": "Focus"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/SurfaceItemSchema"
+            },
+            "type": "array",
+            "title": "Surfaces"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "request_status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "partial_success"
+            ],
+            "title": "Request Status"
+          },
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/DomainInfoSchema"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "synthesis": {
+            "$ref": "#/components/schemas/SynthesisInfoSchema"
+          },
+          "dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyInfoSchema"
+            },
+            "type": "array",
+            "title": "Dependencies"
+          },
+          "user_intent": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "question",
+              "command",
+              "statement",
+              "greeting",
+              "clarification",
+              "confirmation",
+              "rejection",
+              "topic_shift"
+            ],
+            "title": "User Intent"
+          },
+          "conversational_context": {
+            "$ref": "#/components/schemas/ConversationalContextSchema"
+          },
+          "semantic_relevance": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticRelevanceSchema"
+            },
+            "type": "array",
+            "title": "Semantic Relevance"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityInfoSchema"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/TopicInfoSchema"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "context_transition": {
+            "type": "string",
+            "enum": [
+              "none",
+              "continue",
+              "shift",
+              "return",
+              "branch",
+              "merge"
+            ],
+            "title": "Context Transition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "context",
+          "confidence",
+          "source",
+          "attention",
+          "urgency",
+          "focus",
+          "surfaces",
+          "timestamp",
+          "metadata",
+          "request_status",
+          "domains",
+          "dependencies",
+          "user_intent",
+          "semantic_relevance",
+          "entities",
+          "topics",
+          "context_transition"
+        ],
+        "title": "UIContextResponse"
+      },
+      "FreshnessInfoSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "last_updated": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Updated"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "max_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Age Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "status"
+        ],
+        "title": "FreshnessInfoSchema"
+      },
+      "EntityInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "person",
+              "place",
+              "organization",
+              "event",
+              "concept",
+              "artifact",
+              "datetime",
+              "quantity",
+              "currency",
+              "url",
+              "email",
+              "phone",
+              "other"
+            ],
+            "title": "Entity Type"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "title": "Confidence"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "entity_type",
+          "domain",
+          "confidence"
+        ],
+        "title": "EntityInfoSchema"
+      },
+      "TopicInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "relevance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "title": "Relevance"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "domain",
+          "relevance",
+          "source"
+        ],
+        "title": "TopicInfoSchema"
+      },
+      "ConversationalContextSchema": {
+        "properties": {
+          "current_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Domain"
+          },
+          "active_subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Subject"
+          },
+          "ongoing_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ongoing Task"
+          },
+          "previous_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Domain"
+          },
+          "turn_count": {
+            "type": "integer",
+            "default": 0,
+            "title": "Turn Count"
+          },
+          "last_user_request": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Request"
+          },
+          "contextual_transition": {
+            "type": "string",
+            "enum": [
+              "none",
+              "continue",
+              "shift",
+              "return",
+              "branch",
+              "merge"
+            ],
+            "default": "none",
+            "title": "Contextual Transition"
+          }
+        },
+        "type": "object",
+        "title": "ConversationalContextSchema"
+      },
+      "SemanticRelevanceSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "title": "Score"
+          },
+          "signals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Signals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "score"
+        ],
+        "title": "SemanticRelevanceSchema"
+      },
+      "SurfaceItemSchema": {
+        "properties": {
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "secondary",
+              "ambient"
+            ],
+            "title": "Tier"
+          },
+          "contextual_role": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "supporting",
+              "ambient",
+              "fallback"
+            ],
+            "default": "primary",
+            "title": "Contextual Role"
+          },
+          "relevance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1,
+            "title": "Relevance"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/FreshnessInfoSchema"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "capability_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Category"
+          },
+          "capability_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Tags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "capability_id",
+          "label",
+          "tier"
+        ],
+        "title": "SurfaceItemSchema"
+      },
+      "DomainInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "focus": {
+            "type": "string",
+            "enum": [
+              "none",
+              "weather",
+              "expense",
+              "chat",
+              "voice",
+              "media",
+              "web_search",
+              "document",
+              "vision",
+              "coding",
+              "repository",
+              "system",
+              "unknown"
+            ],
+            "title": "Focus"
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "title": "Importance"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "capability_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Ids"
+          },
+          "contextual_role": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "supporting",
+              "ambient",
+              "fallback"
+            ],
+            "default": "primary",
+            "title": "Contextual Role"
+          },
+          "relevance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1,
+            "title": "Relevance"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityInfoSchema"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/TopicInfoSchema"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/FreshnessInfoSchema"
+          },
+          "domain_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Category"
+          },
+          "primary_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Primary Entities"
+          },
+          "primary_topics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Primary Topics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "focus",
+          "importance",
+          "status",
+          "capability_ids"
+        ],
+        "title": "DomainInfoSchema"
+      },
+      "SynthesisInfoSchema": {
+        "properties": {
+          "goal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Id"
+          },
+          "capability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "completed_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Completed Dependencies"
+          },
+          "failed_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Dependencies"
+          },
+          "contextual_role": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "supporting",
+              "ambient",
+              "fallback"
+            ],
+            "default": "primary",
+            "title": "Contextual Role"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "dependency_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependency Domains"
+          }
+        },
+        "type": "object",
+        "title": "SynthesisInfoSchema"
+      },
+      "DependencyInfoSchema": {
+        "properties": {
+          "goal_id": {
+            "type": "string",
+            "title": "Goal Id"
+          },
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_synthesis": {
+            "type": "boolean",
+            "title": "Is Synthesis"
+          },
+          "contextual_role": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "supporting",
+              "ambient",
+              "fallback"
+            ],
+            "default": "primary",
+            "title": "Contextual Role"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "capability_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Category"
+          },
+          "capability_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Tags"
+          },
+          "dependency_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependency Domains"
+          }
+        },
+        "type": "object",
+        "required": [
+          "goal_id",
+          "capability_id",
+          "depends_on",
+          "status",
+          "is_synthesis"
+        ],
+        "title": "DependencyInfoSchema"
       }
     }
   }
