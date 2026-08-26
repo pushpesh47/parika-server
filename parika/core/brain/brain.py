@@ -218,6 +218,9 @@ class Brain:
         )
         self._agent_orchestrator = agent_orchestrator
         self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
+        self._execution_mode = (
+            configuration.get("concurrency.execution_mode", "parallel") if configuration is not None else "parallel"
+        )
         
         # Store the last BrainResponse for UI Context projection
         self._last_response: BrainResponse | None = None
@@ -618,7 +621,8 @@ class Brain:
         
         while pending_goals or running:
             # Start as many ready goals as possible (up to concurrency limit)
-            while ready_goals and len(running) < self._max_concurrent_goals:
+            concurrency_limit = 1 if self._execution_mode == "sequential" else self._max_concurrent_goals
+            while ready_goals and len(running) < concurrency_limit:
                 goal_id = ready_goals.pop()
                 pending_goals.remove(goal_id)
                 

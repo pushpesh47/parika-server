@@ -863,6 +863,7 @@ warning_threshold = 0.8
 
 [concurrency]
 max_concurrent_goals = 4
+execution_mode = "parallel"
 
 ###############################################################################
 # Coding Tool

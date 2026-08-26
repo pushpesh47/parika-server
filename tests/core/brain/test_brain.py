@@ -703,3 +703,241 @@ class TestExecutionProgressReporting:
             ("brain.execution", ProgressStage.FAILED),
         ]
         assert request.id
+
+# ---------------------------------------------------------------------
+# Execution mode configuration
+# ---------------------------------------------------------------------
+
+
+class TestExecutionMode:
+    def test_sequential_mode_executes_one_goal_at_a_time(
+        self,
+        brain: Brain,
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """In sequential mode, only one goal runs at a time."""
+        driver_a = _ScriptedToolDriver()
+        driver_a.succeed_with(ToolResponse(result={"ok": True}))
+
+        driver_b = _ScriptedToolDriver()
+        driver_b.succeed_with(ToolResponse(result={"ok": True}))
+
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.a",
+            tool_id="tool.a",
+            driver=driver_a,
+        )
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.b",
+            tool_id="tool.b",
+            driver=driver_b,
+        )
+
+        # Configure sequential mode
+        brain._execution_mode = "sequential"
+
+        request = BrainRequest(
+            goals=(
+                Goal(id="a", capability_id="tool.a"),
+                Goal(id="b", capability_id="tool.b"),
+            )
+        )
+
+        response = brain.handle(request)
+
+        assert response.succeeded
+        assert len(response.results) == 2
+        assert all(result.succeeded for result in response.results)
+
+    def test_parallel_mode_executes_independent_goals_concurrently(
+        self,
+        brain: Brain,
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+    ) -> None:
+        """In parallel mode (default), independent goals may execute concurrently."""
+        driver_a = _ScriptedToolDriver()
+        driver_a.succeed_with(ToolResponse(result={"ok": True}))
+
+        driver_b = _ScriptedToolDriver()
+        driver_b.succeed_with(ToolResponse(result={"ok": True}))
+
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.a",
+            tool_id="tool.a",
+            driver=driver_a,
+        )
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.b",
+            tool_id="tool.b",
+            driver=driver_b,
+        )
+
+        # Configure parallel mode (default)
+        brain._execution_mode = "parallel"
+
+        request = BrainRequest(
+            goals=(
+                Goal(id="a", capability_id="tool.a"),
+                Goal(id="b", capability_id="tool.b"),
+            )
+        )
+
+        response = brain.handle(request)
+
+        assert response.succeeded
+        assert len(response.results) == 2
+        assert all(result.succeeded for result in response.results)
+
+    def test_parallel_mode_respects_max_concurrent_goals(
+        self,
+        brain: Brain,
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+    ) -> None:
+        """In parallel mode, max_concurrent_goals limits simultaneous executions."""
+        drivers: list[_ScriptedToolDriver] = []
+        for i in range(6):
+            d = _ScriptedToolDriver()
+            d.succeed_with(ToolResponse(result={"ok": True}))
+            drivers.append(d)
+
+        for i, d in enumerate(drivers):
+            _register_tool(
+                capability_registry,
+                tool_manager,
+                capability_id=f"tool.z{i}",
+                tool_id=f"tool.z{i}",
+                driver=d,
+            )
+
+        # Configure parallel mode with max_concurrent_goals = 2
+        brain._execution_mode = "parallel"
+        brain._max_concurrent_goals = 2
+
+        goals = tuple(
+            Goal(id=f"g{i}", capability_id=f"tool.z{i}")
+            for i in range(6)
+        )
+
+        request = BrainRequest(goals=goals)
+
+        response = brain.handle(request)
+
+        assert response.succeeded
+        assert len(response.results) == 6
+        assert all(result.succeeded for result in response.results)
+
+    def test_dependency_respected_in_sequential_mode(
+        self,
+        brain: Brain,
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+    ) -> None:
+        """In sequential mode, dependent goals wait for their dependencies."""
+        failing_driver = _ScriptedToolDriver()
+        failing_driver.fail_with(RuntimeError("boom"))
+
+        dependent_driver = _ScriptedToolDriver()
+        dependent_driver.succeed_with(ToolResponse(result={"ok": True}))
+
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.parent",
+            tool_id="tool.parent",
+            driver=failing_driver,
+        )
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.child",
+            tool_id="tool.child",
+            driver=dependent_driver,
+        )
+
+        # Configure sequential mode
+        brain._execution_mode = "sequential"
+
+        request = BrainRequest(
+            goals=(
+                Goal(id="parent", capability_id="tool.parent"),
+                Goal(
+                    id="child",
+                    capability_id="tool.child",
+                    depends_on=("parent",),
+                ),
+            )
+        )
+
+        response = brain.handle(request)
+
+        assert not response.succeeded
+
+        results_by_id = {result.goal_id: result for result in response.results}
+
+        assert results_by_id["parent"].status is TaskStatus.FAILED
+        assert results_by_id["child"].skipped
+        assert results_by_id["child"].task_id is None
+
+    def test_dependency_respected_in_parallel_mode(
+        self,
+        brain: Brain,
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+    ) -> None:
+        """In parallel mode, dependent goals wait for their dependencies."""
+        failing_driver = _ScriptedToolDriver()
+        failing_driver.fail_with(RuntimeError("boom"))
+
+        dependent_driver = _ScriptedToolDriver()
+        dependent_driver.succeed_with(ToolResponse(result={"ok": True}))
+
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.parent",
+            tool_id="tool.parent",
+            driver=failing_driver,
+        )
+        _register_tool(
+            capability_registry,
+            tool_manager,
+            capability_id="tool.child",
+            tool_id="tool.child",
+            driver=dependent_driver,
+        )
+
+        # Configure parallel mode
+        brain._execution_mode = "parallel"
+
+        request = BrainRequest(
+            goals=(
+                Goal(id="parent", capability_id="tool.parent"),
+                Goal(
+                    id="child",
+                    capability_id="tool.child",
+                    depends_on=("parent",),
+                ),
+            )
+        )
+
+        response = brain.handle(request)
+
+        assert not response.succeeded
+
+        results_by_id = {result.goal_id: result for result in response.results}
+
+        assert results_by_id["parent"].status is TaskStatus.FAILED
+        assert results_by_id["child"].skipped
+        assert results_by_id["child"].task_id is None
