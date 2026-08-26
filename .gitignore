@@ -49,3 +49,6 @@ Thumbs.db
 
 # kilo
 .kilo/
+
+#temp files
+tmp/
