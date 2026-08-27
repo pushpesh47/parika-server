@@ -39,6 +39,7 @@ from parika.interfaces.runtime import (
     build_default_runtime,
     shutdown_runtime,
 )
+from parika.interfaces.session import InterfaceSession
 from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 from parika.core.database.pool import PoolManager
 import parika.core.database.config as db_config_module

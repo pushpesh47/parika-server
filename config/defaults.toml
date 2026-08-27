@@ -246,7 +246,7 @@ base_url = "http://127.0.0.1:11434"
 connect_timeout_seconds = 120.0
 request_timeout_seconds = 600000.0
 max_tool_iterations = 5
-default_model = "qwen3-coder-next:latest"
+default_model = "qwen3.5:4b"
 keep_alive = "120m"
 
 ###############################################################################
