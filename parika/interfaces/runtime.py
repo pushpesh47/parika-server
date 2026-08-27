@@ -1413,6 +1413,7 @@ def _register_ollama_provider(
             "providers.ollama.request_timeout_seconds",
             DEFAULT_REQUEST_TIMEOUT_SECONDS,
         ),
+        keep_alive=configuration.get("providers.ollama.keep_alive"),
     )
     driver.bind_brain(brain)
 
@@ -1436,6 +1437,89 @@ def _register_ollama_provider(
         provider_manager.refresh_health(OLLAMA_PROVIDER_ID)
     except OllamaProviderError as ex:
         log.warning("Could not refresh Ollama health: %s", ex)
+
+    # Warm up the decomposition model if keep_alive is configured
+    keep_alive = configuration.get("providers.ollama.keep_alive")
+    if keep_alive:
+        _warmup_decomposition_model(
+            provider_manager=provider_manager,
+            configuration=configuration,
+            logger=logger,
+        )
+
+
+def _warmup_decomposition_model(
+    *,
+    provider_manager: ProviderManager,
+    configuration: Configuration,
+    logger: Logger,
+) -> None:
+    """
+    Warm up the decomposition model by sending a minimal request.
+    
+    This forces the model to stay resident in GPU memory via keep_alive.
+    """
+    log = logger.get_logger(__name__)
+    
+    # Find the decomposition model (from routing_model config)
+    routing_model_config = configuration.get("routing_model", {})
+    fixed_model = routing_model_config.get("fixed_model", "")
+    
+    if not fixed_model:
+        log.debug("No fixed routing model configured, skipping warm-up")
+        return
+    
+    # Get the Ollama provider
+    providers = provider_manager.get_all()
+    ollama_provider = None
+    for p in providers:
+        if p.id == "provider.ollama":
+            ollama_provider = p
+            break
+    
+    if not ollama_provider:
+        log.debug("Ollama provider not found, skipping warm-up")
+        return
+    
+    # Find the decomposition model
+    decomposition_model = None
+    for model in ollama_provider.models:
+        if model.id == fixed_model or model.name == fixed_model:
+            decomposition_model = model
+            break
+    
+    if not decomposition_model:
+        log.warning(
+            "Decomposition model '%s' not found in Ollama, skipping warm-up",
+            fixed_model
+        )
+        return
+    
+    # Send minimal warm-up request
+    log.info(
+        "Warming up decomposition model '%s' with keep_alive=-1",
+        fixed_model
+    )
+    
+    from parika.providers.ollama.requests import OllamaChatRequest
+    from parika.providers.ollama.messages import OllamaMessage
+    from parika.core.provider_manager.options import RequestOptions
+    
+    warmup_request = OllamaChatRequest(
+        messages=(OllamaMessage(role="user", content="ping"),),
+        options=RequestOptions(reasoning=False),
+    )
+    
+    try:
+        # Execute warm-up - this will use keep_alive from provider config
+        driver = ollama_provider.driver
+        driver.chat(decomposition_model, warmup_request)
+        log.info("Decomposition model warm-up completed successfully")
+    except Exception as ex:
+        log.warning(
+            "Decomposition model warm-up failed (non-fatal): %s",
+            ex
+        )
 
 
 def _register_comfyui_provider(

@@ -30,9 +30,140 @@ from parika.core.capability_resolver.capability_resolution import CapabilityReso
 from parika.core.planner.goal import Goal
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_request import ChatRequest
+from parika.core.provider_manager.options import RequestOptions
 from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.provider_manager.provider_model import ProviderModel
 from parika.core.provider_manager.request import ProviderRequest
+
+
+DECOMPOSITION_DOMAIN_KEYWORDS: dict[str, frozenset[str]] = {
+    "weather": frozenset({
+        "weather", "temperature", "forecast", "rain", "sunny", "cloudy",
+        "humidity", "wind", "climate", "storm", "snow", "hot", "cold",
+        "degrees", "celsius", "fahrenheit", "precipitation", "conditions"
+    }),
+    "currency": frozenset({
+        "currency", "exchange", "rate", "convert", "usd", "eur", "inr",
+        "gbp", "jpy", "cny", "money", "fx", "forex", "dollar", "euro",
+        "rupee", "yen", "yuan", "pound", "bitcoin", "crypto", "btc"
+    }),
+    "web": frozenset({
+        "search", "web", "google", "internet", "look up", "find", "query",
+        "browse", "lookup", "online", "website", "url", "link"
+    }),
+    "filesystem": frozenset({
+        "file", "read", "write", "list", "directory", "folder", "path",
+        "open", "save", "create", "delete", "copy", "move", "mkdir",
+        "touch", "cat", "ls", "dir", "folder", "disk", "storage"
+    }),
+    "shell": frozenset({
+        "shell", "command", "execute", "run", "terminal", "bash", "cmd",
+        "script", "process", "command line", "cli", "sh", "zsh", "powershell"
+    }),
+    "vision": frozenset({
+        "image", "picture", "photo", "describe", "analyze", "detect",
+        "vision", "object", "face", "scene", "visual", "look at", "see",
+        "identify", "recognize", "classify", "caption"
+    }),
+    "video": frozenset({
+        "video", "movie", "clip", "generate", "edit", "film", "record",
+        "animate", "animation", "footage", "timeline", "frame"
+    }),
+    "image": frozenset({
+        "image", "generate", "create", "picture", "draw", "art", "illustration",
+        "generate image", "make image", "create picture", "draw"
+    }),
+    "ocr": frozenset({
+        "ocr", "extract", "text", "scan", "pdf", "document", "read",
+        "recognize", "transcribe", "digitize", "read text"
+    }),
+    "document": frozenset({
+        "document", "pdf", "read", "extract", "summarize", "analyze",
+        "doc", "docx", "txt", "markdown", "md", "report", "paper",
+        "contract", "invoice", "receipt", "form"
+    }),
+    "memory": frozenset({
+        "memory", "remember", "forget", "recall", "store", "note",
+        "memorize", "save", "retention", "long term", "permanent"
+    }),
+    "news": frozenset({
+        "news", "latest", "headlines", "current", "today", "breaking",
+        "articles", "journalism", "press", "media", "reporters"
+    }),
+    "expense": frozenset({
+        "expense", "spend", "cost", "track", "budget", "log", "record",
+        "spent", "paid", "purchase", "buy", "bought", "financial"
+    }),
+    "media": frozenset({
+        "media", "play", "music", "video", "song", "audio", "pause",
+        "resume", "stop", "volume", "playlist", "queue", "track"
+    }),
+    "runtime": frozenset({
+        "time", "date", "datetime", "now", "current", "clock", "system",
+        "info", "timestamp", "timezone", "utc", "local time", "what time"
+    }),
+    "coding": frozenset({
+        "code", "coding", "program", "function", "class", "refactor",
+        "search", "parse", "symbol", "debug", "bug", "fix", "implement",
+        "feature", "module", "library", "api", "syntax", "ast"
+    }),
+    "voice": frozenset({
+        "voice", "speech", "speak", "listen", "transcribe", "tts", "stt",
+        "audio", "record", "microphone", "speech to text", "text to speech"
+    }),
+}
+
+
+def _filter_capabilities_by_domain(
+    user_message: str,
+    capability_registry: CapabilityRegistry,
+) -> frozenset[str]:
+    """
+    Filter capabilities based on domain keywords in the user message.
+    
+    If no domain keywords match, returns ALL enabled capabilities (safe fallback).
+    Always includes chat.respond for synthesis.
+    """
+    query_lower = user_message.lower()
+    query_words = set(re.findall(r"[a-z0-9]+", query_lower))
+    
+    # Determine relevant domains
+    relevant_domains = set()
+    for domain, keywords in DECOMPOSITION_DOMAIN_KEYWORDS.items():
+        if query_words & keywords:
+            relevant_domains.add(domain)
+    
+    # If no domains matched, return all capabilities (safe fallback)
+    if not relevant_domains:
+        all_caps = frozenset(
+            cap.id for cap in capability_registry.get_all()
+            if cap.enabled
+        )
+        return all_caps
+    
+    # Filter capabilities by domain
+    # Use first part of capability ID as domain
+    all_caps = capability_registry.get_all()
+    enabled_caps = [cap for cap in all_caps if cap.enabled]
+    
+    cap_to_domain = {}
+    for cap in enabled_caps:
+        domain = cap.id.split(".")[0]
+        cap_to_domain[cap.id] = domain
+    
+    filtered = frozenset(
+        cap_id for cap_id, domain in cap_to_domain.items()
+        if domain in relevant_domains
+    )
+    
+    # Always include chat.respond for synthesis
+    chat_respond_available = any(
+        cap.id == "chat.respond" for cap in enabled_caps
+    )
+    if chat_respond_available:
+        filtered = filtered | frozenset(["chat.respond"])
+    
+    return filtered
 
 
 _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE = """\
@@ -112,15 +243,15 @@ class GoalDecomposer:
         Args:
             user_message: The user's natural language request
             available_capabilities: Optional filter of capability IDs to consider.
-                                   Defaults to all enabled capabilities.
+                                   Defaults to domain-filtered capabilities.
         
         Returns:
             DecompositionResult with goals and raw response
         """
+        # Apply deterministic domain filtering if not explicitly provided
         if available_capabilities is None:
-            available_capabilities = frozenset(
-                cap.id for cap in self._capability_registry.get_all()
-                if cap.enabled
+            available_capabilities = _filter_capabilities_by_domain(
+                user_message, self._capability_registry
             )
 
         # Build the decomposition prompt
@@ -139,7 +270,10 @@ class GoalDecomposer:
             resolution: CapabilityResolution,
             model: ProviderModel,
         ) -> ProviderRequest:
-            return ChatRequest(messages=messages)
+            return ChatRequest(
+                messages=messages,
+                options=RequestOptions(reasoning=False),
+            )
 
         decomposition_goal = Goal(
             id=f"decompose_{uuid4().hex}",

@@ -112,6 +112,8 @@ def build_chat_request_payload(
     model_id: str,
     messages: Sequence[OllamaMessage],
     request: OllamaChatRequest,
+    *,
+    keep_alive: str | None = None,
 ) -> dict[str, Any]:
     """
     Build the JSON payload for a `POST /api/chat` call.
@@ -125,6 +127,9 @@ def build_chat_request_payload(
         "messages": [message.to_payload() for message in messages],
         "stream": request.on_token is not None,
     }
+
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
 
     if request.tools:
         payload["tools"] = [tool.to_payload() for tool in request.tools]
