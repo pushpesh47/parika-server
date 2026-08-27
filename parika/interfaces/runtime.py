@@ -904,6 +904,37 @@ def _register_initial_agents(
             metadata={"description": "Specialized for visual understanding and generation tasks"},
         ))
 
+    # 7. Voice Agent - Speech-to-text and text-to-speech provider capabilities
+    voice_caps = frozenset()
+    voice_allowed = frozenset()
+    voice_categories = frozenset({CapabilityCategory.SPEECH, CapabilityCategory.TEXT_TO_SPEECH})
+    
+    voice_cap_ids = [
+        "voice.provider_speech_to_text",
+        "voice.provider_text_to_speech",
+    ]
+    for cap in voice_cap_ids:
+        if has_cap(cap):
+            voice_caps = voice_caps.union({cap})
+            voice_allowed = voice_allowed.union({cap})
+    
+    if voice_caps:
+        agent_registry.register(AgentProfile(
+            id="agent.voice",
+            name="Voice Agent",
+            specialization=AgentSpecialization.VOICE,
+            preferred_capabilities=voice_caps,
+            allowed_capabilities=voice_allowed.union({"filesystem.read", "web.search"}),
+            preferred_categories=voice_categories,
+            allowed_categories=frozenset({CapabilityCategory.SPEECH, CapabilityCategory.TEXT_TO_SPEECH, CapabilityCategory.TOOL, CapabilityCategory.FILESYSTEM}),
+            behavioral_policies=MappingProxyType({
+                "response_style": "concise",
+                "audio_processing": True,
+            }),
+            delegation_policy="allow",
+            metadata={"description": "Specialized for speech recognition and synthesis tasks"},
+        ))
+
     # Use module-level logger for this message
     import logging
     logging.getLogger("parika").info("Registered initial agent profiles based on available capabilities")

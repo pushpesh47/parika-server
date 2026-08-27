@@ -66,6 +66,7 @@ def read_result(payload: dict | None = None) -> BrainResponse:
         results=(
             GoalResult(
                 goal_id="g-read",
+                capability_id="filesystem.read",
                 task_id="t-read",
                 status=TaskStatus.COMPLETED,
                 response=TaskResponse(outputs={"result": ToolResponse(result=body)}),
@@ -81,6 +82,7 @@ def write_result(path: str = "/tmp/out.wav") -> BrainResponse:
         results=(
             GoalResult(
                 goal_id="g-write",
+                capability_id="filesystem.write",
                 task_id="t-write",
                 status=TaskStatus.COMPLETED,
                 response=TaskResponse(
@@ -102,6 +104,7 @@ def stt_result(*, text: str = "hello world", language: str | None = "en") -> Bra
         results=(
             GoalResult(
                 goal_id="g-stt",
+                capability_id="voice.provider_speech_to_text",
                 task_id="t-stt",
                 status=TaskStatus.COMPLETED,
                 response=TaskResponse(
@@ -129,6 +132,7 @@ def tts_result(
         results=(
             GoalResult(
                 goal_id="g-tts",
+                capability_id="voice.provider_text_to_speech",
                 task_id="t-tts",
                 status=TaskStatus.COMPLETED,
                 response=TaskResponse(
@@ -152,6 +156,7 @@ def failed_result(reason: str) -> BrainResponse:
         results=(
             GoalResult(
                 goal_id="g-failed",
+                capability_id="test.failed",
                 task_id="t-failed",
                 status=TaskStatus.FAILED,
                 response=None,

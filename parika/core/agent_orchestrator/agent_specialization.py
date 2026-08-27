@@ -32,3 +32,6 @@ class AgentSpecialization(StrEnum):
 
     VISION = "vision"
     """Visual/multimedia agent - handles vision, ocr, video, generation capabilities"""
+
+    VOICE = "voice"
+    """Voice agent - handles speech-to-text and text-to-speech provider capabilities"""
