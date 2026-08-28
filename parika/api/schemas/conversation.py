@@ -4,6 +4,7 @@ PARIKA API - Conversation Schemas
 Wire-format request/response for conversation management endpoints:
 - GET /api/v1/conversations - List all conversations
 - GET /api/v1/conversations/{conversation_id} - Get a conversation with its messages
+- PATCH /api/v1/conversations/{conversation_id} - Update a conversation (rename)
 - DELETE /api/v1/conversations/{conversation_id} - Delete a conversation
 """
 
@@ -11,6 +12,8 @@ from __future__ import annotations
 
 from .common import ApiModel
 from datetime import datetime
+from pydantic import Field, field_validator
+from typing import Annotated
 
 
 class ConversationSummary(ApiModel):
@@ -59,3 +62,30 @@ class ConversationDeleteResponse(ApiModel):
 
     deleted: bool
     session_id: str
+
+
+class ConversationUpdateRequestBody(ApiModel):
+    """Request body for updating a conversation (currently only title)."""
+
+    title: Annotated[str, Field(min_length=1, max_length=200, description="Conversation display name (1-200 characters, no whitespace-only)")]
+
+    @field_validator("title")
+    @classmethod
+    def _validate_title(cls, value: str) -> str:
+        """Validate conversation title: not empty, not whitespace-only, reasonable length."""
+        if value is None:
+            raise ValueError("Title is required")
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Title cannot be empty or whitespace-only")
+        if len(stripped) > 200:
+            raise ValueError("Title cannot exceed 200 characters")
+        return stripped
+
+
+class ConversationUpdateResponse(ApiModel):
+    """Response for updating a conversation."""
+
+    session_id: str
+    title: str
+    updated_at: datetime

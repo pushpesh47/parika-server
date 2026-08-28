@@ -47,6 +47,24 @@ from parika.core.database.pool import PoolManager
 from parika.core.database.config import DatabaseConfig
 
 
+def _load_test_env() -> None:
+    """Load environment variables from .env file for tests."""
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    if env_path.exists():
+        with env_path.open("r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    # Only set if not already in environment
+                    if key not in os.environ:
+                        os.environ[key] = value
+
+
+# Load .env before building test config
+_load_test_env()
+
+
 def _build_test_db_config() -> DatabaseConfig:
     """Build test database configuration from environment variables."""
     return DatabaseConfig(
@@ -171,6 +189,17 @@ def _clear_expense_db(client, _test_db_pool):
             cur.execute("DELETE FROM core.expense;")
             conn.commit()
     storage.shutdown()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_conversation_db(client, _test_db_pool):
+    """Clear the conversation database before each test to ensure isolation."""
+    with _test_db_pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core.session_message;")
+            cur.execute("DELETE FROM core.session;")
+            conn.commit()
     yield
 
 

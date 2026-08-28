@@ -11,12 +11,13 @@ existing Core/Interface layer methods.
 
 from __future__ import annotations
 
+from datetime import datetime, UTC
 from typing import Any
 
 from parika.interfaces.runtime import ParikaRuntime
 from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
 
-from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest
+from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest
 
 
 def handle_list_conversations(
@@ -100,4 +101,30 @@ def handle_delete_conversation(
     return {
         "deleted": deleted,
         "session_id": request.session_id,
+    }
+
+
+def handle_update_conversation(
+    runtime: ParikaRuntime,
+    session_store: PostgreSQLSessionStore,
+    request: ConversationUpdateRequest,
+) -> dict[str, Any]:
+    """
+    Update a specific conversation session by ID (currently only title).
+
+    Raises SessionNotFoundError if the session doesn't exist.
+    """
+    summary = session_store.get_session(request.session_id)
+
+    if summary is None:
+        raise SessionNotFoundError(f"Session '{request.session_id}' was not found.")
+
+    session_store.set_title(request.session_id, request.title)
+
+    # Return updated session info
+    updated_summary = session_store.get_session(request.session_id)
+    return {
+        "session_id": updated_summary.session_id,
+        "title": updated_summary.title,
+        "updated_at": updated_summary.updated_at.isoformat(),
     }

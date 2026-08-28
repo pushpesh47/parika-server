@@ -4,12 +4,13 @@ PARIKA API - Conversation Router
 REST endpoints for conversation management:
 - GET /api/v1/conversations - List all conversations
 - GET /api/v1/conversations/{conversation_id} - Get a conversation with its messages
+- PATCH /api/v1/conversations/{conversation_id} - Update a conversation (rename)
 - DELETE /api/v1/conversations/{conversation_id} - Delete a conversation
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Body
 
 from ..auth.dependency import RequireAuth
 from ..auth.backend import AuthContext
@@ -18,9 +19,10 @@ from ..handlers.conversation import (
     handle_list_conversations,
     handle_get_conversation,
     handle_delete_conversation,
+    handle_update_conversation,
 )
-from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest
-from ..schemas.conversation import ConversationListResponse, ConversationDetail, ConversationDeleteResponse
+from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest
+from ..schemas.conversation import ConversationListResponse, ConversationDetail, ConversationDeleteResponse, ConversationUpdateResponse, ConversationUpdateRequestBody
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -89,6 +91,42 @@ async def get_conversation(
     result = await future
 
     return ConversationDetail.model_validate(result)
+
+
+@router.patch("/{conversation_id}", response_model=ConversationUpdateResponse)
+async def update_conversation(
+    conversation_id: str = Path(..., description="Conversation session ID"),
+    body: ConversationUpdateRequestBody = Body(...),
+    auth: AuthContext = RequireAuth,
+    core_execution_owner=Depends(get_core_execution_owner),
+) -> ConversationUpdateResponse:
+    """
+    Update a specific conversation session by ID (currently only title/rename).
+
+    Returns the updated conversation representation with the new title.
+
+    Authentication:
+        Requires valid authentication per [api.auth].mode configuration.
+
+    Errors:
+        401: Authentication required
+        404: Conversation not found
+        422: Validation error (empty/whitespace title or title too long)
+        500: Session store unavailable
+    """
+    # Submit the Core work to be executed on the Core worker thread
+    future = core_execution_owner.submit(
+        lambda: handle_update_conversation(
+            core_execution_owner.runtime,
+            core_execution_owner.session_store,
+            ConversationUpdateRequest(session_id=conversation_id, title=body.title),
+        )
+    )
+
+    # Await the result without blocking the ASGI event loop
+    result = await future
+
+    return ConversationUpdateResponse.model_validate(result)
 
 
 @router.delete("/{conversation_id}", response_model=ConversationDeleteResponse)

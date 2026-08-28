@@ -319,3 +319,13 @@ class ConversationDeleteRequest:
     """
 
     session_id: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationUpdateRequest:
+    """
+    Requests updating a conversation session (currently only title).
+    """
+
+    session_id: str
+    title: str

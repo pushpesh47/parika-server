@@ -1,6 +1,6 @@
 """
 Tests for `GET /api/v1/conversations`, `GET /api/v1/conversations/{conversation_id}`,
-and `DELETE /api/v1/conversations/{conversation_id}`.
+`PATCH /api/v1/conversations/{conversation_id}`, and `DELETE /api/v1/conversations/{conversation_id}`.
 """
 
 from __future__ import annotations
@@ -160,3 +160,249 @@ def test_list_conversations_response_schema(client) -> None:
         assert "created_at" in conversation
         assert "updated_at" in conversation
         assert "message_count" in conversation
+
+
+# =============================================================================
+# New tests for PATCH /api/v1/conversations/{conversation_id} (rename)
+# =============================================================================
+
+def test_rename_conversation_success(client) -> None:
+    """Test successful conversation rename via PATCH."""
+    # Create a session
+    client.post("/api/v1/chat", json={"text": "Hello world", "session_id": "test-rename-success-1"})
+    
+    # Verify initial title (auto-generated from first message)
+    response = client.get("/api/v1/conversations/test-rename-success-1")
+    assert response.status_code == 200
+    initial_title = response.json()["title"]
+    assert initial_title == "Hello world"
+    
+    # Rename the conversation
+    response = client.patch(
+        "/api/v1/conversations/test-rename-success-1",
+        json={"title": "My New Title"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "test-rename-success-1"
+    assert body["title"] == "My New Title"
+    assert "updated_at" in body
+    
+    # Verify the title is persisted
+    response = client.get("/api/v1/conversations/test-rename-success-1")
+    assert response.status_code == 200
+    assert response.json()["title"] == "My New Title"
+    
+    # Verify list also shows new title
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    renamed = next(c for c in conversations if c["session_id"] == "test-rename-success-1")
+    assert renamed["title"] == "My New Title"
+
+
+def test_rename_conversation_nonexistent(client) -> None:
+    """Test renaming a nonexistent conversation returns 404."""
+    response = client.patch(
+        "/api/v1/conversations/nonexistent-session-id",
+        json={"title": "New Title"}
+    )
+    assert response.status_code == 404
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "SessionNotFoundError"
+
+
+def test_rename_conversation_empty_title_rejected(client) -> None:
+    """Test that empty title is rejected with 422."""
+    client.post("/api/v1/chat", json={"text": "Hello", "session_id": "test-rename-empty"})
+    
+    response = client.patch(
+        "/api/v1/conversations/test-rename-empty",
+        json={"title": ""}
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+    # Pydantic's min_length=1 validation catches this with "at least 1 character"
+    # Our custom validator would catch it with "empty or whitespace-only"
+    error_msg = body["error"]["message"].lower()
+    assert "empty" in error_msg or "character" in error_msg or "whitespace" in error_msg
+
+
+def test_rename_conversation_whitespace_only_rejected(client) -> None:
+    """Test that whitespace-only title is rejected with 422."""
+    client.post("/api/v1/chat", json={"text": "Hello", "session_id": "test-rename-ws"})
+    
+    response = client.patch(
+        "/api/v1/conversations/test-rename-ws",
+        json={"title": "   \n\t  "}
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+    assert "empty" in body["error"]["message"].lower() or "whitespace" in body["error"]["message"].lower()
+
+
+def test_rename_conversation_too_long_rejected(client) -> None:
+    """Test that title exceeding max length is rejected with 422."""
+    client.post("/api/v1/chat", json={"text": "Hello", "session_id": "test-rename-long"})
+    
+    long_title = "x" * 201  # Exceeds 200 character limit
+    response = client.patch(
+        "/api/v1/conversations/test-rename-long",
+        json={"title": long_title}
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+    assert "200" in body["error"]["message"] or "exceed" in body["error"]["message"].lower()
+
+
+def test_rename_conversation_preserves_messages(client) -> None:
+    """Test that renaming doesn't affect messages."""
+    # Create a session with multiple messages
+    client.post("/api/v1/chat", json={"text": "First message", "session_id": "test-rename-msgs"})
+    client.post("/api/v1/chat", json={"text": "Second message", "session_id": "test-rename-msgs"})
+    client.post("/api/v1/chat", json={"text": "Third message", "session_id": "test-rename-msgs"})
+    
+    # Get initial messages
+    response = client.get("/api/v1/conversations/test-rename-msgs")
+    assert response.status_code == 200
+    initial_messages = response.json()["messages"]
+    assert len(initial_messages) >= 3
+    
+    # Rename
+    response = client.patch(
+        "/api/v1/conversations/test-rename-msgs",
+        json={"title": "Renamed Title"}
+    )
+    assert response.status_code == 200
+    
+    # Verify messages unchanged
+    response = client.get("/api/v1/conversations/test-rename-msgs")
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert len(messages) == len(initial_messages)
+    for i, msg in enumerate(messages):
+        assert msg["content"] == initial_messages[i]["content"]
+        assert msg["role"] == initial_messages[i]["role"]
+
+
+def test_rename_conversation_updates_updated_at(client) -> None:
+    """Test that renaming updates the updated_at timestamp."""
+    client.post("/api/v1/chat", json={"text": "Hello", "session_id": "test-rename-time"})
+    
+    # Get initial updated_at
+    response = client.get("/api/v1/conversations/test-rename-time")
+    assert response.status_code == 200
+    initial_updated = response.json()["updated_at"]
+    
+    # Small delay to ensure timestamp changes
+    import time
+    time.sleep(0.1)
+    
+    # Rename
+    response = client.patch(
+        "/api/v1/conversations/test-rename-time",
+        json={"title": "Updated Title"}
+    )
+    assert response.status_code == 200
+    new_updated = response.json()["updated_at"]
+    
+    # Verify updated_at changed
+    assert new_updated > initial_updated
+
+
+# =============================================================================
+# Tests for automatic title generation
+# =============================================================================
+
+def test_new_conversation_auto_title_from_first_message(client) -> None:
+    """Test that a new conversation gets an automatic title from the first user message."""
+    # Create a new conversation via chat (no explicit session_id)
+    response = client.post("/api/v1/chat", json={"text": "This is my first message"})
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    
+    # Check that conversation has auto-generated title
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "This is my first message"
+    assert body["session_id"] == session_id
+
+
+def test_auto_title_truncated_to_80_chars(client) -> None:
+    """Test that auto-generated title is truncated to 80 characters."""
+    long_message = "This is a very long first message that should be truncated to eighty characters maximum length"
+    response = client.post("/api/v1/chat", json={"text": long_message, "session_id": "test-auto-title-long"})
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    title = response.json()["title"]
+    assert len(title) <= 80
+    assert title == long_message[:80]
+
+
+def test_auto_title_first_line_only(client) -> None:
+    """Test that auto-generated title uses only the first line of the message."""
+    multi_line = "First line\nSecond line\nThird line"
+    response = client.post("/api/v1/chat", json={"text": multi_line, "session_id": "test-auto-title-multiline"})
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    title = response.json()["title"]
+    assert title == "First line"
+
+
+def test_explicit_session_id_gets_auto_title(client) -> None:
+    """Test that explicit session_id also gets auto title on first message."""
+    response = client.post("/api/v1/chat", json={"text": "Explicit session title", "session_id": "test-explicit-title"})
+    assert response.status_code == 200
+    
+    response = client.get("/api/v1/conversations/test-explicit-title")
+    assert response.status_code == 200
+    assert response.json()["title"] == "Explicit session title"
+
+
+def test_auto_title_persists_across_reload(client) -> None:
+    """Test that auto-generated title persists and is returned on subsequent loads."""
+    response = client.post("/api/v1/chat", json={"text": "Persistent title test", "session_id": "test-persist-title"})
+    assert response.status_code == 200
+    
+    # First load
+    response = client.get("/api/v1/conversations/test-persist-title")
+    assert response.status_code == 200
+    title1 = response.json()["title"]
+    assert title1 == "Persistent title test"
+    
+    # Second load (simulating reload)
+    response = client.get("/api/v1/conversations/test-persist-title")
+    assert response.status_code == 200
+    title2 = response.json()["title"]
+    assert title2 == "Persistent title test"
+    assert title1 == title2
+
+
+def test_list_returns_auto_titles(client) -> None:
+    """Test that conversation list includes auto-generated titles."""
+    client.post("/api/v1/chat", json={"text": "First conversation", "session_id": "test-list-title-1"})
+    client.post("/api/v1/chat", json={"text": "Second conversation", "session_id": "test-list-title-2"})
+    
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    
+    conv1 = next(c for c in conversations if c["session_id"] == "test-list-title-1")
+    conv2 = next(c for c in conversations if c["session_id"] == "test-list-title-2")
+    
+    assert conv1["title"] == "First conversation"
+    assert conv2["title"] == "Second conversation"

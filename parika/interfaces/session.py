@@ -425,8 +425,17 @@ class InterfaceSession:
         self._history.append(HistoryEntry(role=HistoryRole.USER, text=text))
         self._conversation_state = self._conversation_state.append_user_message(user_message)
 
+        # Automatically generate and persist title on first user message if not already set
         if self._state_manager._session_store is not None:
             self._state_manager._session_store.append_message(self.id, role="user", content=text)
+            
+            # Check if this is the first user message and title is not set
+            existing = self._state_manager._session_store.get_session(self.id)
+            if existing is not None and existing.title is None:
+                # This is the first user message - generate title from it
+                title = text.strip().splitlines()[0][:80]
+                if title:  # Only set if non-empty after stripping
+                    self._state_manager._session_store.set_title(self.id, title)
 
         # Execution progress diagnostics (Phase 3.5b): temporarily
         # subscribe to the generic progress.* channels for the
@@ -603,21 +612,8 @@ class InterfaceSession:
         docs/architecture/Intelligence_Foundation_Design.md section
         8.4.
 
-        Deliberately does not scan chat text for stated preferences
-        and does not write to MemoryManager on the user's behalf:
-        permanent memory must only ever be created through the
-        `memory.remember` Capability (the native `memory_remember`
-        tool call a model makes only when the user explicitly asks to
-        remember/save/store something), never as a side effect of
-        ordinary conversational text -- see the PARIKA Memory
-        Subsystem Refactor's "Strictly Explicit Memory" requirement.
-        An earlier version of this method used
-        `preference_detection.detect_preferences()` to auto-record any
-        matched preference statement (e.g. "I prefer dark mode") as a
-        SESSION-scoped Memory unconditionally; that behavior has been
-        removed because it created memories the user never explicitly
-        requested and bypassed `MemoryManager.remember()`'s
-        duplicate-detection entirely (a plain `register()` call).
+        Note: Title is now automatically generated on the first user message
+        in `submit_text()`. This method exists as a fallback for edge cases.
         """
 
         if self._state_manager._session_store is None:
@@ -632,7 +628,8 @@ class InterfaceSession:
 
             if first_user_entry is not None:
                 title = first_user_entry.text.strip().splitlines()[0][:80]
-                self._state_manager._session_store.set_title(self.id, title)
+                if title:
+                    self._state_manager._session_store.set_title(self.id, title)
 
     @classmethod
     def load(

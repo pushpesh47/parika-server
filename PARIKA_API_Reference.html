@@ -82,7 +82,7 @@
           "health"
         ],
         "summary": "Ready",
-        "description": "Readiness -- `200` only once `ParikaRuntime` has been fully\nconstructed and attached to `app.state.runtime`; `503` before\nthat (e.g. during the brief startup window).",
+        "description": "Readiness -- `200` only once CoreExecutionOwner has been started\nand the single Runtime/Core environment has been successfully\ninitialized on the Core worker thread; `503` before that\n(e.g. during the brief startup window or if initialization failed).",
         "operationId": "ready_api_v1_ready_get",
         "responses": {
           "200": {
@@ -1032,6 +1032,169 @@
         }
       }
     },
+    "/api/v1/conversations": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "List Conversations",
+        "description": "List all stored conversation sessions.\n\nReturns a list of conversation summaries ordered by most recently updated first.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
+        "operationId": "list_conversations_api_v1_conversations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{conversation_id}": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Get Conversation",
+        "description": "Get a specific conversation session by ID, including all its messages.\n\nReturns the full conversation details with all messages in chronological order.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    404: Conversation not found\n    500: Session store unavailable",
+        "operationId": "get_conversation_api_v1_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conversation session ID",
+              "title": "Conversation Id"
+            },
+            "description": "Conversation session ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Update Conversation",
+        "description": "Update a specific conversation session by ID (currently only title/rename).\n\nReturns the updated conversation representation with the new title.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    404: Conversation not found\n    422: Validation error (empty/whitespace title or title too long)\n    500: Session store unavailable",
+        "operationId": "update_conversation_api_v1_conversations__conversation_id__patch",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conversation session ID",
+              "title": "Conversation Id"
+            },
+            "description": "Conversation session ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationUpdateRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Delete Conversation",
+        "description": "Delete a specific conversation session by ID.\n\nPermanently removes the session and all its messages from storage.\nThe deleted conversation will no longer appear in subsequent listing requests.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
+        "operationId": "delete_conversation_api_v1_conversations__conversation_id__delete",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conversation session ID",
+              "title": "Conversation Id"
+            },
+            "description": "Conversation session ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chat": {
       "post": {
         "tags": [
@@ -1333,7 +1496,7 @@
           "weather"
         ],
         "summary": "Get Weather",
-        "description": "Get current weather and short forecast for coordinates.\n\nReturns structured weather data suitable for a dashboard/card UI.\nCached for 20 minutes (configurable) to support 5-second Web Client polling\nwithout hitting the external provider on every request.\n\nThis endpoint does NOT go through CoreExecutionOwner and remains\nresponsive while Core is performing long-running operations.\n\nQuery Parameters:\n    latitude: Latitude in decimal degrees (-90 to 90)\n    longitude: Longitude in decimal degrees (-180 to 180)\n\nResponse:\n    location: Resolved location info (name, coordinates, timezone)\n    current: Current weather conditions (temperature, condition, wind, etc.)\n    forecast: Daily forecast for next 5 days\n    metadata: Cache info (fetched_at, cache_status, cache_expires_at)\n\nCache Behavior:\n    - Cache TTL: 20 minutes (1200 seconds) by default, configurable via [weather].cache_ttl_seconds\n    - Cache key: Normalized coordinates (4 decimal places ~11m precision)\n    - Stampede prevention: Concurrent requests after expiry trigger only one provider fetch\n    - Web Client may poll every 5 seconds; provider called at most once per TTL window\n\nErrors:\n    400: Invalid latitude/longitude\n    401: Authentication required (per [api.auth].mode)\n    500: Provider unavailable or malformed response\n",
+        "description": "Get current weather and short forecast for coordinates.\n\nReturns structured weather data suitable for a dashboard/card UI.\nCached for 20 minutes (configurable) to support 5-second Web Client polling\nwithout hitting the external provider on every request.\n\nThis endpoint does NOT go through CoreExecutionOwner and remains\nresponsive while Core is performing long-running operations.\n\nQuery Parameters:\n    latitude: Latitude in decimal degrees (-90 to 90)\n    longitude: Longitude in decimal degrees (-180 to 180)\n\nResponse:\n    location: Resolved location info (name, coordinates, timezone)\n    current: Current weather conditions (temperature, condition, wind, etc.)\n    forecast: Daily forecast for next 5 days\n    metadata: Cache info (fetched_at, cache_status, cache_expires_at)\n\nCache Behavior:\n    - Cache TTL: 20 minutes (1200 seconds) by default, configurable via [weather].cache_ttl_seconds\n    - Cache key: Normalized coordinates (4 decimal places ~11m precision)\n    - Stampede prevention: Concurrent requests after expiry trigger only one provider fetch\n    - Web Client may poll every 5 seconds; provider called at most once per TTL window\n\nErrors:\n    400: Invalid latitude/longitude\n    401: Authentication required (per [api.auth].mode)\n    500: Provider unavailable or malformed response",
         "operationId": "get_weather_api_v1_weather_get",
         "parameters": [
           {
@@ -1342,12 +1505,12 @@
             "required": true,
             "schema": {
               "type": "number",
-              "format": "double",
-              "minimum": -90,
               "maximum": 90,
-              "title": "Latitude",
-              "description": "Latitude in decimal degrees"
-            }
+              "minimum": -90,
+              "description": "Latitude in decimal degrees",
+              "title": "Latitude"
+            },
+            "description": "Latitude in decimal degrees"
           },
           {
             "name": "longitude",
@@ -1355,12 +1518,12 @@
             "required": true,
             "schema": {
               "type": "number",
-              "format": "double",
-              "minimum": -180,
               "maximum": 180,
-              "title": "Longitude",
-              "description": "Longitude in decimal degrees"
-            }
+              "minimum": -180,
+              "description": "Longitude in decimal degrees",
+              "title": "Longitude"
+            },
+            "description": "Longitude in decimal degrees"
           }
         ],
         "responses": {
@@ -1374,26 +1537,6 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid latitude/longitude",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1403,233 +1546,25 @@
                 }
               }
             }
-          },
-          "500": {
-            "description": "Provider unavailable or malformed response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WeatherErrorResponse"
-                }
-              }
-            }
-}
-      }
-    }
-  },
-  "/api/v1/ui/context": {
-    "get": {
-      "tags": [
-        "ui-context"
-      ],
-      "summary": "Get UI Context",
-      "description": "Get the current semantic UI context snapshot.\n\nReturns the server-side semantic state for the Contextual HUD.\nThe Web Client interprets this state using PARIKA Visual Grammar.\n\nResponse includes:\n- version: Monotonically increasing semantic version\n- context: Current semantic domain (weather, expense, chat, etc.)\n- confidence: Context confidence (0.0 to 1.0)\n- source: Why this context was selected (capability, workflow, task, interaction, system, fallback)\n- attention: Attention level (primary, secondary, ambient)\n- urgency: Urgency level (normal, elevated, critical)\n- focus: Current semantic sub-context focus\n- surfaces: Semantic capabilities organized by tier (primary, secondary, ambient)\n- timestamp: UTC timestamp of this snapshot\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: UI Context Projector not ready",
-      "operationId": "get_ui_context_api_v1_ui_context_get",
-      "responses": {
-        "200": {
-          "description": "Successful Response",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UIContextResponse"
-              }
-            }
-          }
-        },
-        "401": {
-          "description": "Authentication required",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        },
-        "500": {
-          "description": "UI Context Projector not ready",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HTTPValidationError"
-              }
-            }
-          }
-        }
-      }
-    }
-  },
-  "/api/v1/ws/ui": {
-    "websocket": {
-      "tags": [
-        "ui-context"
-      ],
-      "summary": "UI Context WebSocket",
-      "description": "WebSocket endpoint for real-time semantic UI context updates.\n\nProtocol:\n\nServer -> Client (initial snapshot on connect):\n    {\n        \"type\": \"ui.context.snapshot\",\n        \"payload\": { ... UIContextState ... }\n    }\n\nServer -> Client (semantic change notifications):\n    {\n        \"type\": \"ui.context.changed\",\n        \"payload\": {\n            \"version\": 1,\n            \"previous_version\": 0,\n            \"changed_fields\": [\"context\", \"focus\"],\n            \"source_event\": \"task.started\",\n            \"timestamp\": \"...\",\n            \"state\": { ... full UIContextState ... }\n        }\n    }\n\nAuthentication:\n    Same as other WebSocket endpoints - Bearer token, X-API-Key, or query param token.",
-      "operationId": "websocket_ui_api_v1_ws_ui_websocket"
-    }
-  },
-  "/api/v1/ws/chat/{session_id}": {
-    "websocket": {
-      "tags": [
-        "chat"
-      ],
-      "summary": "Chat WebSocket",
-      "description": "WebSocket endpoint for streaming chat.\n\nStreams each token fragment as it arrives from the chat pipeline,\nthen sends one terminal `{\"type\": \"done\", ...}` message.\n\nProtocol:\n\nClient -> Server:\n    {\"text\": \"user message\"}\n\nServer -> Client (per token):\n    {\"type\": \"token\", \"content\": \"...\"}\n\nServer -> Client (terminal):\n    {\"type\": \"done\", \"done\": true, \"response\": { ... ChatResponseBody ... }}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
-      "operationId": "websocket_chat_api_v1_ws_chat_session_id_websocket",
-      "parameters": [
-        {
-          "name": "session_id",
-          "in": "path",
-          "required": true,
-          "schema": {
-            "type": "string",
-            "title": "Session Id"
-          }
-        }
-      ]
-    }
-  },
-"/api/v1/ws/media/{client_id}": {
-      "websocket": {
-        "tags": [
-          "media"
-        ],
-        "summary": "Media WebSocket",
-        "description": "WebSocket endpoint for bidirectional media control.\n\nProtocol:\n\nServer -> Client (commands):\n    {\"type\": \"media.play\", \"payload\": {\"source\": {...}}}\n    {\"type\": \"media.pause\"} / \"media.resume\" / \"media.stop\" /\n    \"media.skip\" / \"media.previous\" / \"media.mute\" /\n    \"media.unmute\" / \"media.show\" / \"media.hide\"\n    {\"type\": \"media.seek\", \"payload\": {\"position_seconds\": ...}}\n    {\"type\": \"media.set_volume\", \"payload\": {\"volume_percent\": ...}}\n\nClient -> Server (events):\n    {\"type\": \"media.ready\"}\n    {\"type\": \"media.state_changed\", \"payload\": {\"state\": {...}}}\n    {\"type\": \"media.position_changed\", \"payload\": {\"position\": ...}}\n    {\"type\": \"media.play_started\" | \"media.play_paused\" |\n      \"media.play_stopped\" | \"media.play_ended\" | \"media.buffering\"}\n    {\"type\": \"media.error\", \"payload\": {\"message\": \"...\"}}\n    {\"type\": \"media.source_changed\", \"payload\": {\"source\": {...}}}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
-        "operationId": "websocket_media_api_v1_ws_media_client_id_websocket",
-        "parameters": [
-          {
-            "name": "client_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Client Id"
-            }
-          }
-        ]
-      }
-    },
-    "/api/v1/conversations": {
-      "get": {
-        "tags": [
-          "conversations"
-        ],
-        "summary": "List Conversations",
-        "description": "List all stored conversation sessions.\n\nReturns a list of conversation summaries ordered by most recently updated first.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
-        "operationId": "list_conversations_api_v1_conversations_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConversationListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       }
     },
-    "/api/v1/conversations/{conversation_id}": {
+    "/api/v1/ui/context": {
       "get": {
         "tags": [
-          "conversations"
+          "ui-context"
         ],
-        "summary": "Get Conversation",
-        "description": "Get a specific conversation session by ID, including all its messages.\n\nReturns the full conversation details with all messages in chronological order.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    404: Conversation not found\n    500: Session store unavailable",
-        "operationId": "get_conversation_api_v1_conversations__conversation_id__get",
-        "parameters": [
-          {
-            "name": "conversation_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Conversation Id"
-            }
-          }
-        ],
+        "summary": "Get Ui Context",
+        "description": "Get the current semantic UI context snapshot.\n\nReturns the server-side semantic state for the Contextual HUD.\nThe Web Client interprets this state using PARIKA Visual Grammar.\n\nResponse includes:\n- version: Monotonically increasing semantic version\n- context: Current semantic domain (weather, expense, chat, etc.)\n- confidence: Context confidence (0.0 to 1.0)\n- source: Why this context was selected (capability, workflow, task, interaction, system, fallback)\n- attention: Attention level (primary, secondary, ambient)\n- urgency: Urgency level (normal, elevated, critical)\n- focus: Current semantic sub-context focus\n- surfaces: Semantic capabilities organized by tier (primary, secondary, ambient)\n- timestamp: UTC timestamp of this snapshot\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: UI Context Projector not ready",
+        "operationId": "get_ui_context_api_v1_ui_context_get",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConversationDetail"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Conversation not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "conversations"
-        ],
-        "summary": "Delete Conversation",
-        "description": "Delete a specific conversation session by ID.\n\nPermanently removes the session and all its messages from storage.\nThe deleted conversation will no longer appear in subsequent listing requests.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
-        "operationId": "delete_conversation_api_v1_conversations__conversation_id__delete",
-        "parameters": [
-          {
-            "name": "conversation_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Conversation Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConversationDeleteResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/UIContextResponse"
                 }
               }
             }
@@ -1640,6 +1575,16 @@
   },
   "components": {
     "schemas": {
+      "AttentionLevel": {
+        "type": "string",
+        "enum": [
+          "primary",
+          "secondary",
+          "ambient"
+        ],
+        "title": "AttentionLevel",
+        "description": "Attention level independent from semantic context.\n\nConceptually: primary, secondary, ambient"
+      },
       "CapabilitiesListResponse": {
         "properties": {
           "capabilities": {
@@ -1759,6 +1704,9 @@
             "type": "boolean",
             "title": "Succeeded"
           },
+          "status": {
+            "$ref": "#/components/schemas/parika__core__brain__brain_response__RequestStatus"
+          },
           "message": {
             "anyOf": [
               {
@@ -1785,7 +1733,8 @@
         "type": "object",
         "required": [
           "session_id",
-          "succeeded"
+          "succeeded",
+          "status"
         ],
         "title": "ChatResponseBody"
       },
@@ -1808,6 +1757,604 @@
         },
         "type": "object",
         "title": "ConfigResponse"
+      },
+      "ContextSource": {
+        "type": "string",
+        "enum": [
+          "capability",
+          "workflow",
+          "task",
+          "interaction",
+          "system",
+          "fallback"
+        ],
+        "title": "ContextSource",
+        "description": "Source of the current semantic context.\n\nRepresents WHY the current semantic context was selected."
+      },
+      "ContextTransition": {
+        "type": "string",
+        "enum": [
+          "entered",
+          "changed",
+          "expanded",
+          "narrowed",
+          "became_ambient",
+          "none"
+        ],
+        "title": "ContextTransition",
+        "description": "Type of context transition between turns."
+      },
+      "ContextualRole": {
+        "type": "string",
+        "enum": [
+          "primary",
+          "secondary",
+          "ambient"
+        ],
+        "title": "ContextualRole",
+        "description": "Contextual role of a surface/domain in the current HUD.\n\nPRIMARY: The main focus of current interaction\nSECONDARY: Supporting information for the primary task\nAMBIENT: Background context that persists but is not the focus"
+      },
+      "ConversationDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted",
+          "session_id"
+        ],
+        "title": "ConversationDeleteResponse",
+        "description": "Response for deleting a conversation."
+      },
+      "ConversationDetail": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "created_at",
+          "updated_at",
+          "message_count",
+          "messages"
+        ],
+        "title": "ConversationDetail",
+        "description": "Full conversation details including messages."
+      },
+      "ConversationListResponse": {
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            },
+            "type": "array",
+            "title": "Conversations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "conversations"
+        ],
+        "title": "ConversationListResponse",
+        "description": "Response for listing conversations."
+      },
+      "ConversationMessage": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ConversationMessage",
+        "description": "A single message within a conversation."
+      },
+      "ConversationSummary": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "created_at",
+          "updated_at",
+          "message_count"
+        ],
+        "title": "ConversationSummary",
+        "description": "Summary of a conversation session for listing."
+      },
+      "ConversationUpdateRequestBody": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "description": "Conversation display name (1-200 characters, no whitespace-only)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "ConversationUpdateRequestBody",
+        "description": "Request body for updating a conversation (currently only title)."
+      },
+      "ConversationUpdateResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "title",
+          "updated_at"
+        ],
+        "title": "ConversationUpdateResponse",
+        "description": "Response for updating a conversation."
+      },
+      "ConversationalContextSchema": {
+        "properties": {
+          "current_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Domain"
+          },
+          "active_subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Subject"
+          },
+          "ongoing_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ongoing Task"
+          },
+          "previous_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Domain"
+          },
+          "turn_count": {
+            "type": "integer",
+            "title": "Turn Count",
+            "default": 0
+          },
+          "last_user_request": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Request"
+          },
+          "contextual_transition": {
+            "$ref": "#/components/schemas/ContextTransition",
+            "default": "none"
+          }
+        },
+        "type": "object",
+        "title": "ConversationalContextSchema",
+        "description": "Wire-format conversational context."
+      },
+      "DependencyInfoSchema": {
+        "properties": {
+          "goal_id": {
+            "type": "string",
+            "title": "Goal Id"
+          },
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_synthesis": {
+            "type": "boolean",
+            "title": "Is Synthesis"
+          },
+          "contextual_role": {
+            "$ref": "#/components/schemas/ContextualRole",
+            "default": "primary"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "capability_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Category"
+          },
+          "capability_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Tags"
+          },
+          "dependency_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependency Domains"
+          }
+        },
+        "type": "object",
+        "required": [
+          "goal_id",
+          "capability_id",
+          "status",
+          "is_synthesis"
+        ],
+        "title": "DependencyInfoSchema",
+        "description": "Wire-format dependency info."
+      },
+      "DomainInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "focus": {
+            "$ref": "#/components/schemas/FocusArea"
+          },
+          "importance": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Importance"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "capability_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Ids"
+          },
+          "contextual_role": {
+            "$ref": "#/components/schemas/ContextualRole",
+            "default": "primary"
+          },
+          "relevance": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance",
+            "default": 1.0
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityInfoSchema"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/TopicInfoSchema"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FreshnessInfoSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "domain_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Category"
+          },
+          "primary_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Primary Entities"
+          },
+          "primary_topics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Primary Topics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "focus",
+          "importance",
+          "status",
+          "capability_ids"
+        ],
+        "title": "DomainInfoSchema",
+        "description": "Wire-format domain info."
+      },
+      "EntityInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "entity_type",
+          "domain",
+          "confidence"
+        ],
+        "title": "EntityInfoSchema",
+        "description": "Wire-format entity info."
+      },
+      "EntityType": {
+        "type": "string",
+        "enum": [
+          "location",
+          "currency",
+          "date_time",
+          "person",
+          "organization",
+          "event",
+          "topic",
+          "measurement",
+          "unknown"
+        ],
+        "title": "EntityType",
+        "description": "Type of entity extracted from context.\n\nRepresents structured entities known to PARIKA."
       },
       "ExpenseBody": {
         "properties": {
@@ -2300,6 +2847,70 @@
         "title": "ExpenseUpdateRequestBody",
         "description": "Every field is optional and, when *omitted* entirely, leaves that\nvalue unchanged - only fields the client actually sends are\napplied (see `handle_update_expense()`). `category`/`notes` may be\nexplicitly set to `null`/`\"\"` to clear them."
       },
+      "FocusArea": {
+        "type": "string",
+        "enum": [
+          "general",
+          "forecast",
+          "current_conditions",
+          "monthly_summary",
+          "playback",
+          "search_results",
+          "file_browser",
+          "code_editor",
+          "document_viewer",
+          "image_viewer",
+          "video_player",
+          "voice_input",
+          "settings",
+          "help",
+          "synthesis"
+        ],
+        "title": "FocusArea",
+        "description": "Semantic sub-context focus areas.\n\nExamples:\n- weather -> forecast, current_conditions\n- expense -> monthly_summary\n- media -> playback\n- chat -> general"
+      },
+      "FreshnessInfoSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "last_updated": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Updated"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "max_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Age Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "status"
+        ],
+        "title": "FreshnessInfoSchema",
+        "description": "Wire-format freshness info."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2669,6 +3280,34 @@
         },
         "type": "object",
         "title": "ReloadResponse"
+      },
+      "SemanticRelevanceSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Score"
+          },
+          "signals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Signals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "score"
+        ],
+        "title": "SemanticRelevanceSchema",
+        "description": "Wire-format semantic relevance."
       },
       "StatusCPUInfo": {
         "properties": {
@@ -3445,6 +4084,195 @@
         "title": "StatusTemperatureSensorInfo",
         "description": "A single reported non-GPU thermal sensor reading."
       },
+      "SurfaceItemSchema": {
+        "properties": {
+          "capability_id": {
+            "type": "string",
+            "title": "Capability Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/SurfaceTier"
+          },
+          "contextual_role": {
+            "$ref": "#/components/schemas/ContextualRole",
+            "default": "primary"
+          },
+          "relevance": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance",
+            "default": 1.0
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FreshnessInfoSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "capability_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Category"
+          },
+          "capability_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capability Tags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "capability_id",
+          "label",
+          "tier"
+        ],
+        "title": "SurfaceItemSchema",
+        "description": "Wire-format surface item."
+      },
+      "SurfaceTier": {
+        "type": "string",
+        "enum": [
+          "primary",
+          "secondary",
+          "ambient"
+        ],
+        "title": "SurfaceTier",
+        "description": "Semantic surface tiers.\n\nPrimary: Main capabilities/information for current context\nSecondary: Supporting capabilities/information\nAmbient: Background/system information"
+      },
+      "SynthesisInfoSchema": {
+        "properties": {
+          "goal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Id"
+          },
+          "capability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "completed_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Completed Dependencies"
+          },
+          "failed_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Dependencies"
+          },
+          "contextual_role": {
+            "$ref": "#/components/schemas/ContextualRole",
+            "default": "primary"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "dependency_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependency Domains"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "SynthesisInfoSchema",
+        "description": "Wire-format synthesis info."
+      },
       "ToolSummary": {
         "properties": {
           "id": {
@@ -3499,6 +4327,189 @@
         },
         "type": "object",
         "title": "ToolsListResponse"
+      },
+      "TopicInfoSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "relevance": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "domain",
+          "relevance",
+          "source"
+        ],
+        "title": "TopicInfoSchema",
+        "description": "Wire-format topic info."
+      },
+      "UIContextResponse": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "context": {
+            "type": "string",
+            "title": "Context"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "attention": {
+            "$ref": "#/components/schemas/AttentionLevel"
+          },
+          "urgency": {
+            "$ref": "#/components/schemas/UrgencyLevel"
+          },
+          "focus": {
+            "$ref": "#/components/schemas/FocusArea"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/SurfaceItemSchema"
+            },
+            "type": "array",
+            "title": "Surfaces"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "request_status": {
+            "$ref": "#/components/schemas/parika__core__ui_context__state__RequestStatus"
+          },
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/DomainInfoSchema"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "synthesis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SynthesisInfoSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyInfoSchema"
+            },
+            "type": "array",
+            "title": "Dependencies"
+          },
+          "user_intent": {
+            "$ref": "#/components/schemas/UserIntent",
+            "default": "unknown"
+          },
+          "conversational_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationalContextSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_relevance": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticRelevanceSchema"
+            },
+            "type": "array",
+            "title": "Semantic Relevance"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityInfoSchema"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/TopicInfoSchema"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "context_transition": {
+            "$ref": "#/components/schemas/ContextTransition",
+            "default": "none"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "context",
+          "confidence",
+          "source",
+          "attention",
+          "urgency",
+          "focus",
+          "surfaces",
+          "timestamp",
+          "request_status"
+        ],
+        "title": "UIContextResponse",
+        "description": "Wire-format UI context response."
+      },
+      "UrgencyLevel": {
+        "type": "string",
+        "enum": [
+          "normal",
+          "elevated",
+          "critical"
+        ],
+        "title": "UrgencyLevel",
+        "description": "Urgency level independent from context.\n\nConceptually: normal, elevated, critical"
+      },
+      "UserIntent": {
+        "type": "string",
+        "enum": [
+          "requesting_information",
+          "monitoring",
+          "executing_action",
+          "creating",
+          "researching",
+          "communicating",
+          "unknown"
+        ],
+        "title": "UserIntent",
+        "description": "High-level user intent derived from execution state.\n\nDerived deterministically from goal/capability patterns,\nNOT from LLM classification."
       },
       "ValidationError": {
         "properties": {
@@ -3933,43 +4944,12 @@
         ],
         "title": "VoiceTranscribeResponseBody"
       },
-      "WeatherLocation": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "latitude": {
-            "type": "number",
-            "format": "double",
-            "title": "Latitude"
-          },
-          "longitude": {
-            "type": "number",
-            "format": "double",
-            "title": "Longitude"
-          },
-          "timezone": {
-            "type": "string",
-            "title": "Timezone"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "latitude",
-          "longitude",
-          "timezone"
-        ],
-        "title": "WeatherLocation"
-      },
       "WeatherCurrent": {
         "properties": {
           "temperature_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -3980,8 +4960,7 @@
           "feels_like_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4040,8 +5019,7 @@
           "precipitation_mm": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4052,8 +5030,7 @@
           "rain_mm": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4064,8 +5041,7 @@
           "showers_mm": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4076,8 +5052,7 @@
           "snowfall_mm": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4088,8 +5063,7 @@
           "wind_speed_kmh": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4111,8 +5085,7 @@
           "wind_gusts_kmh": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4134,8 +5107,7 @@
           "pressure_hpa": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4146,8 +5118,7 @@
           "visibility_m": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4215,8 +5186,7 @@
           "temperature_max_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4227,8 +5197,7 @@
           "temperature_min_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4239,8 +5208,7 @@
           "feels_like_max_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4251,8 +5219,7 @@
           "feels_like_min_c": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4274,8 +5241,7 @@
           "precipitation_sum_mm": {
             "anyOf": [
               {
-                "type": "number",
-                "format": "double"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4311,6 +5277,34 @@
           "date"
         ],
         "title": "WeatherForecastDay"
+      },
+      "WeatherLocation": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "latitude",
+          "longitude",
+          "timezone"
+        ],
+        "title": "WeatherLocation"
       },
       "WeatherMetadata": {
         "properties": {
@@ -4374,1030 +5368,25 @@
         ],
         "title": "WeatherResponse"
       },
-      "WeatherErrorResponse": {
-        "properties": {
-          "error": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Error"
-          }
-        },
-        "type": "object",
-        "title": "WeatherErrorResponse"
-      },
-      "UIContextResponse": {
-        "properties": {
-          "version": {
-            "type": "integer",
-            "title": "Version"
-          },
-          "context": {
-            "type": "string",
-            "title": "Context"
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "title": "Confidence"
-          },
-          "source": {
-            "type": "string",
-            "enum": [
-              "capability",
-              "workflow",
-              "task",
-              "interaction",
-              "system",
-              "fallback"
-            ],
-            "title": "Source"
-          },
-          "attention": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "secondary",
-              "ambient"
-            ],
-            "title": "Attention"
-          },
-          "urgency": {
-            "type": "string",
-            "enum": [
-              "normal",
-              "elevated",
-              "critical"
-            ],
-            "title": "Urgency"
-          },
-          "focus": {
-            "type": "string",
-            "enum": [
-              "none",
-              "weather",
-              "expense",
-              "chat",
-              "voice",
-              "media",
-              "web_search",
-              "document",
-              "vision",
-              "coding",
-              "repository",
-              "system",
-              "unknown"
-            ],
-            "title": "Focus"
-          },
-          "surfaces": {
-            "items": {
-              "$ref": "#/components/schemas/SurfaceItemSchema"
-            },
-            "type": "array",
-            "title": "Surfaces"
-          },
-          "timestamp": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Timestamp"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metadata"
-          },
-          "request_status": {
-            "type": "string",
-            "enum": [
-              "idle",
-              "pending",
-              "running",
-              "completed",
-              "failed",
-              "partial_success"
-            ],
-            "title": "Request Status"
-          },
-          "domains": {
-            "items": {
-              "$ref": "#/components/schemas/DomainInfoSchema"
-            },
-            "type": "array",
-            "title": "Domains"
-          },
-          "synthesis": {
-            "$ref": "#/components/schemas/SynthesisInfoSchema"
-          },
-          "dependencies": {
-            "items": {
-              "$ref": "#/components/schemas/DependencyInfoSchema"
-            },
-            "type": "array",
-            "title": "Dependencies"
-          },
-          "user_intent": {
-            "type": "string",
-            "enum": [
-              "unknown",
-              "question",
-              "command",
-              "statement",
-              "greeting",
-              "clarification",
-              "confirmation",
-              "rejection",
-              "topic_shift"
-            ],
-            "title": "User Intent"
-          },
-          "conversational_context": {
-            "$ref": "#/components/schemas/ConversationalContextSchema"
-          },
-          "semantic_relevance": {
-            "items": {
-              "$ref": "#/components/schemas/SemanticRelevanceSchema"
-            },
-            "type": "array",
-            "title": "Semantic Relevance"
-          },
-          "entities": {
-            "items": {
-              "$ref": "#/components/schemas/EntityInfoSchema"
-            },
-            "type": "array",
-            "title": "Entities"
-          },
-          "topics": {
-            "items": {
-              "$ref": "#/components/schemas/TopicInfoSchema"
-            },
-            "type": "array",
-            "title": "Topics"
-          },
-          "context_transition": {
-            "type": "string",
-            "enum": [
-              "none",
-              "continue",
-              "shift",
-              "return",
-              "branch",
-              "merge"
-            ],
-            "title": "Context Transition"
-          }
-        },
-        "type": "object",
-        "required": [
-          "version",
-          "context",
-          "confidence",
-          "source",
-          "attention",
-          "urgency",
-          "focus",
-          "surfaces",
-          "timestamp",
-          "metadata",
-          "request_status",
-          "domains",
-          "dependencies",
-          "user_intent",
-          "semantic_relevance",
-          "entities",
-          "topics",
-          "context_transition"
+      "parika__core__brain__brain_response__RequestStatus": {
+        "type": "string",
+        "enum": [
+          "success",
+          "partial_success",
+          "failed"
         ],
-        "title": "UIContextResponse"
+        "title": "RequestStatus",
+        "description": "Overall status of a BrainRequest.\n\nSUCCESS: All required goals succeeded and the final response/synthesis succeeded.\nPARTIAL_SUCCESS: One or more non-blocking/independent goals failed, but useful \n    work completed and the final synthesis/final response succeeded.\nFAILED: Planning/execution failed such that no usable final response can be \n    produced, or the final synthesis itself failed."
       },
-      "FreshnessInfoSchema": {
-        "properties": {
-          "domain": {
-            "type": "string",
-            "title": "Domain"
-          },
-          "last_updated": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Updated"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "max_age_seconds": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Age Seconds"
-          }
-        },
-        "type": "object",
-        "required": [
-          "domain",
-          "status"
+      "parika__core__ui_context__state__RequestStatus": {
+        "type": "string",
+        "enum": [
+          "success",
+          "partial_success",
+          "failed"
         ],
-        "title": "FreshnessInfoSchema"
-      },
-      "EntityInfoSchema": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "entity_type": {
-            "type": "string",
-            "enum": [
-              "person",
-              "place",
-              "organization",
-              "event",
-              "concept",
-              "artifact",
-              "datetime",
-              "quantity",
-              "currency",
-              "url",
-              "email",
-              "phone",
-              "other"
-            ],
-            "title": "Entity Type"
-          },
-          "domain": {
-            "type": "string",
-            "title": "Domain"
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "title": "Confidence"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metadata"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "entity_type",
-          "domain",
-          "confidence"
-        ],
-        "title": "EntityInfoSchema"
-      },
-      "TopicInfoSchema": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "domain": {
-            "type": "string",
-            "title": "Domain"
-          },
-          "relevance": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "title": "Relevance"
-          },
-          "source": {
-            "type": "string",
-            "title": "Source"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "domain",
-          "relevance",
-          "source"
-        ],
-        "title": "TopicInfoSchema"
-      },
-      "ConversationalContextSchema": {
-        "properties": {
-          "current_domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Domain"
-          },
-          "active_subject": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Active Subject"
-          },
-          "ongoing_task": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ongoing Task"
-          },
-          "previous_domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Previous Domain"
-          },
-          "turn_count": {
-            "type": "integer",
-            "default": 0,
-            "title": "Turn Count"
-          },
-          "last_user_request": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last User Request"
-          },
-          "contextual_transition": {
-            "type": "string",
-            "enum": [
-              "none",
-              "continue",
-              "shift",
-              "return",
-              "branch",
-              "merge"
-            ],
-            "default": "none",
-            "title": "Contextual Transition"
-          }
-        },
-        "type": "object",
-        "title": "ConversationalContextSchema"
-      },
-      "SemanticRelevanceSchema": {
-        "properties": {
-          "domain": {
-            "type": "string",
-            "title": "Domain"
-          },
-          "score": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "title": "Score"
-          },
-          "signals": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Signals"
-          }
-        },
-        "type": "object",
-        "required": [
-          "domain",
-          "score"
-        ],
-        "title": "SemanticRelevanceSchema"
-      },
-      "SurfaceItemSchema": {
-        "properties": {
-          "capability_id": {
-            "type": "string",
-            "title": "Capability Id"
-          },
-          "label": {
-            "type": "string",
-            "title": "Label"
-          },
-          "tier": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "secondary",
-              "ambient"
-            ],
-            "title": "Tier"
-          },
-          "contextual_role": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "supporting",
-              "ambient",
-              "fallback"
-            ],
-            "default": "primary",
-            "title": "Contextual Role"
-          },
-          "relevance": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 1,
-            "title": "Relevance"
-          },
-          "freshness": {
-            "$ref": "#/components/schemas/FreshnessInfoSchema"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metadata"
-          },
-          "domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain"
-          },
-          "semantic_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Semantic Type"
-          },
-          "capability_category": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Category"
-          },
-          "capability_tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Capability Tags"
-          }
-        },
-        "type": "object",
-        "required": [
-          "capability_id",
-          "label",
-          "tier"
-        ],
-        "title": "SurfaceItemSchema"
-      },
-      "DomainInfoSchema": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "focus": {
-            "type": "string",
-            "enum": [
-              "none",
-              "weather",
-              "expense",
-              "chat",
-              "voice",
-              "media",
-              "web_search",
-              "document",
-              "vision",
-              "coding",
-              "repository",
-              "system",
-              "unknown"
-            ],
-            "title": "Focus"
-          },
-          "importance": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "title": "Importance"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "capability_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Capability Ids"
-          },
-          "contextual_role": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "supporting",
-              "ambient",
-              "fallback"
-            ],
-            "default": "primary",
-            "title": "Contextual Role"
-          },
-          "relevance": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 1,
-            "title": "Relevance"
-          },
-          "entities": {
-            "items": {
-              "$ref": "#/components/schemas/EntityInfoSchema"
-            },
-            "type": "array",
-            "title": "Entities"
-          },
-          "topics": {
-            "items": {
-              "$ref": "#/components/schemas/TopicInfoSchema"
-            },
-            "type": "array",
-            "title": "Topics"
-          },
-          "freshness": {
-            "$ref": "#/components/schemas/FreshnessInfoSchema"
-          },
-          "domain_category": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain Category"
-          },
-          "primary_entities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Primary Entities"
-          },
-          "primary_topics": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Primary Topics"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "focus",
-          "importance",
-          "status",
-          "capability_ids"
-        ],
-        "title": "DomainInfoSchema"
-      },
-      "SynthesisInfoSchema": {
-        "properties": {
-          "goal_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Goal Id"
-          },
-          "capability_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Id"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "depends_on": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Depends On"
-          },
-          "completed_dependencies": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Completed Dependencies"
-          },
-          "failed_dependencies": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Failed Dependencies"
-          },
-          "contextual_role": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "supporting",
-              "ambient",
-              "fallback"
-            ],
-            "default": "primary",
-            "title": "Contextual Role"
-          },
-          "domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain"
-          },
-          "semantic_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Semantic Type"
-          },
-          "dependency_domains": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Dependency Domains"
-          }
-        },
-        "type": "object",
-        "title": "SynthesisInfoSchema"
-      },
-      "DependencyInfoSchema": {
-        "properties": {
-          "goal_id": {
-            "type": "string",
-            "title": "Goal Id"
-          },
-          "capability_id": {
-            "type": "string",
-            "title": "Capability Id"
-          },
-          "depends_on": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Depends On"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "is_synthesis": {
-            "type": "boolean",
-            "title": "Is Synthesis"
-          },
-          "contextual_role": {
-            "type": "string",
-            "enum": [
-              "primary",
-              "supporting",
-              "ambient",
-              "fallback"
-            ],
-            "default": "primary",
-            "title": "Contextual Role"
-          },
-          "domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain"
-          },
-          "semantic_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Semantic Type"
-          },
-          "capability_category": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Category"
-          },
-          "capability_tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Capability Tags"
-          },
-          "dependency_domains": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Dependency Domains"
-          }
-        },
-        "type": "object",
-        "required": [
-          "goal_id",
-          "capability_id",
-          "depends_on",
-          "status",
-          "is_synthesis"
-        ],
-        "title": "DependencyInfoSchema"
-      },
-      "ConversationSummary": {
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "title": "Session Id"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Summary"
-          },
-          "workspace_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Workspace Path"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updated At"
-          },
-          "message_count": {
-            "type": "integer",
-            "title": "Message Count"
-          }
-        },
-        "type": "object",
-        "required": [
-          "session_id",
-          "created_at",
-          "updated_at",
-          "message_count"
-        ],
-        "title": "ConversationSummary"
-      },
-      "ConversationMessage": {
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "title": "Session Id"
-          },
-          "role": {
-            "type": "string",
-            "title": "Role"
-          },
-          "content": {
-            "type": "string",
-            "title": "Content"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          },
-          "token_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Token Count"
-          }
-        },
-        "type": "object",
-        "required": [
-          "session_id",
-          "role",
-          "content",
-          "created_at"
-        ],
-        "title": "ConversationMessage"
-      },
-      "ConversationDetail": {
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "title": "Session Id"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Summary"
-          },
-          "workspace_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Workspace Path"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updated At"
-          },
-          "message_count": {
-            "type": "integer",
-            "title": "Message Count"
-          },
-          "messages": {
-            "items": {
-              "$ref": "#/components/schemas/ConversationMessage"
-            },
-            "type": "array",
-            "title": "Messages"
-          }
-        },
-        "type": "object",
-        "required": [
-          "session_id",
-          "created_at",
-          "updated_at",
-          "message_count",
-          "messages"
-        ],
-        "title": "ConversationDetail"
-      },
-      "ConversationListResponse": {
-        "properties": {
-          "conversations": {
-            "items": {
-              "$ref": "#/components/schemas/ConversationSummary"
-            },
-            "type": "array",
-            "title": "Conversations"
-          }
-        },
-        "type": "object",
-        "title": "ConversationListResponse"
-      },
-      "ConversationDeleteResponse": {
-        "properties": {
-          "deleted": {
-            "type": "boolean",
-            "title": "Deleted"
-          },
-          "session_id": {
-            "type": "string",
-            "title": "Session Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "deleted",
-          "session_id"
-        ],
-        "title": "ConversationDeleteResponse"
+        "title": "RequestStatus",
+        "description": "Overall request-level status.\n\nMirrors BrainResponse.RequestStatus for semantic consistency."
       }
     }
   }
