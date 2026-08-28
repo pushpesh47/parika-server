@@ -65,6 +65,19 @@ class RequestStatus(StrEnum):
     FAILED = "failed"
 
 
+class RequestLifecycle(StrEnum):
+    """
+    Request lifecycle state.
+    
+    Represents the execution phase of a Brain request, independent
+    from the final request outcome (RequestStatus).
+    """
+    
+    IDLE = "idle"
+    ACTIVE = "active"
+    SETTLED = "settled"
+
+
 class FocusArea(StrEnum):
     """
     Semantic sub-context focus areas.
@@ -747,6 +760,9 @@ class UIContextState:
     request_status: RequestStatus = RequestStatus.FAILED
     """Overall request-level status"""
     
+    lifecycle: RequestLifecycle = RequestLifecycle.IDLE
+    """Request lifecycle state (idle/active/settled)"""
+    
     domains: tuple[DomainInfo, ...] = field(default_factory=tuple)
     """Multiple active semantic domains with importance"""
     
@@ -818,6 +834,9 @@ class UIContextState:
         
         if type(self.request_status) is not RequestStatus:
             raise TypeError("request_status must be a RequestStatus")
+        
+        if type(self.lifecycle) is not RequestLifecycle:
+            raise TypeError("lifecycle must be a RequestLifecycle")
         
         if type(self.domains) is not tuple:
             raise TypeError("domains must be a tuple")

@@ -16,6 +16,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from parika.core.ui_context.state import (
     UIContextState,
     RequestStatus,
+    RequestLifecycle,
     DomainInfo,
     SynthesisInfo,
     DependencyInfo,
@@ -83,6 +84,7 @@ def _serialize_state(state: UIContextState) -> dict[str, Any]:
         "timestamp": state.timestamp.isoformat(),
         "metadata": dict(state.metadata),
         "request_status": state.request_status.value,
+        "lifecycle": state.lifecycle.value,
         "domains": [
             {
                 "name": domain.name,

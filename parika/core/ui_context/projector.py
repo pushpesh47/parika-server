@@ -35,6 +35,7 @@ from .state import (
     EntityType,
     FocusArea,
     FreshnessInfo,
+    RequestLifecycle,
     RequestStatus,
     SemanticRelevance,
     SurfaceItem,
@@ -210,6 +211,7 @@ class UIContextProjector:
         self._brain_request_id: str | None = None
         self._brain_goals: dict[str, dict[str, Any]] = {}  # goal_id -> goal info
         self._brain_synthesis_goal_id: str | None = None
+        self._current_lifecycle: RequestLifecycle = RequestLifecycle.IDLE
         
         # Last active task metadata (for request status after completion)
         self._last_active_task_metadata: MappingProxyType[str, Any] | None = None
@@ -308,9 +310,14 @@ class UIContextProjector:
                 self._brain_request_id = metadata.get('request_id')
                 self._brain_goals = {}
                 self._brain_synthesis_goal_id = None
+                # Transition to ACTIVE lifecycle
+                if self._current_lifecycle != RequestLifecycle.ACTIVE:
+                    self._current_lifecycle = RequestLifecycle.ACTIVE
             elif stage and stage.value == 'completed':
                 self._brain_execution_active = False
                 self._brain_execution_succeeded = metadata.get('succeeded', False)
+                # Transition to SETTLED lifecycle
+                self._current_lifecycle = RequestLifecycle.SETTLED
                 # Use real BrainResponse for accurate state
                 if self._brain is not None:
                     brain_response = self._brain.last_response
@@ -321,6 +328,8 @@ class UIContextProjector:
             elif stage and stage.value == 'failed':
                 self._brain_execution_active = False
                 self._brain_execution_succeeded = False
+                # Transition to SETTLED lifecycle
+                self._current_lifecycle = RequestLifecycle.SETTLED
         elif source_id == 'brain.planning' and stage and stage.value == 'completed':
             # Planning completed - we could extract goal info from metadata if available
             pass
@@ -391,6 +400,7 @@ class UIContextProjector:
                 timestamp=new_state.timestamp,
                 metadata=new_state.metadata,
                 request_status=new_state.request_status,
+                lifecycle=new_state.lifecycle,
                 domains=new_state.domains,
                 synthesis=new_state.synthesis,
                 dependencies=new_state.dependencies,
@@ -420,6 +430,7 @@ class UIContextProjector:
             old_state.focus == new_state.focus and
             self._surfaces_equal(old_state.surfaces, new_state.surfaces) and
             old_state.request_status == new_state.request_status and
+            old_state.lifecycle == new_state.lifecycle and
             self._domains_equal(old_state.domains, new_state.domains) and
             self._synthesis_equal(old_state.synthesis, new_state.synthesis) and
             self._dependencies_equal(old_state.dependencies, new_state.dependencies)
@@ -491,6 +502,8 @@ class UIContextProjector:
             fields.add("metadata")
         if old.request_status != new.request_status:
             fields.add("request_status")
+        if old.lifecycle != new.lifecycle:
+            fields.add("lifecycle")
         if not self._domains_equal(old.domains, new.domains):
             fields.add("domains")
         if not self._synthesis_equal(old.synthesis, new.synthesis):
@@ -809,6 +822,10 @@ class UIContextProjector:
         conversational_context = self._compute_conversational_context(candidate, self._current_state)
         context_transition = conversational_context.contextual_transition
         
+        # Use current lifecycle tracking state, not hardcoded IDLE
+        # This preserves ACTIVE/SETTLED state when no higher-priority context source exists
+        current_lifecycle = self._current_lifecycle
+        
         return UIContextState(
             version=self._version + 1,
             context="system",
@@ -821,6 +838,7 @@ class UIContextProjector:
             timestamp=datetime.now(UTC),
             metadata=MappingProxyType({}),
             request_status=RequestStatus.FAILED,
+            lifecycle=current_lifecycle,
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
@@ -982,6 +1000,7 @@ class UIContextProjector:
             timestamp=datetime.now(UTC),
             metadata=metadata,
             request_status=request_status,
+            lifecycle=RequestLifecycle.SETTLED,
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
@@ -1297,6 +1316,7 @@ class UIContextProjector:
             timestamp=datetime.now(UTC),
             metadata=metadata,
             request_status=request_status,
+            lifecycle=self._current_lifecycle,
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,
@@ -1376,6 +1396,7 @@ class UIContextProjector:
             timestamp=datetime.now(UTC),
             metadata=candidate.metadata,
             request_status=request_status,
+            lifecycle=self._current_lifecycle,
             domains=domains,
             synthesis=synthesis,
             dependencies=dependencies,

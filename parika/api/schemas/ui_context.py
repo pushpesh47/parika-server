@@ -23,6 +23,7 @@ from parika.core.ui_context.state import (
     EntityType,
     FocusArea,
     FreshnessInfo,
+    RequestLifecycle,
     RequestStatus,
     SemanticRelevance,
     SurfaceItem,
@@ -171,6 +172,7 @@ class UIContextResponse(ApiModel):
     timestamp: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
     request_status: RequestStatus
+    lifecycle: RequestLifecycle
     domains: list[DomainInfoSchema] = Field(default_factory=list)
     synthesis: SynthesisInfoSchema | None = None
     dependencies: list[DependencyInfoSchema] = Field(default_factory=list)
@@ -218,6 +220,7 @@ class UIContextResponse(ApiModel):
             timestamp=state.timestamp,
             metadata=dict(state.metadata),
             request_status=state.request_status,
+            lifecycle=state.lifecycle,
             domains=[
                 DomainInfoSchema(
                     name=domain.name,
