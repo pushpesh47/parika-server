@@ -22,6 +22,7 @@ from .model_capability import ModelCapability
 from .model_execution_feature import ModelExecutionFeature
 from .model_limits import ModelLimits
 from .model_resource_requirements import ModelResourceRequirements
+from .provider_context import ProviderContextCapability
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,12 @@ class ProviderModel:
         metadata:
             Optional provider-specific metadata that does not belong to
             the normalized ProviderModel contract.
+
+        context_capability:
+            Optional provider-specific conversation context reuse
+            capability. None means the provider doesn't support
+            context/prefix caching (falls back to normal full-context
+            requests).
     """
 
     id: str
@@ -108,6 +115,8 @@ class ProviderModel:
     metadata: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({})
     )
+
+    context_capability: ProviderContextCapability | None = None
 
     def __post_init__(self) -> None:
         """

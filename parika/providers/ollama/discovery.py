@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from parika.core.provider_manager.provider_model import ProviderModel
+from parika.core.provider_manager.provider_context import OllamaContextCapability
 
 from parika.core.provider_manager.model_capability import ModelCapability
 from parika.core.semantics import resolve_specializations
@@ -135,6 +136,7 @@ def build_provider_model(
         specializations=specializations,
         supported_modalities=modalities_from_show(show_payload),
         metadata=metadata,
+        context_capability=OllamaContextCapability(),
     )
 
 

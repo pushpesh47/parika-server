@@ -46,6 +46,7 @@ from .chat_capability import (
     decompose_and_build_goals,
     discover_tool_specs,
 )
+from .conversation_state import ConversationState, ConversationStateManager, build_static_prefix
 from .history import HistoryEntry, HistoryRole
 from .runtime import ParikaRuntime
 from .postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
@@ -262,10 +263,10 @@ class InterfaceSession:
     """
     A single interactive session against a `ParikaRuntime`.
 
-    Maintains rolling chat history (as provider-independent
-    `ChatMessage` instances, fed back to the model on every turn for
-    conversational continuity) and a separate, display-oriented
-    `HistoryEntry` log used by slash commands such as `/history`.
+    Maintains conversation state via explicit `ConversationState`
+    (which separates static prefix from dynamic history) and a
+    separate, display-oriented `HistoryEntry` log used by slash
+    commands such as `/history`.
     """
 
     def __init__(
@@ -310,28 +311,22 @@ class InterfaceSession:
         """
 
         self._runtime = runtime
-        self.id = session_id or uuid4().hex
-        self.started_at = datetime.now(UTC)
-
-        self._messages: list[ChatMessage] = []
-
+        self._state_manager = ConversationStateManager(session_store)
+        
         resolved_system_prompt = (
             build_assistant_system_prompt(runtime.configuration)
             if isinstance(system_prompt, _SystemPromptNotProvided)
             else system_prompt
         )
 
-        if resolved_system_prompt:
-            self._messages.append(
-                ChatMessage(role="system", content=resolved_system_prompt)
-            )
-
+        self._conversation_state = self._state_manager.create_initial_state(
+            runtime,
+            session_id=session_id,
+            system_prompt=None if isinstance(system_prompt, _SystemPromptNotProvided) else system_prompt,
+        )
+        
         self._history: list[HistoryEntry] = []
-        self._session_store = session_store
         self._last_turn_diagnostics: LastTurnDiagnostics | None = None
-
-        if self._session_store is not None:
-            self._session_store.ensure_session(self.id)
 
     @property
     def runtime(self) -> ParikaRuntime:
@@ -342,13 +337,23 @@ class InterfaceSession:
         return self._runtime
 
     @property
+    def id(self) -> str:
+        """Conversation identifier."""
+        return self._conversation_state.id
+
+    @property
+    def started_at(self) -> datetime:
+        """Conversation start timestamp."""
+        return self._conversation_state.started_at
+
+    @property
     def session_store(self) -> PostgreSQLSessionStore | None:
         """
         The PostgreSQLSessionStore this session persists through, or None
         if this session is purely in-memory (the default).
         """
 
-        return self._session_store
+        return self._state_manager._session_store
 
     @property
     def last_turn_diagnostics(self) -> LastTurnDiagnostics | None:
@@ -386,9 +391,7 @@ class InterfaceSession:
         the model's behavior remains consistent after clearing.
         """
 
-        self._messages = [
-            message for message in self._messages if message.role == "system"
-        ]
+        self._conversation_state = self._conversation_state.clear_history()
         self._history.clear()
 
     def submit_text(
@@ -417,11 +420,13 @@ class InterfaceSession:
             The outcome of this turn.
         """
 
+        user_message = ChatMessage(role="user", content=text)
+        
         self._history.append(HistoryEntry(role=HistoryRole.USER, text=text))
-        self._messages.append(ChatMessage(role="user", content=text))
+        self._conversation_state = self._conversation_state.append_user_message(user_message)
 
-        if self._session_store is not None:
-            self._session_store.append_message(self.id, role="user", content=text)
+        if self._state_manager._session_store is not None:
+            self._state_manager._session_store.append_message(self.id, role="user", content=text)
 
         # Execution progress diagnostics (Phase 3.5b): temporarily
         # subscribe to the generic progress.* channels for the
@@ -486,7 +491,7 @@ class InterfaceSession:
             self._runtime,
             text=text,
             session_id=self.id,
-            conversation_message_count=len(self._messages),
+            conversation_message_count=len(self._conversation_state.full_history),
         )
 
         session_token_budget = load_context_engine_config(
@@ -498,7 +503,7 @@ class InterfaceSession:
 
         session_messages = assemble_session_retrieval_messages(
             text=text,
-            session_store=self._session_store,
+            session_store=self._state_manager._session_store,
             current_session_id=self.id,
             token_budget=max(0, session_token_budget - already_used_tokens),
         )
@@ -507,7 +512,7 @@ class InterfaceSession:
 
         # For chat.respond goals, inject context into their inputs
         effective_messages = assemble_conversation_messages(
-            tuple(self._messages), injected_messages
+            self._conversation_state.full_history, injected_messages
         )
 
         # Build tools for the routing model (chat.respond) if needed
@@ -554,12 +559,13 @@ class InterfaceSession:
             context_bundle=context_bundle,
             advertised_tools=tools,
             brain_response=brain_response,
-            conversation_tokens=_estimate_conversation_tokens(self._messages),
+            conversation_tokens=_estimate_conversation_tokens(self._conversation_state.full_history),
             progress_trail=tuple(progress_trail),
         )
 
         if result.succeeded and result.chat_response is not None:
-            self._messages.append(result.chat_response.message)
+            assistant_message = result.chat_response.message
+            self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
             self._history.append(
                 HistoryEntry(
                     role=HistoryRole.ASSISTANT,
@@ -567,8 +573,8 @@ class InterfaceSession:
                 )
             )
 
-            if self._session_store is not None:
-                self._session_store.append_message(
+            if self._state_manager._session_store is not None:
+                self._state_manager._session_store.append_message(
                     self.id, role="assistant", content=result.chat_response.message.content
                 )
         else:
@@ -578,8 +584,8 @@ class InterfaceSession:
                 HistoryEntry(role=HistoryRole.ERROR, text=error_text)
             )
 
-            if self._session_store is not None:
-                self._session_store.append_message(self.id, role="error", content=error_text)
+            if self._state_manager._session_store is not None:
+                self._state_manager._session_store.append_message(self.id, role="error", content=error_text)
 
         return result
 
@@ -614,10 +620,10 @@ class InterfaceSession:
         duplicate-detection entirely (a plain `register()` call).
         """
 
-        if self._session_store is None:
+        if self._state_manager._session_store is None:
             return
 
-        existing = self._session_store.get_session(self.id)
+        existing = self._state_manager._session_store.get_session(self.id)
 
         if existing is not None and existing.title is None:
             first_user_entry = next(
@@ -626,7 +632,7 @@ class InterfaceSession:
 
             if first_user_entry is not None:
                 title = first_user_entry.text.strip().splitlines()[0][:80]
-                self._session_store.set_title(self.id, title)
+                self._state_manager._session_store.set_title(self.id, title)
 
     @classmethod
     def load(
@@ -649,18 +655,11 @@ class InterfaceSession:
 
         session = cls(runtime, session_id=session_id, session_store=session_store)
 
-        for message in session_store.get_messages(session_id):
-            if message.role == "system":
-                continue
-
-            session._history.append(
-                HistoryEntry(role=HistoryRole(message.role), text=message.content)
-            )
-
-            if message.role in ("user", "assistant"):
-                session._messages.append(
-                    ChatMessage(role=message.role, content=message.content)
-                )
+        # Replace the conversation state with loaded one
+        loaded_state = session._state_manager.load_state(
+            session_id, runtime, system_prompt=None, agent_context_id=None
+        )
+        session._conversation_state = loaded_state
 
         return session
 
