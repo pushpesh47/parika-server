@@ -4,6 +4,7 @@ Unit tests for deterministic date resolution
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from datetime import date
 

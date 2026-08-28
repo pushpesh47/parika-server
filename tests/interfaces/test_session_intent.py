@@ -6,6 +6,7 @@ distinct from both the current conversation and permanent memory
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from parika.interfaces.session_intent import (
     extract_session_search_topic,

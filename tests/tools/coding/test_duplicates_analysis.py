@@ -3,6 +3,7 @@ Unit tests for the token-shingling duplicate detector.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from parika.tools.coding.analysis.duplicates import (
     find_duplicate_groups,

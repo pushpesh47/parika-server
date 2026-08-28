@@ -54,7 +54,7 @@ from parika.modules.web_search.manifest import (
     WEB_SEARCH_MODULE_ID,
     create_web_search_module,
 )
-from parika.providers.ollama.driver import OllamaProviderDriver
+from parika.providers.ollama.driver import OllamaProviderDriver, DEFAULT_BASE_URL
 from parika.providers.ollama.manifest import (
     OLLAMA_PROVIDER_ID,
     create_ollama_provider,
@@ -234,7 +234,7 @@ class Pipeline:
         self.ollama_driver = OllamaProviderDriver(
             transport=ollama_transport,
             logger=logger,
-            base_url="http://localhost:11434",
+            base_url=DEFAULT_BASE_URL,
         )
         self.ollama_driver.bind_brain(self.brain)
 

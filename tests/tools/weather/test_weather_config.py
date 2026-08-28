@@ -3,6 +3,7 @@ Unit tests for `parika.tools.weather.config`.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from parika.core.configuration.configuration import Configuration
 from parika.tools.weather.config import load_weather_config

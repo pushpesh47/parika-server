@@ -4,6 +4,7 @@ degradation when the optional dependency group is not installed.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from pathlib import Path
 

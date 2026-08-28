@@ -73,7 +73,7 @@ from parika.core.tool_manager.request import ToolRequest
 from parika.core.tool_manager.response import ToolResponse
 from parika.core.tool_manager.tool import Tool
 from parika.core.tool_manager.tool_manager import ToolManager
-from parika.providers.ollama.driver import OllamaProviderDriver
+from parika.providers.ollama.driver import OllamaProviderDriver, DEFAULT_BASE_URL
 from parika.providers.ollama.manifest import create_ollama_provider
 from parika.providers.ollama.messages import OllamaMessage, OllamaToolSpec
 from parika.providers.ollama.requests import OllamaChatRequest
@@ -235,7 +235,7 @@ class _Pipeline:
         self.ollama_driver = OllamaProviderDriver(
             transport=ollama_transport,
             logger=logger,
-            base_url="http://localhost:11434",
+            base_url=DEFAULT_BASE_URL,
         )
         self.ollama_driver.bind_brain(self.brain)
 

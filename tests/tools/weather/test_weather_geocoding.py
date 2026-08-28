@@ -3,6 +3,7 @@ Unit tests for `parika.tools.weather.geocoding`.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 import json
 from urllib.parse import parse_qs, urlparse

@@ -1490,28 +1490,154 @@
       ]
     }
   },
-  "/api/v1/ws/media/{client_id}": {
-    "websocket": {
-      "tags": [
-        "media"
-      ],
-      "summary": "Media WebSocket",
-      "description": "WebSocket endpoint for bidirectional media control.\n\nProtocol:\n\nServer -> Client (commands):\n    {\"type\": \"media.play\", \"payload\": {\"source\": {...}}}\n    {\"type\": \"media.pause\"} / \"media.resume\" / \"media.stop\" /\n    \"media.skip\" / \"media.previous\" / \"media.mute\" /\n    \"media.unmute\" / \"media.show\" / \"media.hide\"\n    {\"type\": \"media.seek\", \"payload\": {\"position_seconds\": ...}}\n    {\"type\": \"media.set_volume\", \"payload\": {\"volume_percent\": ...}}\n\nClient -> Server (events):\n    {\"type\": \"media.ready\"}\n    {\"type\": \"media.state_changed\", \"payload\": {\"state\": {...}}}\n    {\"type\": \"media.position_changed\", \"payload\": {\"position\": ...}}\n    {\"type\": \"media.play_started\" | \"media.play_paused\" |\n      \"media.play_stopped\" | \"media.play_ended\" | \"media.buffering\"}\n    {\"type\": \"media.error\", \"payload\": {\"message\": \"...\"}}\n    {\"type\": \"media.source_changed\", \"payload\": {\"source\": {...}}}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
-      "operationId": "websocket_media_api_v1_ws_media_client_id_websocket",
-      "parameters": [
-        {
-          "name": "client_id",
-          "in": "path",
-          "required": true,
-          "schema": {
-            "type": "string",
-            "title": "Client Id"
+"/api/v1/ws/media/{client_id}": {
+      "websocket": {
+        "tags": [
+          "media"
+        ],
+        "summary": "Media WebSocket",
+        "description": "WebSocket endpoint for bidirectional media control.\n\nProtocol:\n\nServer -> Client (commands):\n    {\"type\": \"media.play\", \"payload\": {\"source\": {...}}}\n    {\"type\": \"media.pause\"} / \"media.resume\" / \"media.stop\" /\n    \"media.skip\" / \"media.previous\" / \"media.mute\" /\n    \"media.unmute\" / \"media.show\" / \"media.hide\"\n    {\"type\": \"media.seek\", \"payload\": {\"position_seconds\": ...}}\n    {\"type\": \"media.set_volume\", \"payload\": {\"volume_percent\": ...}}\n\nClient -> Server (events):\n    {\"type\": \"media.ready\"}\n    {\"type\": \"media.state_changed\", \"payload\": {\"state\": {...}}}\n    {\"type\": \"media.position_changed\", \"payload\": {\"position\": ...}}\n    {\"type\": \"media.play_started\" | \"media.play_paused\" |\n      \"media.play_stopped\" | \"media.play_ended\" | \"media.buffering\"}\n    {\"type\": \"media.error\", \"payload\": {\"message\": \"...\"}}\n    {\"type\": \"media.source_changed\", \"payload\": {\"source\": {...}}}\n\nAuthentication:\n    Bearer token, X-API-Key, or query param token.",
+        "operationId": "websocket_media_api_v1_ws_media_client_id_websocket",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Client Id"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "List Conversations",
+        "description": "List all stored conversation sessions.\n\nReturns a list of conversation summaries ordered by most recently updated first.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
+        "operationId": "list_conversations_api_v1_conversations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
-      ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Get Conversation",
+        "description": "Get a specific conversation session by ID, including all its messages.\n\nReturns the full conversation details with all messages in chronological order.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    404: Conversation not found\n    500: Session store unavailable",
+        "operationId": "get_conversation_api_v1_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Delete Conversation",
+        "description": "Delete a specific conversation session by ID.\n\nPermanently removes the session and all its messages from storage.\nThe deleted conversation will no longer appear in subsequent listing requests.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    500: Session store unavailable",
+        "operationId": "delete_conversation_api_v1_conversations__conversation_id__delete",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDeleteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
-  }
-},
+  },
   "components": {
     "schemas": {
       "CapabilitiesListResponse": {
@@ -5067,6 +5193,211 @@
           "is_synthesis"
         ],
         "title": "DependencyInfoSchema"
+      },
+      "ConversationSummary": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "created_at",
+          "updated_at",
+          "message_count"
+        ],
+        "title": "ConversationSummary"
+      },
+      "ConversationMessage": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ConversationMessage"
+      },
+      "ConversationDetail": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "created_at",
+          "updated_at",
+          "message_count",
+          "messages"
+        ],
+        "title": "ConversationDetail"
+      },
+      "ConversationListResponse": {
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            },
+            "type": "array",
+            "title": "Conversations"
+          }
+        },
+        "type": "object",
+        "title": "ConversationListResponse"
+      },
+      "ConversationDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted",
+          "session_id"
+        ],
+        "title": "ConversationDeleteResponse"
       }
     }
   }

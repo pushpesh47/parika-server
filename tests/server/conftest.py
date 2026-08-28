@@ -7,13 +7,31 @@ pytest fixtures do not cross sibling `conftest.py` boundaries.
 
 from __future__ import annotations
 
+import os
 import pytest
 
 from parika.interfaces.runtime import ParikaRuntime, build_default_runtime
 from parika.core.database.config import DatabaseConfig
 
 
-# Session-scoped autouse fixture to disable PostgreSQL for all tests
+def _build_test_db_config() -> DatabaseConfig:
+    """Build test database configuration from environment variables."""
+    return DatabaseConfig(
+        enabled=False,
+        host=os.environ.get("PARIKA_TEST_DATABASE__HOST", "127.0.0.1"),
+        port=int(os.environ.get("PARIKA_TEST_DATABASE__PORT", "5432")),
+        database=os.environ.get("PARIKA_TEST_DATABASE__NAME", "parika_test"),
+        username=os.environ.get("PARIKA_TEST_DATABASE__USERNAME", ""),
+        password=os.environ.get("PARIKA_TEST_DATABASE__PASSWORD", ""),
+        pool_min_size=2,
+        pool_max_size=10,
+        connect_timeout=10.0,
+        statement_timeout=0.0,
+        application_name="parika_test",
+    )
+
+
+# Session-scoped autouse fixture to disable PostgreSQL for tests
 # This must be applied before any module imports that use load_database_config
 @pytest.fixture(scope="session", autouse=True)
 def _disable_postgresql_for_tests():
@@ -22,20 +40,7 @@ def _disable_postgresql_for_tests():
     original_load = db_config_module.load_database_config
     
     def patched_load(configuration):
-        cfg = original_load(configuration)
-        return DatabaseConfig(
-            enabled=False,
-            host=cfg.host,
-            port=cfg.port,
-            database=cfg.database,
-            username=cfg.username,
-            password=cfg.password,
-            pool_min_size=cfg.pool_min_size,
-            pool_max_size=cfg.pool_max_size,
-            connect_timeout=cfg.connect_timeout,
-            statement_timeout=cfg.statement_timeout,
-            application_name=cfg.application_name,
-        )
+        return _build_test_db_config()
     
     db_config_module.load_database_config = patched_load
     yield

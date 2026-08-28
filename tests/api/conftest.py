@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,51 +44,31 @@ from parika.core.capability_registry.capability_registry import CapabilityRegist
 from parika.core.tool_manager.tool_manager import ToolManager
 from parika.core.logger.logger import Logger
 from parika.core.database.pool import PoolManager
-import parika.core.database.config as db_config_module
+from parika.core.database.config import DatabaseConfig
 
 
-# Test database configuration - uses a test database
-TEST_DATABASE_CONFIG = {
-    "enabled": True,
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "parika_test",
-    "username": "postgres",
-    "password": "dba",
-    "pool_min_size": 1,
-    "pool_max_size": 10,
-    "connect_timeout": 10.0,
-    "statement_timeout": 0.0,
-    "application_name": "parika_test",
-    "sslmode": "disable",
-}
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _setup_test_database():
-    """Set up test database configuration for all tests."""
-    # Store original load_database_config
-    import parika.core.database.config as db_config_module
-    original_load = db_config_module.load_database_config
-    
-    from parika.core.database.config import DatabaseConfig
-    
-    def patched_load(configuration):
-        return DatabaseConfig(**TEST_DATABASE_CONFIG)
-    
-    db_config_module.load_database_config = patched_load
-    yield
-    # Restore original function after all tests
-    db_config_module.load_database_config = original_load
+def _build_test_db_config() -> DatabaseConfig:
+    """Build test database configuration from environment variables."""
+    return DatabaseConfig(
+        enabled=True,
+        host=os.environ.get("PARIKA_TEST_DATABASE__HOST", "127.0.0.1"),
+        port=int(os.environ.get("PARIKA_TEST_DATABASE__PORT", "5432")),
+        database=os.environ.get("PARIKA_TEST_DATABASE__NAME", "parika_test"),
+        username=os.environ.get("PARIKA_TEST_DATABASE__USERNAME", ""),
+        password=os.environ.get("PARIKA_TEST_DATABASE__PASSWORD", ""),
+        pool_min_size=1,
+        pool_max_size=10,
+        connect_timeout=10.0,
+        statement_timeout=0.0,
+        application_name="parika_test",
+        sslmode="disable",
+    )
 
 
 @pytest.fixture(scope="session")
-def _test_db_pool(_setup_test_database):
+def _test_db_pool():
     """Initialize PostgreSQL test pool for the test session."""
-    from parika.core.database.config import DatabaseConfig
-    from parika.core.database.pool import PoolManager
-    
-    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    db_config = _build_test_db_config()
     pool = PoolManager.initialize_sync_pool(db_config)
     yield pool
     PoolManager.shutdown_sync_pool()

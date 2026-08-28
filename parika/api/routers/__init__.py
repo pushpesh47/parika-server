@@ -19,6 +19,7 @@ from . import (
     capabilities,
     chat,
     config,
+    conversation,
     expense,
     health,
     media,
@@ -55,6 +56,7 @@ def build_v1_router() -> APIRouter:
     v1.include_router(providers.router)
     v1.include_router(config.router)
     v1.include_router(expense.router)
+    v1.include_router(conversation.router)
     v1.include_router(chat.router)
     v1.include_router(ws_chat.router)
     v1.include_router(voice.router)

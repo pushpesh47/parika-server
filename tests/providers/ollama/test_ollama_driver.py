@@ -37,7 +37,7 @@ from parika.core.capability_resolver.capability_resolver import (
 from parika.core.configuration.configuration import Configuration
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
-from parika.providers.ollama.driver import OllamaProviderDriver
+from parika.providers.ollama.driver import OllamaProviderDriver, DEFAULT_BASE_URL
 from parika.core.planner.planner import Planner
 from parika.core.policy_engine.policy_engine import PolicyEngine
 from parika.core.provider_manager.provider_manager import ProviderManager
@@ -158,7 +158,7 @@ def ollama_driver(
     return OllamaProviderDriver(
         transport=transport,
         logger=logger,
-        base_url="http://localhost:11434",
+        base_url=DEFAULT_BASE_URL,
         connect_timeout_seconds=1.0,
         request_timeout_seconds=5.0,
     )

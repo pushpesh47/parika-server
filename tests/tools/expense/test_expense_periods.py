@@ -3,6 +3,7 @@ Unit tests for period resolution (`parika/tools/expense/periods.py`).
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from datetime import date
 

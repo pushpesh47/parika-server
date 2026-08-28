@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from parika.core.database.pool import PoolManager
-from parika.core.database.config import DatabaseConfig
 from parika.tools.web_search.postgresql_cache import PostgreSQLSearchResultCache
 from parika.tools.weather.postgresql_cache import PostgreSQLWeatherCache
 from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
@@ -20,28 +19,13 @@ from parika.modules.experience.postgresql_storage import PostgreSQLExperienceSto
 from parika.core.knowledge_manager.postgresql_storage import PostgreSQLKnowledgeStorage
 from parika.core.memory_manager.postgresql_storage import PostgreSQLMemoryStorage
 from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
-
-
-# Test database configuration
-TEST_DATABASE_CONFIG = {
-    "enabled": True,
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "parika_test",
-    "username": "postgres",
-    "password": "dba",
-    "pool_min_size": 2,
-    "pool_max_size": 10,
-    "connect_timeout": 10.0,
-    "statement_timeout": 0.0,
-    "application_name": "parika_test",
-}
+from tests.conftest_db import build_test_db_config
 
 
 @pytest.fixture(scope="session")
 def test_pool():
     """Initialize PostgreSQL test pool for the test session."""
-    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    db_config = build_test_db_config()
     pool = PoolManager.initialize_sync_pool(db_config)
     yield pool
     PoolManager.shutdown_sync_pool()

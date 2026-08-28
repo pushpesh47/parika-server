@@ -3,6 +3,7 @@ Unit tests for WeatherService.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 import json
 from unittest.mock import Mock, patch

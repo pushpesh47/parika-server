@@ -3,6 +3,7 @@ Unit tests for exact money conversion (`parika/tools/expense/money.py`).
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from decimal import Decimal
 

@@ -1,6 +1,7 @@
 """Unit tests for detect_preferences()."""
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from parika.interfaces.preference_detection import detect_preferences
 

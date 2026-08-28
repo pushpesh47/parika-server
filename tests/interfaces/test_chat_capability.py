@@ -4,6 +4,7 @@ orchestration layer over `parika.interfaces.ai_context`.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from collections.abc import Iterator
 from typing import Any

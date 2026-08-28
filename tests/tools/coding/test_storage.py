@@ -2,7 +2,9 @@
 Unit tests for PostgreSQLCodingIndexStorage.
 """
 
+
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from pathlib import Path
 
@@ -17,25 +19,14 @@ from parika.core.database.config import DatabaseConfig
 
 
 # Test database configuration
-TEST_DATABASE_CONFIG = {
-    "enabled": True,
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "parika_test",
-    "username": "postgres",
-    "password": "dba",
-    "pool_min_size": 2,
-    "pool_max_size": 10,
-    "connect_timeout": 10.0,
-    "statement_timeout": 0.0,
-    "application_name": "parika_test",
-}
+# Test database configuration from environment
+# TEST_DATABASE_CONFIG = { ... }  # Replaced by build_test_db_config()
 
 
 @pytest.fixture(scope="session")
 def _test_db_pool():
     """Initialize PostgreSQL test pool for the test session."""
-    db_config = DatabaseConfig(**TEST_DATABASE_CONFIG)
+    db_config = build_test_db_config()
     pool = PoolManager.initialize_sync_pool(db_config)
     yield pool
     PoolManager.shutdown_sync_pool()

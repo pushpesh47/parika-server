@@ -56,7 +56,7 @@ from parika.modules.runtime_info.manifest import (
     RUNTIME_INFO_MODULE_ID,
     create_runtime_info_module,
 )
-from parika.providers.ollama.driver import OllamaProviderDriver
+from parika.providers.ollama.driver import OllamaProviderDriver, DEFAULT_BASE_URL
 from parika.providers.ollama.manifest import create_ollama_provider
 from parika.providers.ollama.messages import OllamaMessage, OllamaToolSpec
 from parika.providers.ollama.requests import OllamaChatRequest
@@ -176,7 +176,7 @@ class _Pipeline:
         self.ollama_driver = OllamaProviderDriver(
             transport=ollama_transport,
             logger=logger,
-            base_url="http://localhost:11434",
+            base_url=DEFAULT_BASE_URL,
         )
         self.ollama_driver.bind_brain(self.brain)
 

@@ -294,3 +294,28 @@ class WeatherRequest:
 
     latitude: float
     longitude: float
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationListRequest:
+    """
+    Requests a list of all stored conversation sessions.
+    """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationGetRequest:
+    """
+    Requests a specific conversation session by ID, including its messages.
+    """
+
+    session_id: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationDeleteRequest:
+    """
+    Requests deletion of a specific conversation session by ID.
+    """
+
+    session_id: str

@@ -22,7 +22,7 @@ from parika.core.provider_manager.generation_request import (
 from parika.core.provider_manager.chat_request import ChatRequest
 from parika.core.provider_manager.model_capability import ModelCapability
 from parika.core.provider_manager.provider_model import ProviderModel
-from parika.providers.comfyui.driver import ComfyUIProviderDriver
+from parika.providers.comfyui.driver import ComfyUIProviderDriver, DEFAULT_BASE_URL
 from parika.providers.comfyui.exceptions import (
     ComfyUIOutputNotFoundError,
     ComfyUIRequestError,
@@ -101,7 +101,7 @@ def driver(transport: FakeComfyUITransport, logger: Logger) -> ComfyUIProviderDr
     return ComfyUIProviderDriver(
         transport=transport,
         logger=logger,
-        base_url="http://localhost:8188",
+        base_url=DEFAULT_BASE_URL,
         connect_timeout_seconds=1.0,
         request_timeout_seconds=1.0,
         poll_interval_seconds=0.0,
@@ -159,7 +159,7 @@ class TestDiscoverModels:
 
         assert {m.id for m in models} == {IMAGE_MODEL_ID, VIDEO_VACE_MODEL_ID}
         assert transport.json_calls[0][1] == (
-            "http://localhost:8188/models/diffusion_models"
+            "http://127.0.0.1:8188/models/diffusion_models"
         )
         # A native-only configuration (today's only behavior) makes
         # exactly the one HTTP call it always has -- no unconditional
@@ -177,7 +177,7 @@ class TestDiscoverModels:
         driver = ComfyUIProviderDriver(
             transport=transport,
             logger=logger,
-            base_url="http://localhost:8188",
+            base_url=DEFAULT_BASE_URL,
             connect_timeout_seconds=1.0,
             request_timeout_seconds=1.0,
             poll_interval_seconds=0.0,
@@ -191,10 +191,10 @@ class TestDiscoverModels:
 
         assert {m.id for m in models} == {IMAGE_MODEL_ID, VIDEO_VACE_MODEL_ID}
         assert transport.json_calls[0][1] == (
-            "http://localhost:8188/models/diffusion_models"
+            "http://127.0.0.1:8188/models/diffusion_models"
         )
         assert transport.json_calls[1][1] == (
-            "http://localhost:8188/models/unet_gguf"
+            "http://127.0.0.1:8188/models/unet_gguf"
         )
 
     def test_gguf_listing_failure_omits_that_model_without_failing_discovery(
@@ -210,7 +210,7 @@ class TestDiscoverModels:
         driver = ComfyUIProviderDriver(
             transport=transport,
             logger=logger,
-            base_url="http://localhost:8188",
+            base_url=DEFAULT_BASE_URL,
             connect_timeout_seconds=1.0,
             request_timeout_seconds=1.0,
             poll_interval_seconds=0.0,
@@ -414,7 +414,7 @@ class TestVideoGenerate:
         driver = ComfyUIProviderDriver(
             transport=transport,
             logger=logger,
-            base_url="http://localhost:8188",
+            base_url=DEFAULT_BASE_URL,
             connect_timeout_seconds=1.0,
             request_timeout_seconds=1.0,
             poll_interval_seconds=0.0,
@@ -458,7 +458,7 @@ class TestVideoGenerate:
         driver = ComfyUIProviderDriver(
             transport=transport,
             logger=logger,
-            base_url="http://localhost:8188",
+            base_url=DEFAULT_BASE_URL,
             connect_timeout_seconds=1.0,
             request_timeout_seconds=1.0,
             poll_interval_seconds=0.0,
@@ -494,7 +494,7 @@ class TestVideoGenerate:
             driver = ComfyUIProviderDriver(
                 transport=transport,
                 logger=logger,
-                base_url="http://localhost:8188",
+                base_url=DEFAULT_BASE_URL,
                 connect_timeout_seconds=1.0,
                 request_timeout_seconds=1.0,
                 poll_interval_seconds=0.0,

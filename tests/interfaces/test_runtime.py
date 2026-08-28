@@ -7,6 +7,7 @@ other Core component wired by `build_default_runtime()` is real.
 """
 
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 from collections.abc import Iterator, Mapping
 from typing import Any

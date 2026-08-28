@@ -2,7 +2,9 @@
 Unit tests for the Expense Management Module's lifecycle.
 """
 
+
 from __future__ import annotations
+from tests.conftest_db import build_test_db_config
 
 import pytest
 
@@ -33,26 +35,14 @@ from parika.tools.expense.service import ExpenseService
 from parika.tools.expense.postgresql_storage import PostgreSQLExpenseStorage
 
 
-TEST_DATABASE_CONFIG = DatabaseConfig(
-    enabled=True,
-    host="127.0.0.1",
-    port=5432,
-    database="parika_test",
-    username="postgres",
-    password="dba",
-    pool_min_size=1,
-    pool_max_size=10,
-    connect_timeout=10.0,
-    statement_timeout=0.0,
-    application_name="parika_test",
-    sslmode="disable",
-)
+# Test database configuration from environment
+TEST_DATABASE_CONFIG = build_test_db_config()
 
 
 @pytest.fixture(scope="session")
 def _test_db_pool():
     """Initialize PostgreSQL test pool for the test session."""
-    pool = PoolManager.initialize_sync_pool(TEST_DATABASE_CONFIG)
+    pool = PoolManager.initialize_sync_pool(build_test_db_config())
     yield pool
     PoolManager.shutdown_sync_pool()
 
