@@ -119,6 +119,9 @@ class Configuration:
 
     def _parse_env_value(self, value: str) -> Any:
         """Parse environment variable value to appropriate type."""
+        # Handle empty string as empty list for list-typed config
+        if value == "":
+            return []
         # Try to parse as boolean
         if value.lower() in ("true", "false"):
             return value.lower() == "true"
@@ -132,6 +135,9 @@ class Configuration:
             return float(value)
         except ValueError:
             pass
+        # Try to parse as comma-separated list
+        if "," in value:
+            return [item.strip() for item in value.split(",") if item.strip()]
         # Return as string
         return value
 
