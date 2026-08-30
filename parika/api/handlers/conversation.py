@@ -13,11 +13,14 @@ from __future__ import annotations
 
 from datetime import datetime, UTC
 from typing import Any
+from uuid import uuid4
+
+import psycopg
 
 from parika.interfaces.runtime import ParikaRuntime
-from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError
+from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore, SessionNotFoundError, SessionPersistenceError
 
-from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest
+from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest, ConversationCreateRequest
 
 
 def handle_list_conversations(
@@ -127,4 +130,51 @@ def handle_update_conversation(
         "session_id": updated_summary.session_id,
         "title": updated_summary.title,
         "updated_at": updated_summary.updated_at.isoformat(),
+    }
+
+
+def handle_create_conversation(
+    runtime: ParikaRuntime,
+    session_store: PostgreSQLSessionStore,
+    request: ConversationCreateRequest,
+) -> dict[str, Any]:
+    """
+    Create a new conversation session.
+
+    Generates a new unique session ID, creates the session record,
+    and optionally sets an initial title.
+
+    Returns the created conversation representation.
+    """
+    # Generate a new unique session ID
+    session_id = uuid4().hex
+    
+    # Create the session record
+    now = datetime.now(UTC).isoformat()
+    try:
+        with session_store._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO core.session
+                    (session_id, title, workspace_path, created_at, updated_at, message_count)
+                    VALUES (%s, %s, %s, %s, %s, 0)
+                    """,
+                    (session_id, request.title, None, now, now),
+                )
+                conn.commit()
+    except psycopg.Error as ex:
+        conn.rollback()
+        raise SessionPersistenceError("Failed to create conversation.") from ex
+
+    # Return the created conversation
+    created_summary = session_store.get_session(session_id)
+    return {
+        "session_id": created_summary.session_id,
+        "title": created_summary.title,
+        "summary": created_summary.summary,
+        "workspace_path": created_summary.workspace_path,
+        "created_at": created_summary.created_at.isoformat(),
+        "updated_at": created_summary.updated_at.isoformat(),
+        "message_count": created_summary.message_count,
     }

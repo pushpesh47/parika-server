@@ -1052,6 +1052,46 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Create Conversation",
+        "description": "Create a new conversation session.\n\nCreates a brand-new independent conversation with a unique ID.\nOptionally accepts an initial title.\n\nReturns the created conversation representation with its ID, title, and timestamps.\n\nAuthentication:\n    Requires valid authentication per [api.auth].mode configuration.\n\nErrors:\n    401: Authentication required\n    422: Validation error (empty/whitespace title or title too long)\n    500: Session store unavailable",
+        "operationId": "create_conversation_api_v1_conversations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationCreateRequestBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/conversations/{conversation_id}": {
@@ -2048,6 +2088,92 @@
         ],
         "title": "ConversationUpdateResponse",
         "description": "Response for updating a conversation."
+      },
+      "ConversationCreateRequestBody": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1,
+                "description": "Optional initial conversation title (1-200 characters, no whitespace-only)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          }
+        },
+        "type": "object",
+        "title": "ConversationCreateRequestBody",
+        "description": "Request body for creating a new conversation."
+      },
+      "ConversationCreateResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "created_at",
+          "updated_at",
+          "message_count"
+        ],
+        "title": "ConversationCreateResponse",
+        "description": "Response for creating a new conversation."
       },
       "ConversationalContextSchema": {
         "properties": {

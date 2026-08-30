@@ -329,3 +329,12 @@ class ConversationUpdateRequest:
 
     session_id: str
     title: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConversationCreateRequest:
+    """
+    Requests creation of a new conversation session.
+    """
+
+    title: str | None = None

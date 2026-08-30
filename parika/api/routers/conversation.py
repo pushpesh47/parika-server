@@ -2,6 +2,7 @@
 PARIKA API - Conversation Router
 
 REST endpoints for conversation management:
+- POST /api/v1/conversations - Create a new conversation
 - GET /api/v1/conversations - List all conversations
 - GET /api/v1/conversations/{conversation_id} - Get a conversation with its messages
 - PATCH /api/v1/conversations/{conversation_id} - Update a conversation (rename)
@@ -10,7 +11,7 @@ REST endpoints for conversation management:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Body
+from fastapi import APIRouter, Depends, Path, Body, status
 
 from ..auth.dependency import RequireAuth
 from ..auth.backend import AuthContext
@@ -20,11 +21,57 @@ from ..handlers.conversation import (
     handle_get_conversation,
     handle_delete_conversation,
     handle_update_conversation,
+    handle_create_conversation,
 )
-from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest
-from ..schemas.conversation import ConversationListResponse, ConversationDetail, ConversationDeleteResponse, ConversationUpdateResponse, ConversationUpdateRequestBody
+from ..requests import ConversationListRequest, ConversationGetRequest, ConversationDeleteRequest, ConversationUpdateRequest, ConversationCreateRequest
+from ..schemas.conversation import (
+    ConversationListResponse,
+    ConversationDetail,
+    ConversationDeleteResponse,
+    ConversationUpdateResponse,
+    ConversationUpdateRequestBody,
+    ConversationCreateRequestBody,
+    ConversationCreateResponse,
+)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+
+@router.post("", response_model=ConversationCreateResponse, status_code=status.HTTP_201_CREATED)
+async def create_conversation(
+    body: ConversationCreateRequestBody = Body(default=None),
+    auth: AuthContext = RequireAuth,
+    core_execution_owner=Depends(get_core_execution_owner),
+) -> ConversationCreateResponse:
+    """
+    Create a new conversation session.
+
+    Creates a brand-new independent conversation with a unique ID.
+    Optionally accepts an initial title.
+
+    Returns the created conversation representation with its ID, title, and timestamps.
+
+    Authentication:
+        Requires valid authentication per [api.auth].mode configuration.
+
+    Errors:
+        401: Authentication required
+        422: Validation error (empty/whitespace title or title too long)
+        500: Session store unavailable
+    """
+    # Submit the Core work to be executed on the Core worker thread
+    future = core_execution_owner.submit(
+        lambda: handle_create_conversation(
+            core_execution_owner.runtime,
+            core_execution_owner.session_store,
+            ConversationCreateRequest(title=body.title if body else None),
+        )
+    )
+
+    # Await the result without blocking the ASGI event loop
+    result = await future
+
+    return ConversationCreateResponse.model_validate(result)
 
 
 @router.get("", response_model=ConversationListResponse)

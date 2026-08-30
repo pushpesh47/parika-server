@@ -406,3 +406,231 @@ def test_list_returns_auto_titles(client) -> None:
     
     assert conv1["title"] == "First conversation"
     assert conv2["title"] == "Second conversation"
+
+
+# =============================================================================
+# Tests for POST /api/v1/conversations (create)
+# =============================================================================
+
+def test_create_conversation_empty_body(client) -> None:
+    """Test creating a conversation with empty request body (no title)."""
+    response = client.post("/api/v1/conversations", json={})
+    assert response.status_code == 201
+    body = response.json()
+    assert "session_id" in body
+    assert body["session_id"] is not None
+    assert len(body["session_id"]) > 0
+    assert body["title"] is None
+    assert body["message_count"] == 0
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_create_conversation_with_title(client) -> None:
+    """Test creating a conversation with an explicit title."""
+    response = client.post("/api/v1/conversations", json={"title": "My New Conversation"})
+    assert response.status_code == 201
+    body = response.json()
+    assert "session_id" in body
+    assert body["title"] == "My New Conversation"
+    assert body["message_count"] == 0
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_create_conversation_title_trimmed(client) -> None:
+    """Test that conversation title is trimmed of whitespace."""
+    response = client.post("/api/v1/conversations", json={"title": "  Trimmed Title  "})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "Trimmed Title"
+
+
+def test_create_conversation_empty_title_rejected(client) -> None:
+    """Test that empty title is rejected with 422."""
+    response = client.post("/api/v1/conversations", json={"title": ""})
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+
+
+def test_create_conversation_whitespace_only_title_rejected(client) -> None:
+    """Test that whitespace-only title is rejected with 422."""
+    response = client.post("/api/v1/conversations", json={"title": "   \n\t  "})
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+
+
+def test_create_conversation_too_long_title_rejected(client) -> None:
+    """Test that title exceeding max length is rejected with 422."""
+    long_title = "x" * 201  # Exceeds 200 character limit
+    response = client.post("/api/v1/conversations", json={"title": long_title})
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["type"] == "RequestValidationError"
+
+
+def test_create_conversation_appears_in_list(client) -> None:
+    """Test that newly created conversation appears in list."""
+    # Create conversation
+    response = client.post("/api/v1/conversations", json={"title": "List Test Conversation"})
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    
+    # List conversations
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    
+    # Find our conversation
+    created = next(c for c in conversations if c["session_id"] == session_id)
+    assert created["title"] == "List Test Conversation"
+    assert created["message_count"] == 0
+
+
+def test_create_conversation_can_be_retrieved(client) -> None:
+    """Test that newly created conversation can be retrieved via GET."""
+    # Create conversation
+    response = client.post("/api/v1/conversations", json={"title": "Get Test Conversation"})
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    
+    # Get conversation
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == session_id
+    assert body["title"] == "Get Test Conversation"
+    assert body["message_count"] == 0
+    assert body["messages"] == []
+
+
+def test_create_two_conversations_independent(client) -> None:
+    """Test that two created conversations are independent."""
+    # Create first conversation
+    response1 = client.post("/api/v1/conversations", json={"title": "First Conversation"})
+    assert response1.status_code == 201
+    session_id_1 = response1.json()["session_id"]
+    
+    # Create second conversation
+    response2 = client.post("/api/v1/conversations", json={"title": "Second Conversation"})
+    assert response2.status_code == 201
+    session_id_2 = response2.json()["session_id"]
+    
+    # IDs must be different
+    assert session_id_1 != session_id_2
+    
+    # Both must exist and be retrievable
+    response = client.get(f"/api/v1/conversations/{session_id_1}")
+    assert response.status_code == 200
+    assert response.json()["title"] == "First Conversation"
+    
+    response = client.get(f"/api/v1/conversations/{session_id_2}")
+    assert response.status_code == 200
+    assert response.json()["title"] == "Second Conversation"
+    
+    # Both must appear in list
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    session_ids = [c["session_id"] for c in conversations]
+    assert session_id_1 in session_ids
+    assert session_id_2 in session_ids
+
+
+def test_create_then_rename_then_get(client) -> None:
+    """Test create -> rename -> get flow."""
+    # Create
+    response = client.post("/api/v1/conversations", json={"title": "Original Title"})
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    
+    # Rename
+    response = client.patch(
+        f"/api/v1/conversations/{session_id}",
+        json={"title": "Renamed Title"}
+    )
+    assert response.status_code == 200
+    assert response.json()["title"] == "Renamed Title"
+    
+    # Get and verify
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    assert response.json()["title"] == "Renamed Title"
+
+
+def test_create_then_rename_then_list(client) -> None:
+    """Test create -> rename -> list reflects renamed state."""
+    # Create
+    response = client.post("/api/v1/conversations", json={"title": "Original Title"})
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    
+    # Rename
+    response = client.patch(
+        f"/api/v1/conversations/{session_id}",
+        json={"title": "Renamed Title"}
+    )
+    assert response.status_code == 200
+    
+    # List and verify
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    renamed = next(c for c in conversations if c["session_id"] == session_id)
+    assert renamed["title"] == "Renamed Title"
+
+
+def test_create_then_delete_then_get(client) -> None:
+    """Test create -> delete -> get returns 404."""
+    # Create
+    response = client.post("/api/v1/conversations", json={"title": "To Be Deleted"})
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    
+    # Delete
+    response = client.delete(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    
+    # Get should return 404
+    response = client.get(f"/api/v1/conversations/{session_id}")
+    assert response.status_code == 404
+
+
+def test_create_conversation_isolation(client) -> None:
+    """Test that two conversations have isolated state."""
+    # Create two conversations
+    response_a = client.post("/api/v1/conversations", json={"title": "Conversation A"})
+    assert response_a.status_code == 201
+    session_id_a = response_a.json()["session_id"]
+    
+    response_b = client.post("/api/v1/conversations", json={"title": "Conversation B"})
+    assert response_b.status_code == 201
+    session_id_b = response_b.json()["session_id"]
+    
+    # Add message to conversation A via chat
+    client.post("/api/v1/chat", json={"text": "Message in A", "session_id": session_id_a})
+    client.post("/api/v1/chat", json={"text": "Another message in A", "session_id": session_id_a})
+    
+    # Verify A has messages, B has none
+    response = client.get(f"/api/v1/conversations/{session_id_a}")
+    assert response.status_code == 200
+    assert response.json()["message_count"] >= 2
+    
+    response = client.get(f"/api/v1/conversations/{session_id_b}")
+    assert response.status_code == 200
+    assert response.json()["message_count"] == 0
+    
+    # Verify list shows correct counts
+    response = client.get("/api/v1/conversations")
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    conv_a = next(c for c in conversations if c["session_id"] == session_id_a)
+    conv_b = next(c for c in conversations if c["session_id"] == session_id_b)
+    assert conv_a["message_count"] >= 2
+    assert conv_b["message_count"] == 0
