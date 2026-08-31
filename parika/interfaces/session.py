@@ -31,7 +31,11 @@ from uuid import uuid4
 from parika.core.brain.brain_request import BrainRequest
 from parika.core.brain.brain_response import BrainResponse, RequestStatus
 from parika.core.brain.context_engine import ContextBundle, load_context_engine_config
-from parika.core.planner.goal import Goal
+from parika.core.planner.goal import (
+    Goal,
+    ROUTING_GOAL_METADATA_KEY,
+    TERMINAL_SYNTHESIS_GOAL_METADATA_KEY,
+)
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_result import ChatResult
 from parika.core.provider_manager.tool_spec import ToolSpec
@@ -46,6 +50,7 @@ from .chat_capability import (
     decompose_and_build_goals,
     discover_tool_specs,
 )
+from .ai_context.goal_decomposer import DecompositionError
 from parika.core.forensic_log import (
     set_trace_context,
     get_current_trace_id,
@@ -317,6 +322,7 @@ class InterfaceSession:
 
         self._runtime = runtime
         self._state_manager = ConversationStateManager(session_store)
+        self._logger = runtime.logger.get_logger(__name__)
         
         resolved_system_prompt = (
             build_assistant_system_prompt(runtime.configuration)
@@ -484,10 +490,35 @@ class InterfaceSession:
         # NEW: Try multi-goal decomposition first
         # This will return multiple goals for complex requests,
         # or a single chat.respond goal for simple requests
-        goals = decompose_and_build_goals(
-            latest_message=text,
-            runtime=self._runtime,
-        )
+        try:
+            goals = decompose_and_build_goals(
+                latest_message=text,
+                runtime=self._runtime,
+            )
+        except DecompositionError as ex:
+            # Decomposition failed - return a failed ChatTurnResult
+            self._logger.warning(f"Goal decomposition failed: {ex}")
+            
+            # Create a minimal failed response
+            from parika.core.brain.brain_response import BrainResponse, RequestStatus
+            from parika.core.brain.goal_result import GoalResult
+            
+            brain_response = BrainResponse(
+                request_id=uuid4().hex,
+                plan_id=None,
+                results=(
+                    GoalResult(
+                        goal_id="decomposition_failed",
+                        capability_id="chat.respond",
+                        task_id=None,
+                        status=None,
+                        failure=ex,
+                    ),
+                ),
+                planning_failure=ex,
+            )
+            
+            return ChatTurnResult(brain_response=brain_response)
 
         # For goals that need context assembly (primarily chat.respond for final synthesis),
         # we still need to assemble context and inject it into the conversation
@@ -534,6 +565,20 @@ class InterfaceSession:
         # Build tools for the routing model (chat.respond) if needed
         tools = discover_tool_specs(self._runtime, text=text)
 
+        # Identify the terminal synthesis goal: the chat.respond goal that
+        # has dependencies (complex request) or the sole chat.respond goal
+        # (simple request). This is the final response generation step.
+        chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
+        synthesis_goal_id: str | None = None
+        if chat_respond_goals:
+            # Per decomposition contract: exactly one chat.respond goal has
+            # dependencies (the synthesis goal), or there's only one total.
+            synthesis_candidates = [g for g in chat_respond_goals if g.depends_on]
+            if synthesis_candidates:
+                synthesis_goal_id = synthesis_candidates[0].id
+            elif len(chat_respond_goals) == 1:
+                synthesis_goal_id = chat_respond_goals[0].id
+
         # Enhance chat.respond goals with context and tools
         enhanced_goals = []
         for goal in goals:
@@ -541,8 +586,8 @@ class InterfaceSession:
                 # For synthesis goals (those with dependencies), don't pass tools
                 # The dependency results are injected via system message by Brain
                 goal_tools = () if goal.depends_on else tools
-                
-                # Rebuild this goal with proper context and tools, preserving metadata
+
+                # Rebuild this goal with proper context and tools
                 enhanced_goal = build_chat_goal(
                     messages=effective_messages,
                     tools=goal_tools,
@@ -550,14 +595,24 @@ class InterfaceSession:
                     latest_message=text,
                     runtime=self._runtime,
                 )
-                # Preserve original goal metadata (dependencies, etc.)
+                # Build metadata: start with enhanced goal's metadata (includes
+                # ROUTING_GOAL_METADATA_KEY), then add terminal synthesis marker
+                # for the synthesis goal so fixed routing model also applies here.
+                metadata = dict(enhanced_goal.metadata)
+                if goal.id == synthesis_goal_id:
+                    metadata[TERMINAL_SYNTHESIS_GOAL_METADATA_KEY] = True
+
+                # Preserve original goal metadata (dependencies, etc.) and merge
+                # with our additions
+                metadata.update(goal.metadata)
+
                 enhanced_goal = Goal(
                     id=goal.id,
                     capability_id=goal.capability_id,
                     inputs=goal.inputs,  # Keep original inputs (message to summarize)
                     depends_on=goal.depends_on,
                     provider_request_builder=enhanced_goal.provider_request_builder,
-                    metadata=goal.metadata,
+                    metadata=metadata,
                 )
                 enhanced_goals.append(enhanced_goal)
             else:

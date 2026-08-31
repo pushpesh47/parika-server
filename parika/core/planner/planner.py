@@ -72,7 +72,11 @@ from .exceptions import (
     UnknownGoalDependencyError,
 )
 from .execution_plan import ExecutionPlan
-from .goal import ROUTING_GOAL_METADATA_KEY, Goal
+from .goal import (
+    ROUTING_GOAL_METADATA_KEY,
+    TERMINAL_SYNTHESIS_GOAL_METADATA_KEY,
+    Goal,
+)
 from .model_selection import (
     DEFAULT_SCORING_RULES,
     ExperienceRule,
@@ -641,10 +645,12 @@ class Planner:
 
         selection = None
 
-        if (
-            self._routing_config.is_fixed
-            and goal.metadata.get(ROUTING_GOAL_METADATA_KEY) is True
-        ):
+        is_routing_or_synthesis = (
+            goal.metadata.get(ROUTING_GOAL_METADATA_KEY) is True
+            or goal.metadata.get(TERMINAL_SYNTHESIS_GOAL_METADATA_KEY) is True
+        )
+
+        if self._routing_config.is_fixed and is_routing_or_synthesis:
             selection = select_fixed_routing_model(
                 providers=self._provider_manager.get_all(),
                 requirements=requirements,

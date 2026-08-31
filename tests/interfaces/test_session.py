@@ -79,28 +79,21 @@ class _ScriptedOllamaTransport:
                 for msg in payload["messages"]:
                     if msg.get("role") == "system" and "Goal Decomposer" in msg.get("content", ""):
                         self._decomposition_call_count += 1
-                        # Return a valid decomposition JSON for simple requests
-                        # Use the next queued response's content as the message for chat.respond
+                        # Return a valid decomposition JSON
+                        # For simple requests, return a single chat.respond goal
                         if self._chat_queue:
                             next_response = self._chat_queue[0]
                             message_content = next_response.get("message", {}).get("content", "Hi there.")
-                            return {
-                                "message": {
-                                    "role": "assistant",
-                                    "content": f'{{"goals": [{{"id": "goal_0", "capability_id": "chat.respond", "inputs": {{"message": "{message_content}"}}, "depends_on": []}}]}}',
-                                    "done": True
-                                },
-                                "done": True
-                            }
                         else:
-                            return {
-                                "message": {
-                                    "role": "assistant",
-                                    "content": '{"goals": [{"id": "goal_0", "capability_id": "chat.respond", "inputs": {"message": "Hi there."}, "depends_on": []}]}',
-                                    "done": True
-                                },
+                            message_content = "Hi there."
+                        return {
+                            "message": {
+                                "role": "assistant",
+                                "content": f'```json\n{{\n  "goals": [\n    {{\n      "id": "goal_0",\n      "capability_id": "chat.respond",\n      "inputs": {{\n        "message": "{message_content}"\n      }},\n      "depends_on": []\n    }}\n  ]\n}}\n```',
                                 "done": True
-                            }
+                            },
+                            "done": True
+                        }
             
             return self._chat_queue.pop(0)
 

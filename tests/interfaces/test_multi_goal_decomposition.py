@@ -181,13 +181,12 @@ class TestMultiGoalDecomposition:
         )
         
         # The decomposer will try to use the LLM for decomposition
-        # Since we don't have a real provider, it will fallback
-        # This tests the fallback path
-        result = decomposer.decompose("What is the weather in Patna?")
+        # Since we don't have a real provider, it will raise DecompositionError
+        # This tests that the error is properly raised
+        from parika.interfaces.ai_context.goal_decomposer import DecompositionError
         
-        # Fallback produces single chat.respond goal
-        assert len(result.goals) >= 1
-        assert any(g.capability_id == "chat.respond" for g in result.goals)
+        with pytest.raises(DecompositionError):
+            decomposer.decompose("What is the weather in Patna?")
 
     def test_decompose_complex_multi_domain_request(self) -> None:
         """Test that the decomposer can parse complex multi-domain responses."""

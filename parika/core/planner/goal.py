@@ -49,6 +49,21 @@ and does not participate in the `execution_requirements` override
 shape at all -- it is a plain, independent top-level metadata key.
 """
 
+TERMINAL_SYNTHESIS_GOAL_METADATA_KEY = "is_terminal_synthesis_goal"
+"""
+Optional boolean `Goal.metadata` key. When `True`, this Goal is the
+*terminal synthesis* `chat.respond` goal for the current user request
+-- the final response generation that depends on all data-gathering
+goals (or the sole `chat.respond` goal for simple requests).
+
+It is set only by `interfaces/session.py` when enhancing decomposed
+goals for execution. Planner reads this key alongside
+`ROUTING_GOAL_METADATA_KEY` to decide whether `[routing_model]
+mode = "fixed"` applies the pinned model to *this* Goal as well
+(see `model_selection.routing_strategy.select_fixed_routing_model()`).
+Worker Goals and non-synthesis `chat.respond` goals never set it.
+"""
+
 
 @dataclass(
     frozen=True,

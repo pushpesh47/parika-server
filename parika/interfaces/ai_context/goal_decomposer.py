@@ -17,12 +17,12 @@ AgentOrchestrator, and Planner.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from parika.core.brain.brain import Brain
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.configuration.configuration import Configuration
@@ -34,6 +34,7 @@ from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.provider_manager.provider_model import ProviderModel
 from parika.core.planner.model_selection.routing_config import RoutingConfig, load_routing_config
 from parika.core.planner.model_selection.routing_strategy import select_fixed_routing_model
+from parika.core.planner.model_selection.selector import select_provider_model
 from parika.core.planner.model_selection.requirements import ExecutionRequirements, ThinkingMode, Requirement
 from parika.core.provider_manager.model_capability import ModelCapability
 from parika.core.forensic_log import (
@@ -100,6 +101,71 @@ class DecompositionResult:
     """Raw LLM response for debugging"""
 
 
+class DecompositionError(Exception):
+    """Raised when goal decomposition fails."""
+    pass
+
+
+def _validate_decomposition(goals: list[Goal], user_message: str) -> None:
+    """
+    Validate that a decomposition meets the structural contract.
+    
+    A valid decomposition for a complex request MUST contain:
+    - At least one data-gathering goal (non-chat.respond)
+    - Exactly one synthesis goal (chat.respond) that depends on ALL data-gathering goals
+    
+    For simple requests, a single chat.respond goal without dependencies is valid.
+    """
+    if not goals:
+        raise DecompositionError("Decomposition produced no goals")
+    
+    chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
+    data_goals = [g for g in goals if g.capability_id != "chat.respond"]
+    
+    # Check for multiple chat.respond goals
+    if len(chat_respond_goals) > 1:
+        raise DecompositionError(f"Decomposition contains multiple chat.respond goals: {[g.id for g in chat_respond_goals]}")
+    
+    # If there are data goals, there MUST be a synthesis goal that depends on all of them
+    if data_goals:
+        if not chat_respond_goals:
+            raise DecompositionError(
+                f"Decomposition contains data-gathering goals { [g.id for g in data_goals] } "
+                f"but no chat.respond synthesis goal. "
+                f"Per the decomposition contract, a synthesis goal depending on all data goals is required."
+            )
+        
+        synthesis_goal = chat_respond_goals[0]
+        synthesis_deps = set(synthesis_goal.depends_on)
+        data_goal_ids = {g.id for g in data_goals}
+        
+        if not synthesis_deps:
+            raise DecompositionError(
+                f"Synthesis goal {synthesis_goal.id} has no dependencies. "
+                f"It must depend on all data-gathering goals: {sorted(data_goal_ids)}"
+            )
+        
+        missing_deps = data_goal_ids - synthesis_deps
+        if missing_deps:
+            raise DecompositionError(
+                f"Synthesis goal {synthesis_goal.id} missing dependencies on data goals: {sorted(missing_deps)}. "
+                f"It must depend on ALL data-gathering goals: {sorted(data_goal_ids)}"
+            )
+        
+        extra_deps = synthesis_deps - data_goal_ids
+        if extra_deps:
+            raise DecompositionError(
+                f"Synthesis goal {synthesis_goal.id} depends on unknown goals: {sorted(extra_deps)}. "
+                f"Valid data goal IDs: {sorted(data_goal_ids)}"
+            )
+    else:
+        # No data goals - simple request, single chat.respond without deps is OK
+        if len(chat_respond_goals) != 1:
+            raise DecompositionError(f"Expected exactly one chat.respond goal for simple request, got {len(chat_respond_goals)}")
+        if chat_respond_goals[0].depends_on:
+            raise DecompositionError("Simple request chat.respond goal should not have dependencies")
+
+
 class GoalDecomposer:
     """
     Decomposes user requests into multiple semantic Goals.
@@ -135,6 +201,9 @@ class GoalDecomposer:
         
         Returns:
             DecompositionResult with goals and raw response
+            
+        Raises:
+            DecompositionError: If decomposition fails after all attempts
         """
         # Use all enabled capabilities if not explicitly provided
         if available_capabilities is None:
@@ -176,59 +245,77 @@ class GoalDecomposer:
         # Get the routing model for decomposition
         routing_model = self._get_routing_model()
         if routing_model is None:
-            # Fallback: treat as single chat goal
-            return self._fallback_single_goal(user_message)
+            raise DecompositionError(
+                "No model available for goal decomposition. "
+                "Ensure at least one provider with a text_generation model is configured and healthy."
+            )
         
         # Unpack the tuple
         provider_id, model = routing_model
 
-        # Execute decomposition via direct provider inference
-        chat_request = ChatRequest(
-            messages=messages,
-            options=RequestOptions(reasoning=False),
-        )
-
-        try:
-            response = self._provider_manager.execute(
-                provider_id=provider_id,
-                model=model,
-                request=chat_request,
-            )
-        except Exception:
-            # Fallback on any provider execution error
-            return self._fallback_single_goal(user_message)
-
-        # Extract the response text
-        raw_response = self._extract_text_from_provider_response(response)
+        # Execute decomposition via direct provider inference with retries
+        max_retries = 2
+        last_exception = None
         
-        # FORENSIC: Log raw decomposition output
-        if trace_id:
-            log_decomposition_raw(
-                trace_id=trace_id,
-                raw_response=raw_response,
+        for attempt in range(max_retries + 1):
+            chat_request = ChatRequest(
+                messages=messages,
+                options=RequestOptions(reasoning=False),
             )
 
-        goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
+            try:
+                response = self._provider_manager.execute(
+                    provider_id=provider_id,
+                    model=model,
+                    request=chat_request,
+                )
+                
+                # Extract the response text
+                raw_response = self._extract_text_from_provider_response(response)
+                
+                # FORENSIC: Log raw decomposition output
+                if trace_id:
+                    log_decomposition_raw(
+                        trace_id=trace_id,
+                        raw_response=raw_response,
+                    )
+
+                goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
+                
+                # Validate that decomposition contains a synthesis goal with dependencies
+                _validate_decomposition(goals, user_message)
+                
+                # FORENSIC: Log decomposed goals
+                if trace_id:
+                    goal_list = []
+                    for goal in goals:
+                        goal_list.append({
+                            "id": goal.id,
+                            "capability_id": goal.capability_id,
+                            "inputs": goal.inputs,
+                            "depends_on": list(goal.depends_on),
+                        })
+                    log_decomposition_goals(
+                        trace_id=trace_id,
+                        goals=goal_list,
+                    )
+
+                return DecompositionResult(
+                    goals=tuple(goals),
+                    raw_response=raw_response,
+                )
+                
+            except Exception as ex:
+                last_exception = ex
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Decomposition attempt {attempt + 1} failed: {ex}")
+                if attempt < max_retries:
+                    continue
         
-        # FORENSIC: Log decomposed goals
-        if trace_id:
-            goal_list = []
-            for goal in goals:
-                goal_list.append({
-                    "id": goal.id,
-                    "capability_id": goal.capability_id,
-                    "inputs": goal.inputs,
-                    "depends_on": list(goal.depends_on),
-                })
-            log_decomposition_goals(
-                trace_id=trace_id,
-                goals=goal_list,
-            )
-
-        return DecompositionResult(
-            goals=tuple(goals),
-            raw_response=raw_response,
-        )
+        # All attempts failed
+        raise DecompositionError(
+            f"Goal decomposition failed after {max_retries + 1} attempts: {last_exception}"
+        ) from last_exception
 
     def _parse_decomposition(
         self,
@@ -240,7 +327,6 @@ class GoalDecomposer:
         try:
             # Try to extract JSON from response - the LLM outputs JSON in a code block
             # Look for ```json ... ``` or just the JSON object
-            import re
             
             # First try to find JSON in a code block
             code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
@@ -303,10 +389,9 @@ class GoalDecomposer:
                 raise ValueError("No valid goals after filtering")
             
             return goals
-
+        
         except (json.JSONDecodeError, ValueError, KeyError) as ex:
-            # Fallback on parse failure
-            return [self._fallback_single_goal(user_message).goals[0]]
+            raise DecompositionError(f"Failed to parse decomposition response: {ex}") from ex
 
     def _find_closest_capability(
         self,
@@ -331,28 +416,6 @@ class GoalDecomposer:
         
         return requested  # Will be filtered out
 
-    def _fallback_single_goal(self, user_message: str) -> DecompositionResult:
-        """Fallback to single chat.respond goal."""
-        goal = Goal(
-            id=f"fallback_{uuid4().hex}",
-            capability_id="chat.respond",
-            inputs={"message": user_message},
-        )
-        return DecompositionResult(
-            goals=(goal,),
-            raw_response="Fallback to single chat.respond goal",
-        )
-
-    def _extract_text(self, goal_result) -> str:
-        """Extract text from goal result."""
-        if goal_result.response is None:
-            return ""
-        
-        backend_response = goal_result.response.outputs.get("result")
-        if hasattr(backend_response, "message"):
-            return backend_response.message.content
-        return str(backend_response)
-
     def _extract_text_from_provider_response(self, response) -> str:
         """Extract text from provider response."""
         if response is None:
@@ -372,7 +435,7 @@ class GoalDecomposer:
         return str(result)
 
     def _get_routing_model(self) -> tuple[str, ProviderModel] | None:
-        """Get the routing model from configuration."""
+        """Get the routing model from configuration with fallback to automatic selection."""
         # Get routing config
         routing_config = load_routing_config(self._configuration)
         
@@ -385,7 +448,6 @@ class GoalDecomposer:
         providers = self._provider_manager.get_all()
         
         # Create minimal execution requirements for routing model
-        from parika.core.provider_manager.model_capability import ModelCapability
         requirements = ExecutionRequirements(
             capability=ModelCapability.TEXT_GENERATION,
             tool_calling=Requirement.NOT_NEEDED,
@@ -393,18 +455,41 @@ class GoalDecomposer:
             required_modalities=frozenset(["text"]),
         )
         
-        # Select the fixed routing model
+        # Try fixed routing model first
         selection_result = select_fixed_routing_model(
             providers=providers,
             requirements=requirements,
             routing_config=routing_config,
-            logger=__import__('logging').getLogger(__name__),
+            logger=logging.getLogger(__name__),
         )
         
-        if selection_result is None or selection_result.selected_model is None:
-            return None
+        if selection_result is not None and selection_result.selected_model is not None:
+            return (selection_result.selected_provider_id, selection_result.selected_model)
         
-        return (selection_result.selected_provider_id, selection_result.selected_model)
+        # Fixed model not available - fall back to automatic model selection
+        logger = logging.getLogger(__name__)
+        logger.info("Fixed routing model unavailable, falling back to automatic model selection for decomposition")
+        
+        # Use the standard model selector for decomposition
+        from parika.core.planner.model_selection.config import load_model_selection_config
+        from parika.core.planner.model_selection import DEFAULT_SCORING_RULES
+        
+        model_selection_config = load_model_selection_config(self._configuration)
+        
+        auto_selection = select_provider_model(
+            providers=providers,
+            requirements=requirements,
+            config=model_selection_config,
+            rules=DEFAULT_SCORING_RULES,
+            logger=logger,
+        )
+        
+        if auto_selection.succeeded and auto_selection.selected_model is not None:
+            logger.info(f"Using automatic routing model: provider={auto_selection.selected_provider_id} model={auto_selection.selected_model.id}")
+            return (auto_selection.selected_provider_id, auto_selection.selected_model)
+        
+        logger.warning("No model available for goal decomposition")
+        return None
 
 
 def create_goal_decomposer(

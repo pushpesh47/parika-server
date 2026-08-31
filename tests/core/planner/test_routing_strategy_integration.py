@@ -41,7 +41,7 @@ from parika.core.capability_resolver.capability_resolver import (
 from parika.core.configuration.configuration import Configuration
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
-from parika.core.planner.goal import ROUTING_GOAL_METADATA_KEY, Goal
+from parika.core.planner.goal import ROUTING_GOAL_METADATA_KEY, TERMINAL_SYNTHESIS_GOAL_METADATA_KEY, Goal
 from parika.core.planner.planner import Planner
 from parika.core.policy_engine.policy_engine import PolicyEngine
 from parika.core.provider_manager.driver import ProviderDriver
@@ -464,6 +464,116 @@ class TestWorkerSelectionRemainsUnaffected:
         # same "model-b" tie-break outcome as before this feature
         # existed.
         assert worker_model is not None and worker_model.id == "model-b"
+
+
+class TestTerminalSynthesisGoalUsesFixedModel:
+    def _terminal_synthesis_goal(self, *, goal_id: str = "synthesis-goal") -> Goal:
+        return Goal(
+            id=goal_id,
+            capability_id=_ROUTING_CAPABILITY_ID,
+            provider_request_builder=_build_request,
+            metadata={TERMINAL_SYNTHESIS_GOAL_METADATA_KEY: True},
+        )
+
+    def test_terminal_synthesis_goal_uses_fixed_model(
+        self,
+        capability_registry: CapabilityRegistry,
+        provider_manager: ProviderManager,
+        event_bus: EventBus,
+        logger: Logger,
+    ) -> None:
+        configuration = _FakeConfiguration(
+            {
+                "routing_model.mode": "fixed",
+                "routing_model.fixed_model": "model-a",
+            }
+        )
+
+        planner = _make_planner(
+            capability_registry=capability_registry,
+            provider_manager=provider_manager,
+            event_bus=event_bus,
+            logger=logger,
+            configuration=configuration,
+        )
+
+        plan = planner.plan([_routing_goal(), self._terminal_synthesis_goal()])
+
+        by_goal = {step.goal_id: step for step in plan.steps}
+
+        routing_model = by_goal["routing-goal"].execution_request.target.model
+        synthesis_model = by_goal["synthesis-goal"].execution_request.target.model
+
+        assert routing_model is not None and routing_model.id == "model-a"
+        assert synthesis_model is not None and synthesis_model.id == "model-a"
+
+    def test_terminal_synthesis_goal_with_worker_goals(
+        self,
+        capability_registry: CapabilityRegistry,
+        provider_manager: ProviderManager,
+        event_bus: EventBus,
+        logger: Logger,
+    ) -> None:
+        configuration = _FakeConfiguration(
+            {
+                "routing_model.mode": "fixed",
+                "routing_model.fixed_model": "model-a",
+            }
+        )
+
+        planner = _make_planner(
+            capability_registry=capability_registry,
+            provider_manager=provider_manager,
+            event_bus=event_bus,
+            logger=logger,
+            configuration=configuration,
+        )
+
+        plan = planner.plan([_routing_goal(), _worker_goal(), self._terminal_synthesis_goal()])
+
+        by_goal = {step.goal_id: step for step in plan.steps}
+
+        routing_model = by_goal["routing-goal"].execution_request.target.model
+        worker_model = by_goal["worker-goal"].execution_request.target.model
+        synthesis_model = by_goal["synthesis-goal"].execution_request.target.model
+
+        assert routing_model is not None and routing_model.id == "model-a"
+        assert synthesis_model is not None and synthesis_model.id == "model-a"
+        # Worker goal still uses auto selection
+        assert worker_model is not None and worker_model.id == "model-b"
+
+    def test_terminal_synthesis_goal_falls_back_to_auto_when_fixed_unavailable(
+        self,
+        capability_registry: CapabilityRegistry,
+        provider_manager: ProviderManager,
+        event_bus: EventBus,
+        logger: Logger,
+    ) -> None:
+        configuration = _FakeConfiguration(
+            {
+                "routing_model.mode": "fixed",
+                "routing_model.fixed_model": "does-not-exist:latest",
+            }
+        )
+
+        planner = _make_planner(
+            capability_registry=capability_registry,
+            provider_manager=provider_manager,
+            event_bus=event_bus,
+            logger=logger,
+            configuration=configuration,
+        )
+
+        plan = planner.plan([_routing_goal(), self._terminal_synthesis_goal()])
+
+        by_goal = {step.goal_id: step for step in plan.steps}
+
+        routing_model = by_goal["routing-goal"].execution_request.target.model
+        synthesis_model = by_goal["synthesis-goal"].execution_request.target.model
+
+        # Both fall back to auto selection (model-b)
+        assert routing_model is not None and routing_model.id == "model-b"
+        assert synthesis_model is not None and synthesis_model.id == "model-b"
 
 
 class TestBackwardCompatibility:

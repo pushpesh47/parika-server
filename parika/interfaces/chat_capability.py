@@ -241,6 +241,9 @@ def decompose_and_build_goals(
 
     Returns:
         Tuple of Goals ready for Brain.handle()
+        
+    Raises:
+        goal_decomposer.DecompositionError: If decomposition fails
     """
     decomposer = goal_decomposer.create_goal_decomposer(
         capability_registry=runtime.capability_registry,
