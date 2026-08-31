@@ -178,6 +178,9 @@ class GoalDecomposer:
         if routing_model is None:
             # Fallback: treat as single chat goal
             return self._fallback_single_goal(user_message)
+        
+        # Unpack the tuple
+        provider_id, model = routing_model
 
         # Execute decomposition via direct provider inference
         chat_request = ChatRequest(
@@ -187,8 +190,8 @@ class GoalDecomposer:
 
         try:
             response = self._provider_manager.execute(
-                provider_id=routing_model.provider_id,
-                model=routing_model.model,
+                provider_id=provider_id,
+                model=model,
                 request=chat_request,
             )
         except Exception:
@@ -355,7 +358,11 @@ class GoalDecomposer:
         if response is None:
             return ""
         
-        # ProviderResponse has outputs dict with result
+        # ChatResult IS the result (directly returned by provider.execute())
+        if hasattr(response, "message"):  # ChatResult has .message
+            return response.message.content
+        
+        # Fallback for legacy ProviderResponse with outputs dict
         result = response.outputs.get("result") if hasattr(response, 'outputs') and response.outputs else None
         if result is None:
             return ""
