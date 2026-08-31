@@ -24,6 +24,11 @@ from parika.core.logger.logger import Logger
 from .exceptions import ExperienceNotFoundError, InvalidExperienceError
 from .experience import Experience
 from .postgresql_storage import PostgreSQLExperienceStorage
+from parika.core.forensic_log import (
+    get_current_trace_id,
+    log_experience_registration,
+    log_experience_retrieval,
+)
 
 
 class ExperienceStore:
@@ -70,6 +75,19 @@ class ExperienceStore:
                 registered.capability_id,
                 registered.outcome.value,
             )
+            
+            # FORENSIC: Log experience registration
+            trace_id = get_current_trace_id()
+            if trace_id:
+                log_experience_registration(
+                    trace_id=trace_id,
+                    capability_id=registered.capability_id,
+                    outcome=registered.outcome.value,
+                    provider_id=registered.provider_id,
+                    model_id=registered.model_id,
+                    latency_ms=registered.latency_ms,
+                )
+            
             return registered
 
     def get(self, experience_id: str) -> Experience:
@@ -113,5 +131,16 @@ class ExperienceStore:
 
             if total == 0:
                 return None
+
+            # FORENSIC: Log experience retrieval
+            trace_id = get_current_trace_id()
+            if trace_id:
+                log_experience_retrieval(
+                    trace_id=trace_id,
+                    capability_id=capability_id,
+                    num_hits=total,
+                    aggregate_success_rate=successes / total,
+                    passed_to_planner=True,
+                )
 
             return successes / total

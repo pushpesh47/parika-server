@@ -50,6 +50,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import asyncio
+import time
+from dataclasses import asdict
 
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
@@ -63,6 +65,16 @@ from parika.core.task_manager.request import TaskRequest
 from parika.core.task_manager.task_manager import TaskManager
 from parika.core.tool_manager.request import ToolRequest
 from parika.core.utilities.progress import NullProgressReporter, ProgressReporter
+from parika.core.forensic_log import (
+    get_current_trace_id,
+    log_plan,
+    log_tool_start,
+    log_tool_result,
+    log_task_response_wrapping,
+    log_synthesis_ready,
+    log_synthesis_input,
+    log_synthesis_result,
+)
 
 from .brain_request import BrainRequest
 from .brain_response import BrainResponse
@@ -452,6 +464,23 @@ class Brain:
 
         planning_progress.completed()
 
+        # FORENSIC: Log execution plan
+        trace_id = get_current_trace_id()
+        if trace_id:
+            steps_data = []
+            for step in plan.steps:
+                steps_data.append({
+                    "goal_id": step.goal_id,
+                    "capability": step.execution_request.resolution.definition.id,
+                    "backend": step.execution_request.target.backend.value,
+                    "dependencies": list(step.depends_on),
+                })
+            log_plan(
+                trace_id=trace_id,
+                plan_id=plan.id,
+                steps=steps_data,
+            )
+
         try:
             results = self._supervise(request, plan, progress)
 
@@ -547,6 +576,27 @@ class Brain:
         goal_progress = progress.child(EXECUTE_GOAL_SOURCE_ID, task_id=task.id)
         goal_progress.started(message=f"Executing goal '{goal.id}'.")
 
+        # FORENSIC: Log tool start
+        trace_id = get_current_trace_id()
+        start_time = time.perf_counter()
+        if trace_id:
+            backend_request = step.execution_request.backend_request
+            arguments = {}
+            if hasattr(backend_request, 'arguments'):
+                arguments = backend_request.arguments
+            elif hasattr(backend_request, 'messages'):
+                arguments = {"messages": [{"role": m.role, "content": m.content} for m in backend_request.messages]}
+            
+            log_tool_start(
+                trace_id=trace_id,
+                goal_id=goal.id,
+                task_id=task.id,
+                capability_id=goal.capability_id,
+                tool_id=step.execution_request.target.identifier,
+                arguments=arguments,
+                backend=step.execution_request.target.backend.value,
+            )
+
         try:
             # Run synchronous execute in thread pool to avoid blocking event loop
             executed_task = await asyncio.get_event_loop().run_in_executor(
@@ -563,6 +613,21 @@ class Brain:
 
             goal_progress.failed(message=str(ex))
 
+            # FORENSIC: Log tool result (failure)
+            if trace_id:
+                execution_time = time.perf_counter() - start_time
+                log_tool_result(
+                    trace_id=trace_id,
+                    goal_id=goal.id,
+                    task_id=task.id,
+                    capability_id=goal.capability_id,
+                    tool_id=step.execution_request.target.identifier,
+                    success=False,
+                    result=None,
+                    exception=str(ex),
+                    execution_time=execution_time,
+                )
+
             return GoalResult(
                 goal_id=goal.id,
                 capability_id=goal.capability_id,
@@ -573,6 +638,56 @@ class Brain:
             )
 
         goal_progress.completed()
+
+        # FORENSIC: Log tool result (success)
+        if trace_id:
+            execution_time = time.perf_counter() - start_time
+            result_data = None
+            if executed_task.response and executed_task.response.outputs:
+                result_data = executed_task.response.outputs.get("result")
+            
+            log_tool_result(
+                trace_id=trace_id,
+                goal_id=goal.id,
+                task_id=executed_task.id,
+                capability_id=goal.capability_id,
+                tool_id=step.execution_request.target.identifier,
+                success=True,
+                result=result_data,
+                execution_time=execution_time,
+            )
+            
+            # FORENSIC: Log task response wrapping
+            raw_backend = result_data
+            cap_exec_response = None
+            task_response_data = None
+            goal_result_response_type = None
+            
+            if executed_task.response:
+                cap_exec_response = {
+                    "backend_response": str(executed_task.response.outputs.get("result"))[:500] if executed_task.response.outputs else None,
+                    "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
+                    "duration_seconds": executed_task.response.duration_seconds,
+                }
+                task_response_data = {
+                    "outputs": dict(executed_task.response.outputs) if executed_task.response.outputs else {},
+                    "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
+                    "duration_seconds": executed_task.response.duration_seconds,
+                }
+            
+            if executed_task.response and executed_task.response.outputs:
+                goal_result_response_type = type(executed_task.response.outputs.get("result")).__name__
+            
+            log_task_response_wrapping(
+                trace_id=trace_id,
+                goal_id=goal.id,
+                task_id=executed_task.id,
+                capability_id=goal.capability_id,
+                raw_backend_result=raw_backend,
+                capability_execution_response=cap_exec_response,
+                task_response=task_response_data,
+                goal_result_response_type=goal_result_response_type,
+            )
 
         return GoalResult(
             goal_id=goal.id,
@@ -633,9 +748,65 @@ class Brain:
                 if self._is_synthesis_goal(goal) and deps[goal_id]:
                     # Build dependency results for injection
                     dep_results = self._build_dependency_results(goal_id, deps, results)
+                    
+                    # FORENSIC: Log synthesis ready
+                    trace_id = get_current_trace_id()
+                    if trace_id:
+                        dependency_statuses = {}
+                        for dep_id in deps[goal_id]:
+                            if dep_id in results:
+                                if results[dep_id].succeeded:
+                                    dependency_statuses[dep_id] = "SUCCESS"
+                                elif results[dep_id].skipped:
+                                    dependency_statuses[dep_id] = "SKIPPED"
+                                else:
+                                    dependency_statuses[dep_id] = "FAILED"
+                            else:
+                                dependency_statuses[dep_id] = "UNKNOWN"
+                        
+                        all_succeeded = all(s == "SUCCESS" for s in dependency_statuses.values())
+                        
+                        log_synthesis_ready(
+                            trace_id=trace_id,
+                            synthesis_goal_id=goal_id,
+                            dependency_goal_ids=list(deps[goal_id]),
+                            dependency_statuses=dependency_statuses,
+                            all_succeeded=all_succeeded,
+                        )
+                    
                     if dep_results:
                         # Create modified execution request with dependency results
                         step = self._create_synthesis_execution_request(step, goal, dep_results)
+                        
+                        # FORENSIC: Log exact synthesis input
+                        if trace_id:
+                            backend_request = step.execution_request.backend_request
+                            if hasattr(backend_request, 'messages'):
+                                system_messages = [m.content for m in backend_request.messages if m.role == "system"]
+                                user_messages = [m.content for m in backend_request.messages if m.role == "user"]
+                                message_roles = [m.role for m in backend_request.messages]
+                                
+                                # Find dependency results message
+                                dep_results_msg = None
+                                for m in backend_request.messages:
+                                    if m.role == "system" and "DEPENDENCY RESULTS" in m.content:
+                                        dep_results_msg = m.content
+                                        break
+                                
+                                log_synthesis_input(
+                                    trace_id=trace_id,
+                                    synthesis_goal_id=goal_id,
+                                    model=step.execution_request.target.model.id if step.execution_request.target.model else None,
+                                    provider=step.execution_request.target.identifier,
+                                    system_messages=system_messages,
+                                    dependency_results_message=dep_results_msg,
+                                    user_message=user_messages[0] if user_messages else None,
+                                    message_roles=message_roles,
+                                    message_ordering=message_roles,
+                                    advertised_tools=[t.name for t in backend_request.tools] if hasattr(backend_request, 'tools') and backend_request.tools else [],
+                                    request_options=asdict(backend_request.options) if hasattr(backend_request, 'options') and backend_request.options else {},
+                                    context_metadata={},
+                                )
                 
                 # Create async task for this goal
                 coro = self._execute_goal_async(goal, step, progress)
@@ -665,8 +836,11 @@ class Brain:
                     result = completed_task.result()
                 except Exception as ex:
                     # Exception during execution
+                    goal = goals_by_id.get(completed_goal_id)
+                    capability_id = goal.capability_id if goal else "unknown"
                     result = GoalResult(
                         goal_id=completed_goal_id,
+                        capability_id=capability_id,
                         task_id=None,
                         status=None,
                         failure=ex,
@@ -735,6 +909,36 @@ class Brain:
                                             depends_on=tuple(step.depends_on),
                                         )
                                     goal_progress.completed()
+                                    
+                                    # FORENSIC: Log synthesis result
+                                    trace_id = get_current_trace_id()
+                                    if trace_id:
+                                        raw_response = None
+                                        response_type = None
+                                        tool_calls = 0
+                                        if executed_task.response and executed_task.response.outputs:
+                                            result_data = executed_task.response.outputs.get("result")
+                                            if hasattr(result_data, 'message'):
+                                                raw_response = result_data.message.content
+                                                response_type = type(result_data).__name__
+                                                if hasattr(result_data, 'tool_calls'):
+                                                    tool_calls = len(result_data.tool_calls) if result_data.tool_calls else 0
+                                            else:
+                                                raw_response = str(result_data)
+                                                response_type = type(result_data).__name__
+                                        
+                                        log_synthesis_result(
+                                            trace_id=trace_id,
+                                            synthesis_goal_id=goal.id,
+                                            model=synthesis_step.execution_request.target.model.id if synthesis_step.execution_request.target.model else None,
+                                            provider=synthesis_step.execution_request.target.identifier,
+                                            success=executed_task.status is not None,  # Approximate
+                                            response_type=response_type,
+                                            raw_response=raw_response,
+                                            tool_calls=tool_calls,
+                                            response_length=len(raw_response) if raw_response else 0,
+                                        )
+                                    
                                     return GoalResult(
                                         goal_id=goal.id,
                                         capability_id=goal.capability_id,

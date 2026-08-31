@@ -37,6 +37,7 @@ from .manifest import WeatherMode
 from .retry import retry_with_backoff
 from .transport import HttpTransport
 from .weather_codes import describe_weather_code
+from parika.core.forensic_log import get_current_trace_id
 
 FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 
@@ -193,6 +194,21 @@ class WeatherToolDriver:
                 place.latitude, place.longitude, forecast_days=days
             )
             result = self._build_forecast_result(place, payload, days=days)
+
+        # FORENSIC: Log raw tool output
+        trace_id = get_current_trace_id()
+        if trace_id:
+            from parika.core.forensic_log import log_tool_result
+            log_tool_result(
+                trace_id=trace_id,
+                goal_id="",
+                task_id="",
+                capability_id=self._mode.value,
+                tool_id=f"tool.weather_{self._mode.value}",
+                success=True,
+                result=result,
+                result_type="dict",
+            )
 
         return ToolResponse(
             result=result,

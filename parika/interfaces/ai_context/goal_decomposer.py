@@ -23,147 +23,35 @@ from typing import Any
 from uuid import uuid4
 
 from parika.core.brain.brain import Brain
-from parika.core.brain.brain_request import BrainRequest
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
-from parika.core.capability_resolver.capability_resolution import CapabilityResolution
+from parika.core.configuration.configuration import Configuration
 from parika.core.planner.goal import Goal
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_request import ChatRequest
 from parika.core.provider_manager.options import RequestOptions
 from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.provider_manager.provider_model import ProviderModel
-from parika.core.provider_manager.request import ProviderRequest
+from parika.core.planner.model_selection.routing_config import RoutingConfig, load_routing_config
+from parika.core.planner.model_selection.routing_strategy import select_fixed_routing_model
+from parika.core.planner.model_selection.requirements import ExecutionRequirements, ThinkingMode, Requirement
+from parika.core.provider_manager.model_capability import ModelCapability
+from parika.core.forensic_log import (
+    get_current_trace_id,
+    log_decomposer_input,
+    log_decomposition_raw,
+    log_decomposition_goals,
+)
 
 
-DECOMPOSITION_DOMAIN_KEYWORDS: dict[str, frozenset[str]] = {
-    "weather": frozenset({
-        "weather", "temperature", "forecast", "rain", "sunny", "cloudy",
-        "humidity", "wind", "climate", "storm", "snow", "hot", "cold",
-        "degrees", "celsius", "fahrenheit", "precipitation", "conditions"
-    }),
-    "currency": frozenset({
-        "currency", "exchange", "rate", "convert", "usd", "eur", "inr",
-        "gbp", "jpy", "cny", "money", "fx", "forex", "dollar", "euro",
-        "rupee", "yen", "yuan", "pound", "bitcoin", "crypto", "btc"
-    }),
-    "web": frozenset({
-        "search", "web", "google", "internet", "look up", "find", "query",
-        "browse", "lookup", "online", "website", "url", "link"
-    }),
-    "filesystem": frozenset({
-        "file", "read", "write", "list", "directory", "folder", "path",
-        "open", "save", "create", "delete", "copy", "move", "mkdir",
-        "touch", "cat", "ls", "dir", "folder", "disk", "storage"
-    }),
-    "shell": frozenset({
-        "shell", "command", "execute", "run", "terminal", "bash", "cmd",
-        "script", "process", "command line", "cli", "sh", "zsh", "powershell"
-    }),
-    "vision": frozenset({
-        "image", "picture", "photo", "describe", "analyze", "detect",
-        "vision", "object", "face", "scene", "visual", "look at", "see",
-        "identify", "recognize", "classify", "caption"
-    }),
-    "video": frozenset({
-        "video", "movie", "clip", "generate", "edit", "film", "record",
-        "animate", "animation", "footage", "timeline", "frame"
-    }),
-    "image": frozenset({
-        "image", "generate", "create", "picture", "draw", "art", "illustration",
-        "generate image", "make image", "create picture", "draw"
-    }),
-    "ocr": frozenset({
-        "ocr", "extract", "text", "scan", "pdf", "document", "read",
-        "recognize", "transcribe", "digitize", "read text"
-    }),
-    "document": frozenset({
-        "document", "pdf", "read", "extract", "summarize", "analyze",
-        "doc", "docx", "txt", "markdown", "md", "report", "paper",
-        "contract", "invoice", "receipt", "form"
-    }),
-    "memory": frozenset({
-        "memory", "remember", "forget", "recall", "store", "note",
-        "memorize", "save", "retention", "long term", "permanent"
-    }),
-    "news": frozenset({
-        "news", "latest", "headlines", "current", "today", "breaking",
-        "articles", "journalism", "press", "media", "reporters"
-    }),
-    "expense": frozenset({
-        "expense", "spend", "cost", "track", "budget", "log", "record",
-        "spent", "paid", "purchase", "buy", "bought", "financial"
-    }),
-    "media": frozenset({
-        "media", "play", "music", "video", "song", "audio", "pause",
-        "resume", "stop", "volume", "playlist", "queue", "track"
-    }),
-    "runtime": frozenset({
-        "time", "date", "datetime", "now", "current", "clock", "system",
-        "info", "timestamp", "timezone", "utc", "local time", "what time"
-    }),
-    "coding": frozenset({
-        "code", "coding", "program", "function", "class", "refactor",
-        "search", "parse", "symbol", "debug", "bug", "fix", "implement",
-        "feature", "module", "library", "api", "syntax", "ast"
-    }),
-    "voice": frozenset({
-        "voice", "speech", "speak", "listen", "transcribe", "tts", "stt",
-        "audio", "record", "microphone", "speech to text", "text to speech"
-    }),
-}
-
-
-def _filter_capabilities_by_domain(
-    user_message: str,
+def _get_all_enabled_capabilities(
     capability_registry: CapabilityRegistry,
 ) -> frozenset[str]:
-    """
-    Filter capabilities based on domain keywords in the user message.
-    
-    If no domain keywords match, returns ALL enabled capabilities (safe fallback).
-    Always includes chat.respond for synthesis.
-    """
-    query_lower = user_message.lower()
-    query_words = set(re.findall(r"[a-z0-9]+", query_lower))
-    
-    # Determine relevant domains
-    relevant_domains = set()
-    for domain, keywords in DECOMPOSITION_DOMAIN_KEYWORDS.items():
-        if query_words & keywords:
-            relevant_domains.add(domain)
-    
-    # If no domains matched, return all capabilities (safe fallback)
-    if not relevant_domains:
-        all_caps = frozenset(
-            cap.id for cap in capability_registry.get_all()
-            if cap.enabled
-        )
-        return all_caps
-    
-    # Filter capabilities by domain
-    # Use first part of capability ID as domain
-    all_caps = capability_registry.get_all()
-    enabled_caps = [cap for cap in all_caps if cap.enabled]
-    
-    cap_to_domain = {}
-    for cap in enabled_caps:
-        domain = cap.id.split(".")[0]
-        cap_to_domain[cap.id] = domain
-    
-    filtered = frozenset(
-        cap_id for cap_id, domain in cap_to_domain.items()
-        if domain in relevant_domains
+    """Return all enabled capability IDs from the registry."""
+    return frozenset(
+        cap.id for cap in capability_registry.get_all()
+        if cap.enabled
     )
-    
-    # Always include chat.respond for synthesis
-    chat_respond_available = any(
-        cap.id == "chat.respond" for cap in enabled_caps
-    )
-    if chat_respond_available:
-        filtered = filtered | frozenset(["chat.respond"])
-    
-    return filtered
 
 
 _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE = """\
@@ -223,13 +111,13 @@ class GoalDecomposer:
     def __init__(
         self,
         *,
-        brain: Brain,
         capability_registry: CapabilityRegistry,
         provider_manager: ProviderManager,
+        configuration: Configuration,
     ) -> None:
-        self._brain = brain
         self._capability_registry = capability_registry
         self._provider_manager = provider_manager
+        self._configuration = configuration
 
     def decompose(
         self,
@@ -243,15 +131,15 @@ class GoalDecomposer:
         Args:
             user_message: The user's natural language request
             available_capabilities: Optional filter of capability IDs to consider.
-                                   Defaults to domain-filtered capabilities.
+                                   Defaults to all enabled capabilities.
         
         Returns:
             DecompositionResult with goals and raw response
         """
-        # Apply deterministic domain filtering if not explicitly provided
+        # Use all enabled capabilities if not explicitly provided
         if available_capabilities is None:
-            available_capabilities = _filter_capabilities_by_domain(
-                user_message, self._capability_registry
+            available_capabilities = _get_all_enabled_capabilities(
+                self._capability_registry
             )
 
         # Build the decomposition prompt
@@ -265,38 +153,74 @@ class GoalDecomposer:
             ChatMessage(role="user", content=user_message),
         )
 
-        # Use the routing model (chat.respond) for decomposition
-        def _build_request(
-            resolution: CapabilityResolution,
-            model: ProviderModel,
-        ) -> ProviderRequest:
-            return ChatRequest(
-                messages=messages,
-                options=RequestOptions(reasoning=False),
+        # FORENSIC: Log decomposer input
+        trace_id = get_current_trace_id()
+        if trace_id:
+            # Extract capability info
+            all_caps = self._capability_registry.get_all()
+            enabled_caps = [cap for cap in all_caps if cap.enabled]
+            capability_ids = [cap.id for cap in enabled_caps]
+            
+            log_decomposer_input(
+                trace_id=trace_id,
+                model="goal_decomposition (routing model)",
+                provider="routing_model",
+                request_options={"reasoning": False},
+                reasoning=False,
+                num_capabilities=len(capability_ids),
+                capability_ids=capability_ids,
+                system_prompt=system_prompt,
+                messages=[{"role": m.role, "content": m.content} for m in messages],
             )
 
-        decomposition_goal = Goal(
-            id=f"decompose_{uuid4().hex}",
-            capability_id="chat.respond",
-            inputs={"decomposition_request": user_message},
-            provider_request_builder=_build_request,
-            metadata={
-                "execution_requirements": {
-                    "tool_calling": "not_needed",
-                    "streaming_required": False,
-                }
-            },
-        )
-
-        # Execute decomposition goal
-        response = self._brain.handle(BrainRequest(goals=(decomposition_goal,)))
-
-        if not response.results or not response.results[0].succeeded:
+        # Get the routing model for decomposition
+        routing_model = self._get_routing_model()
+        if routing_model is None:
             # Fallback: treat as single chat goal
             return self._fallback_single_goal(user_message)
 
-        raw_response = self._extract_text(response.results[0])
+        # Execute decomposition via direct provider inference
+        chat_request = ChatRequest(
+            messages=messages,
+            options=RequestOptions(reasoning=False),
+        )
+
+        try:
+            response = self._provider_manager.execute(
+                provider_id=routing_model.provider_id,
+                model=routing_model.model,
+                request=chat_request,
+            )
+        except Exception:
+            # Fallback on any provider execution error
+            return self._fallback_single_goal(user_message)
+
+        # Extract the response text
+        raw_response = self._extract_text_from_provider_response(response)
+        
+        # FORENSIC: Log raw decomposition output
+        if trace_id:
+            log_decomposition_raw(
+                trace_id=trace_id,
+                raw_response=raw_response,
+            )
+
         goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
+        
+        # FORENSIC: Log decomposed goals
+        if trace_id:
+            goal_list = []
+            for goal in goals:
+                goal_list.append({
+                    "id": goal.id,
+                    "capability_id": goal.capability_id,
+                    "inputs": goal.inputs,
+                    "depends_on": list(goal.depends_on),
+                })
+            log_decomposition_goals(
+                trace_id=trace_id,
+                goals=goal_list,
+            )
 
         return DecompositionResult(
             goals=tuple(goals),
@@ -426,16 +350,65 @@ class GoalDecomposer:
             return backend_response.message.content
         return str(backend_response)
 
+    def _extract_text_from_provider_response(self, response) -> str:
+        """Extract text from provider response."""
+        if response is None:
+            return ""
+        
+        # ProviderResponse has outputs dict with result
+        result = response.outputs.get("result") if hasattr(response, 'outputs') and response.outputs else None
+        if result is None:
+            return ""
+        
+        if hasattr(result, "message"):
+            return result.message.content
+        return str(result)
+
+    def _get_routing_model(self) -> tuple[str, ProviderModel] | None:
+        """Get the routing model from configuration."""
+        # Get routing config
+        routing_config = load_routing_config(self._configuration)
+        
+        if not routing_config.is_fixed:
+            # For non-fixed mode, we would need to use the full model selection
+            # For now, only support fixed mode as per current config
+            return None
+        
+        # Get all providers
+        providers = self._provider_manager.get_all()
+        
+        # Create minimal execution requirements for routing model
+        from parika.core.provider_manager.model_capability import ModelCapability
+        requirements = ExecutionRequirements(
+            capability=ModelCapability.TEXT_GENERATION,
+            tool_calling=Requirement.NOT_NEEDED,
+            streaming_required=False,
+            required_modalities=frozenset(["text"]),
+        )
+        
+        # Select the fixed routing model
+        selection_result = select_fixed_routing_model(
+            providers=providers,
+            requirements=requirements,
+            routing_config=routing_config,
+            logger=__import__('logging').getLogger(__name__),
+        )
+        
+        if selection_result is None or selection_result.selected_model is None:
+            return None
+        
+        return (selection_result.selected_provider_id, selection_result.selected_model)
+
 
 def create_goal_decomposer(
     *,
-    brain: Brain,
     capability_registry: CapabilityRegistry,
     provider_manager: ProviderManager,
+    configuration: Configuration,
 ) -> GoalDecomposer:
     """Factory function to create a GoalDecomposer."""
     return GoalDecomposer(
-        brain=brain,
         capability_registry=capability_registry,
         provider_manager=provider_manager,
+        configuration=configuration,
     )

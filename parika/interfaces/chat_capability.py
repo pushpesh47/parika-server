@@ -243,9 +243,9 @@ def decompose_and_build_goals(
         Tuple of Goals ready for Brain.handle()
     """
     decomposer = goal_decomposer.create_goal_decomposer(
-        brain=runtime.brain,
         capability_registry=runtime.capability_registry,
         provider_manager=runtime.provider_manager,
+        configuration=runtime.configuration,
     )
     
     result = decomposer.decompose(latest_message)

@@ -46,6 +46,11 @@ from .chat_capability import (
     decompose_and_build_goals,
     discover_tool_specs,
 )
+from parika.core.forensic_log import (
+    set_trace_context,
+    get_current_trace_id,
+    log_final_result,
+)
 from .conversation_state import ConversationState, ConversationStateManager, build_static_prefix
 from .history import HistoryEntry, HistoryRole
 from .runtime import ParikaRuntime
@@ -420,8 +425,10 @@ class InterfaceSession:
             The outcome of this turn.
         """
 
-        user_message = ChatMessage(role="user", content=text)
+        # FORENSIC: Set trace context for this request
+        trace_id = set_trace_context(user_query=text, session_id=self.id)
         
+        user_message = ChatMessage(role="user", content=text)
         self._history.append(HistoryEntry(role=HistoryRole.USER, text=text))
         self._conversation_state = self._conversation_state.append_user_message(user_message)
 
@@ -563,6 +570,24 @@ class InterfaceSession:
         )
 
         result = ChatTurnResult(brain_response=brain_response)
+
+        # FORENSIC: Log final result
+        trace_id = get_current_trace_id()
+        if trace_id:
+            used_tools = []
+            for goal_result in brain_response.results:
+                if goal_result.succeeded and goal_result.capability_id not in ["chat.respond"]:
+                    used_tools.append(goal_result.capability_id)
+            
+            final_response = result.chat_response.message.content if result.chat_response else (result.error_message or "")
+            log_final_result(
+                trace_id=trace_id,
+                success=result.succeeded,
+                used_tools=used_tools,
+                response=final_response,
+                response_status=result.status.value,
+                request_id=brain_response.request_id,
+            )
 
         self._last_turn_diagnostics = _build_last_turn_diagnostics(
             context_bundle=context_bundle,

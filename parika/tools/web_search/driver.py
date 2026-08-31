@@ -26,6 +26,7 @@ from typing import Any
 
 from parika.core.tool_manager.request import ToolRequest
 from parika.core.tool_manager.response import ToolResponse
+from parika.core.forensic_log import get_current_trace_id
 
 from .cache import SearchResultCache, make_cache_key
 from .config import DEFAULT_CANDIDATE_POOL_SIZE, DEFAULT_MAX_RESULTS
@@ -300,8 +301,25 @@ class WebSearchToolDriver:
         if validation_attributes is not None:
             attributes["validation"] = validation_attributes
 
+        result_data = tuple(_result_to_dict(result) for result in results)
+
+        # FORENSIC: Log raw tool output
+        trace_id = get_current_trace_id()
+        if trace_id:
+            from parika.core.forensic_log import log_tool_result
+            log_tool_result(
+                trace_id=trace_id,
+                goal_id="",
+                task_id="",
+                capability_id="web.search",
+                tool_id="tool.web_search",
+                success=True,
+                result=result_data,
+                result_type="tuple",
+            )
+
         return ToolResponse(
-            result=tuple(_result_to_dict(result) for result in results),
+            result=result_data,
             attributes=attributes,
         )
 

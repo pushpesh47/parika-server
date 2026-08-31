@@ -175,9 +175,9 @@ class TestMultiGoalDecomposition:
         # In real integration tests, the full runtime with providers is used
         
         decomposer = create_goal_decomposer(
-            brain=self.brain,
             capability_registry=self.capability_registry,
             provider_manager=self.provider_manager,
+            configuration=self.config,
         )
         
         # The decomposer will try to use the LLM for decomposition
@@ -198,21 +198,23 @@ class TestMultiGoalDecomposition:
         
         # Create a minimal decomposer
         decomposer = GoalDecomposer(
-            brain=Mock(spec=Brain),
             capability_registry=self.capability_registry,
             provider_manager=self.provider_manager,
+            configuration=self.config,
         )
         
         # Test the parsing directly
-        raw_response = json.dumps({
-            "goals": [
-                {"id": "g1", "capability_id": "weather.current", "inputs": {"location": "Patna"}, "depends_on": []},
-                {"id": "g2", "capability_id": "weather.forecast", "inputs": {"location": "Patna"}, "depends_on": []},
-                {"id": "g3", "capability_id": "currency.convert", "inputs": {"from": "USD", "to": "INR", "amount": 1}, "depends_on": []},
-                {"id": "g4", "capability_id": "web.search", "inputs": {"query": "Jharkhand protest"}, "depends_on": []},
-                {"id": "g5", "capability_id": "chat.respond", "inputs": {"message": "Summarize everything"}, "depends_on": ["g1", "g2", "g3", "g4"]},
-            ]
-        })
+        raw_response = """```json
+{
+    "goals": [
+        {"id": "g1", "capability_id": "weather.current", "inputs": {"location": "Patna"}, "depends_on": []},
+        {"id": "g2", "capability_id": "weather.forecast", "inputs": {"location": "Patna"}, "depends_on": []},
+        {"id": "g3", "capability_id": "currency.convert", "inputs": {"from": "USD", "to": "INR", "amount": 1}, "depends_on": []},
+        {"id": "g4", "capability_id": "web.search", "inputs": {"query": "Jharkhand protest"}, "depends_on": []},
+        {"id": "g5", "capability_id": "chat.respond", "inputs": {"message": "Summarize everything"}, "depends_on": ["g1", "g2", "g3", "g4"]}
+    ]
+}
+```"""
         
         available = frozenset([
             "chat.respond", "weather.current", "weather.forecast", 

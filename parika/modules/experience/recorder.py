@@ -34,6 +34,7 @@ from parika.core.task_manager.task_manager import (
 from .experience import Experience
 from .experience_outcome import ExperienceOutcome
 from .experience_store import ExperienceStore
+from parika.core.forensic_log import get_current_trace_id
 
 
 class ExperienceRecorder:
@@ -76,6 +77,21 @@ class ExperienceRecorder:
             provider_id = task.response.metadata.get("provider_id")
             model_id = task.response.metadata.get("model_id")
 
+        # FORENSIC: Log experience registration
+        trace_id = get_current_trace_id()
+        if trace_id:
+            from parika.core.forensic_log import log_experience_registration
+            log_experience_registration(
+                trace_id=trace_id,
+                capability_id=task.request.capability_id,
+                outcome="SUCCESS",
+                provider_id=provider_id,
+                model_id=model_id,
+                latency_ms=latency_ms,
+                task_succeeded=True,
+                task_id=task.id,
+            )
+
         self._experience_store.register(
             Experience(
                 experience_id=uuid4().hex,
@@ -90,6 +106,20 @@ class ExperienceRecorder:
 
     def _on_task_failed(self, event: TaskFailedEvent) -> None:
         task = event.task
+
+        # FORENSIC: Log experience registration
+        trace_id = get_current_trace_id()
+        if trace_id:
+            from parika.core.forensic_log import log_experience_registration
+            log_experience_registration(
+                trace_id=trace_id,
+                capability_id=task.request.capability_id,
+                outcome="FAILURE",
+                provider_id=None,
+                model_id=None,
+                task_succeeded=False,
+                task_id=task.id,
+            )
 
         self._experience_store.register(
             Experience(
