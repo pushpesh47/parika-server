@@ -816,3 +816,238 @@ def test_chat_turn_result_status_single_goal_failure():
     assert chat_turn_result.status == RequestStatus.FAILED
     assert chat_turn_result.succeeded is False
     assert chat_turn_result.partial_success is False
+
+
+def test_synthesis_dependency_results_extract_actual_tool_data():
+    """
+    Regression test for tool result extraction in synthesis dependency results.
+    
+    Verifies that when a dependency goal succeeds with a TaskResponse containing
+    a ToolResponse, the actual tool data (ToolResponse.result) is extracted
+    and passed to synthesis, NOT the wrapper objects.
+    
+    This prevents the bug where synthesis received:
+        TaskResponse(outputs=mappingproxy({'result': ToolResponse(result=actual_data)}))
+    
+    instead of:
+        actual_data
+    """
+    from parika.core.brain.brain import Brain
+    from parika.core.brain.brain_request import BrainRequest
+    from parika.core.brain.goal_result import GoalResult
+    from parika.core.capability_executor.capability_executor import CapabilityExecutor
+    from parika.core.capability_registry.capability_category import CapabilityCategory
+    from parika.core.capability_registry.capability_definition import CapabilityDefinition
+    from parika.core.capability_registry.capability_registry import CapabilityRegistry
+    from parika.core.capability_resolver.capability_resolver import CapabilityResolver
+    from parika.core.configuration.configuration import Configuration
+    from parika.core.event_bus.event_bus import EventBus
+    from parika.core.logger.logger import Logger
+    from parika.core.planner.goal import Goal
+    from parika.core.planner.planner import Planner
+    from parika.core.policy_engine.policy_engine import PolicyEngine
+    from parika.core.provider_manager.provider_manager import ProviderManager
+    from parika.core.provider_manager.provider_model import ProviderModel
+    from parika.core.provider_manager.model_capability import ModelCapability
+    from parika.core.provider_manager.provider import Provider
+    from parika.core.provider_manager.driver import ProviderDriver
+    from parika.core.provider_manager.provider_health import ProviderHealth
+    from parika.core.provider_manager.chat_request import ChatRequest
+    from parika.core.provider_manager.chat_message import ChatMessage
+    from parika.core.provider_manager.chat_result import ChatResult
+    from parika.core.provider_manager.request import RequestOptions
+    from parika.core.state_manager.states import ProviderState
+    from parika.core.resource_manager.resource_manager import ResourceManager
+    from parika.core.task_manager.task_manager import TaskManager
+    from parika.core.task_manager.task_status import TaskStatus
+    from parika.core.task_manager.response import TaskResponse
+    from parika.core.tool_manager.tool_manager import ToolManager
+    from parika.core.tool_manager.response import ToolResponse
+    from parika.interfaces.ai_context.goal_builder import _PROMPT_TOKEN_ESTIMATOR, _estimate_prompt_tokens
+    
+    class _RecordingProviderDriver(ProviderDriver):
+        def __init__(self) -> None:
+            self.captured_requests: list[ChatRequest] = []
+        
+        def discover_models(self):
+            return frozenset()
+        
+        def check_health(self):
+            return ProviderHealth(available=True)
+        
+        def execute(self, model: ProviderModel, request: ChatRequest):
+            self.captured_requests.append(request)
+            return ChatResult(
+                message=ChatMessage(role="assistant", content="Synthesis complete."),
+                tool_invocations=(),
+            )
+    
+    def _register_tool(
+        capability_registry: CapabilityRegistry,
+        tool_manager: ToolManager,
+        *,
+        capability_id: str,
+        tool_id: str,
+        driver,
+    ) -> None:
+        capability_registry.register(
+            CapabilityDefinition(
+                id=capability_id,
+                name=capability_id,
+                description=capability_id,
+                category=CapabilityCategory.TOOL,
+            )
+        )
+        tool_manager.register(
+            Tool(
+                id=tool_id,
+                name=tool_id,
+                version="1.0.0",
+                description=tool_id,
+                capabilities=(capability_id,),
+            ),
+            driver,
+        )
+    
+    def _build_provider_request(messages, tools, on_token=None):
+        estimated_prompt_tokens = _estimate_prompt_tokens(
+            messages, tools, estimator=_PROMPT_TOKEN_ESTIMATOR
+        )
+        
+        return ChatRequest(
+            messages=messages,
+            tools=tools,
+            on_token=on_token,
+            options=RequestOptions(
+                estimated_prompt_tokens=estimated_prompt_tokens
+            ),
+        )
+    
+    config = Configuration()
+    config.load()
+    logger = Logger(config)
+    event_bus = EventBus(logger)
+    
+    capability_registry = CapabilityRegistry(event_bus, logger)
+    capability_resolver = CapabilityResolver(capability_registry=capability_registry, logger=logger)
+    resource_manager = ResourceManager(configuration=config, logger=logger)
+    policy_engine = PolicyEngine(event_bus=event_bus, logger=logger)
+    provider_manager = ProviderManager(event_bus=event_bus, logger=logger)
+    tool_manager = ToolManager(event_bus=event_bus, logger=logger)
+    
+    planner = Planner(
+        capability_resolver=capability_resolver,
+        resource_manager=resource_manager,
+        policy_engine=policy_engine,
+        provider_manager=provider_manager,
+        tool_manager=tool_manager,
+        logger=logger,
+        configuration=config,
+    )
+    
+    capability_executor = CapabilityExecutor(
+        event_bus=event_bus,
+        logger=logger,
+        tool_manager=tool_manager,
+        provider_manager=provider_manager,
+    )
+    
+    task_manager = TaskManager(
+        event_bus=event_bus,
+        logger=logger,
+        capability_executor=capability_executor,
+    )
+    
+    brain = Brain(planner=planner, task_manager=task_manager, logger=logger, event_bus=event_bus)
+    
+    # Register chat.respond capability
+    capability_registry.register(
+        CapabilityDefinition(
+            id="chat.respond",
+            name="Chat Respond",
+            description="Generate chat response",
+            category=CapabilityCategory.LLM,
+        )
+    )
+    
+    provider_driver = _RecordingProviderDriver()
+    provider_manager.register(
+        Provider(
+            id="provider.test",
+            name="Test Provider",
+            state=ProviderState.CONNECTED,
+            models=(
+                ProviderModel(
+                    id="test-model",
+                    name="Test Model",
+                    capabilities=frozenset({ModelCapability.TEXT_GENERATION}),
+                ),
+            ),
+        ),
+        provider_driver,
+    )
+    
+    # Register a tool that returns structured data (like weather.current)
+    class _WeatherDriver:
+        def execute(self, request):
+            return ToolResponse(result={
+                "location": "Gaya",
+                "country": "India",
+                "temperature": 27.6,
+                "description": "Overcast",
+                "humidity": 94
+            })
+    
+    _register_tool(capability_registry, tool_manager, capability_id="weather.current", tool_id="tool.weather_current", driver=_WeatherDriver())
+    
+    # Create goals with chat.respond synthesis that has provider_request_builder
+    def provider_builder(resolution, model):
+        from parika.core.provider_manager.chat_message import ChatMessage
+        return _build_provider_request(
+            messages=(ChatMessage(role="user", content="Summarize weather"),),
+            tools=(),
+            on_token=None,
+        )
+    
+    goals = (
+        Goal(id="g1", capability_id="weather.current", inputs={"location": "Gaya"}),
+        Goal(id="g2", capability_id="chat.respond", inputs={"message": "Summarize weather"}, depends_on=("g1",), provider_request_builder=provider_builder),
+    )
+    
+    request = BrainRequest(goals=goals)
+    response = brain.handle(request)
+    
+    # Verify execution
+    assert len(response.results) == 2
+    results_by_id = {r.goal_id: r for r in response.results}
+    assert results_by_id["g1"].succeeded
+    assert results_by_id["g2"].succeeded
+    
+    # Verify provider request was captured
+    assert len(provider_driver.captured_requests) == 1
+    synthesis_request = provider_driver.captured_requests[0]
+    
+    # Check that dependency results are injected as a system message
+    dep_messages = [msg for msg in synthesis_request.messages if "DEPENDENCY RESULTS FOR SYNTHESIS" in msg.content]
+    assert len(dep_messages) == 1, "Should have exactly one dependency results message"
+    
+    dep_content = dep_messages[0].content
+    
+    # CRITICAL: Verify actual tool data is present, NOT wrapper objects
+    assert "Gaya" in dep_content, "Should contain actual location from tool result"
+    assert "27.6" in dep_content or "27" in dep_content, "Should contain actual temperature from tool result"
+    assert "Overcast" in dep_content, "Should contain actual description from tool result"
+    assert "India" in dep_content, "Should contain actual country from tool result"
+    
+    # CRITICAL: Verify wrapper objects are NOT present
+    assert "TaskResponse" not in dep_content, "Should NOT contain TaskResponse wrapper"
+    assert "ToolResponse" not in dep_content, "Should NOT contain ToolResponse wrapper"
+    assert "mappingproxy" not in dep_content.lower(), "Should NOT contain mappingproxy representation"
+    
+    print("✓ Regression test passed: Actual tool data extracted correctly!")
+
+
+if __name__ == "__main__":
+    test_synthesis_provider_request_contains_dependency_results()
+    test_synthesis_dependency_results_extract_actual_tool_data()
+    print("✓ All tests passed!")

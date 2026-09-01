@@ -277,9 +277,17 @@ class Brain:
             if dep_id in results:
                 result = results[dep_id]
                 if result.succeeded:
+                    # Extract actual tool result from TaskResponse.outputs["result"].result
+                    tool_result = None
+                    if result.response is not None:
+                        tool_response = result.response.outputs.get("result")
+                        if tool_response is not None and hasattr(tool_response, "result"):
+                            tool_result = tool_response.result
+                        else:
+                            tool_result = tool_response
                     dep_results[dep_id] = {
                         "status": "success",
-                        "result": result.response,
+                        "result": tool_result,
                     }
                 elif result.skipped:
                     dep_results[dep_id] = {
