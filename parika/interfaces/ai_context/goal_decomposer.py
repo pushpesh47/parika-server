@@ -222,6 +222,10 @@ class GoalDecomposer:
             ChatMessage(role="user", content=user_message),
         )
 
+        # Get routing config to use its fixed_thinking setting for reasoning
+        routing_config = load_routing_config(self._configuration)
+        decomposition_reasoning = routing_config.fixed_thinking if routing_config.is_fixed else False
+
         # FORENSIC: Log decomposer input
         trace_id = get_current_trace_id()
         if trace_id:
@@ -234,8 +238,11 @@ class GoalDecomposer:
                 trace_id=trace_id,
                 model="goal_decomposition (routing model)",
                 provider="routing_model",
-                request_options={"reasoning": False},
-                reasoning=False,
+                request_options={"reasoning": decomposition_reasoning, "temperature": 0.0, "seed": 42, "top_p": 1.0},
+                reasoning=decomposition_reasoning,
+                temperature=0.0,
+                seed=42,
+                top_p=1.0,
                 num_capabilities=len(capability_ids),
                 capability_ids=capability_ids,
                 system_prompt=system_prompt,
@@ -260,7 +267,12 @@ class GoalDecomposer:
         for attempt in range(max_retries + 1):
             chat_request = ChatRequest(
                 messages=messages,
-                options=RequestOptions(reasoning=False),
+                options=RequestOptions(
+                    reasoning=decomposition_reasoning,
+                    temperature=0.0,
+                    seed=42,
+                    top_p=1.0,
+                ),
             )
 
             try:
