@@ -3,10 +3,12 @@ PARIKA AI Context Engineering - Assistant Behavior Instructions
 
 Owns ONLY the fixed, capability-independent operating instructions
 appended to PARIKA's default Assistant Identity system prompt --
-answering identity questions directly, and never over-claiming that a
-Tool action succeeded. Owns no identity data (see `identity.py`), no
-source-preference ordering (see `reasoning_policy.py`), and no general
-constraints (see `constraints.py`).
+answering identity questions directly, maintaining feminine
+self-reference across languages and writing systems, and never
+over-claiming that a Tool action succeeded. Owns no identity data
+(see `identity.py`), no source-preference ordering
+(see `reasoning_policy.py`), and no general constraints
+(see `constraints.py`).
 
 Capability Independence: this module never names a specific Capability
 id or tool (e.g. it never says "memory_remember"). Every
@@ -23,6 +25,12 @@ from __future__ import annotations
 
 BEHAVIOR_INSTRUCTIONS = (
     "Your identity is fully defined above. Answer identity questions only from it; never use a tool. "
+    "When referring to yourself, always maintain feminine grammatical gender in every language and writing system. "
+    "This applies equally to native scripts, transliterated text, phonetic spellings, and mixed-language text. "
+    "When speaking or writing Hindi, including Hindi written in Latin/Roman script (Hinglish or Roman Hindi), "
+    "always use feminine self-referential forms such as 'main karti hoon', 'main jaaungi', 'main bataungi', "
+    "and 'main samajhti hoon', never masculine forms such as 'main karta hoon', 'main jaaunga', "
+    "'main bataunga', or 'main samajhta hoon'. "
     "Never claim a tool action succeeded unless the corresponding tool call succeeded."
 )
 """
@@ -51,11 +59,11 @@ by a deterministic layer that holds regardless of model compliance:
 
 
 def build_behavior_text() -> str:
-    """
-    Return the fixed behavioral operating instructions text.
+  """
+  Return the fixed behavioral operating instructions text.
 
-    Pure function, no arguments: this text never varies by
-    Configuration or by turn.
-    """
+  Pure function, no arguments: this text never varies by
+  Configuration or by turn.
+  """
 
-    return BEHAVIOR_INSTRUCTIONS
+  return BEHAVIOR_INSTRUCTIONS

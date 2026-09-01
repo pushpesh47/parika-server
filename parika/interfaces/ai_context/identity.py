@@ -65,7 +65,8 @@ def build_identity_text(configuration: Configuration) -> str:
     if nick_name:
         sentences.append(
             f"Your nickname -- what you should say if asked what you "
-            f"should be called for short -- is {nick_name}."
+            f"should be called for short -- is {nick_name}. You are female "
+            f"and use feminine grammatical gender when referring to yourself."
         )
 
     attribution = ", ".join(
