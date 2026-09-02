@@ -4,7 +4,7 @@ complete user request execution pipeline.
 
 This module provides a centralized logging mechanism for forensic
 tracing of the entire execution pipeline from user query to final
-response. All logs are written to /mnt/dev/python/parika/tmp/goal_execution_trace.log
+response. All logs use the configured logging directory.
 
 DO NOT USE IN PRODUCTION - This is temporary debugging instrumentation only.
 """
@@ -12,20 +12,24 @@ DO NOT USE IN PRODUCTION - This is temporary debugging instrumentation only.
 from __future__ import annotations
 
 import json
-import os
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-_LOG_FILE = "/mnt/dev/python/parika/tmp/goal_execution_trace.log"
+from parika.core.configuration.configuration import Configuration
+
+
 _lock = threading.Lock()
 
 # Global trace ID for the current request
 _current_trace_id: str | None = None
 _trace_id_lock = threading.Lock()
+
+# Use the same application configuration as the normal logging infrastructure
+_configuration = Configuration()
 
 
 @dataclass
@@ -41,14 +45,29 @@ class TraceContext:
 def _write_log(entry: str) -> None:
     """Write a log entry to the forensic log file."""
     with _lock:
-        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        log_directory = _configuration.get("logging.directory", "logs")
+        log_file = _configuration.get("logging.forensic_file", "parika-forensic-logs.log")
+
+        log_file_path = Path(log_file)
+
+        log_file_name = (
+            f"{log_file_path.stem}-{datetime.now().strftime('%Y-%m-%d')}"
+            f"{log_file_path.suffix}"
+        )
+
+        log_directory_path = Path(log_directory)
+        log_directory_path.mkdir(parents=True, exist_ok=True)
+
+        forensic_file_path = log_directory_path / log_file_name
+
+        with open(forensic_file_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
 
 
 def _format_entry(trace_id: str, stage: str, data: dict[str, Any]) -> str:
     """Format a log entry with trace_id and stage."""
     timestamp = datetime.now(UTC).isoformat()
-    
+
     def make_serializable(obj: Any) -> Any:
         if obj is None:
             return None
@@ -58,16 +77,17 @@ def _format_entry(trace_id: str, stage: str, data: dict[str, Any]) -> str:
             return [make_serializable(v) for v in obj]
         if isinstance(obj, dict):
             return {k: make_serializable(v) for k, v in obj.items()}
-        if hasattr(obj, '__dict__'):
+        if hasattr(obj, "__dict__"):
             return make_serializable(obj.__dict__)
         return str(obj)
-    
+
     payload = {
         "trace_id": trace_id,
         "timestamp": timestamp,
         "stage": stage,
         "data": make_serializable(data),
     }
+
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -79,16 +99,17 @@ def set_trace_context(
 ) -> str:
     """Set the current trace context and return the trace_id."""
     global _current_trace_id
-    
+
     with _trace_id_lock:
         if trace_id is None:
             trace_id = uuid4().hex[:16]
+
         _current_trace_id = trace_id
-    
+
     # Log trace start
     if user_query is not None:
         log_user_query(trace_id, user_query, request_id, session_id)
-    
+
     return trace_id
 
 
@@ -101,6 +122,7 @@ def get_current_trace_id() -> str | None:
 def clear_trace_context() -> None:
     """Clear the current trace context."""
     global _current_trace_id
+
     with _trace_id_lock:
         _current_trace_id = None
 
@@ -108,7 +130,7 @@ def clear_trace_context() -> None:
 def log_trace_header(trace_id: str) -> None:
     """Log the trace header separator."""
     _write_log("=" * 60)
-    _write_log(f"PARIKA FORENSIC TRACE")
+    _write_log("PARIKA FORENSIC TRACE")
     _write_log(f"trace_id={trace_id}")
     _write_log(f"timestamp={datetime.now(UTC).isoformat()}")
     _write_log("=" * 60)
@@ -122,11 +144,13 @@ def log_user_query(
 ) -> None:
     """Log the original user query."""
     log_trace_header(trace_id)
+
     data = {
         "user_query": user_query,
         "request_id": request_id,
         "session_id": session_id,
     }
+
     _write_log(_format_entry(trace_id, "USER_QUERY", data))
 
 
@@ -160,6 +184,7 @@ def log_decomposer_input(
         "system_prompt": system_prompt,
         "messages": messages,
     }
+
     _write_log(_format_entry(trace_id, "DECOMPOSER_INPUT", data))
 
 
@@ -177,6 +202,7 @@ def log_decomposition_raw(
         "parsing_error": parsing_error,
         "validation_result": validation_result,
     }
+
     _write_log(_format_entry(trace_id, "DECOMPOSITION_RAW", data))
 
 
@@ -196,6 +222,7 @@ def log_decomposition_goals(
         "after_enhancement": after_enhancement,
         "transformation_note": transformation_note,
     }
+
     _write_log(_format_entry(trace_id, "DECOMPOSITION_GOALS", data))
 
 
@@ -210,6 +237,7 @@ def log_plan(
         "num_steps": len(steps),
         "steps": steps,
     }
+
     _write_log(_format_entry(trace_id, "PLAN", data))
 
 
@@ -232,6 +260,7 @@ def log_tool_start(
         "backend": backend,
         "start_timestamp": datetime.now(UTC).isoformat(),
     }
+
     _write_log(_format_entry(trace_id, "TOOL_START", data))
 
 
@@ -250,9 +279,10 @@ def log_tool_result(
     """Log tool execution result."""
     # Truncate very large results
     result_str = str(result)
+
     if len(result_str) > 5000:
         result_str = result_str[:5000] + "... [TRUNCATED]"
-    
+
     data = {
         "goal_id": goal_id,
         "task_id": task_id,
@@ -264,6 +294,7 @@ def log_tool_result(
         "exception": exception,
         "execution_time": execution_time,
     }
+
     _write_log(_format_entry(trace_id, "TOOL_RESULT", data))
 
 
@@ -278,6 +309,7 @@ def log_task_response_wrapping(
     goal_result_response_type: str | None = None,
 ) -> None:
     """Log the result as it moves through boundaries."""
+
     # Convert non-serializable objects to strings
     def make_serializable(obj: Any) -> Any:
         if obj is None:
@@ -285,11 +317,11 @@ def log_task_response_wrapping(
         if isinstance(obj, (str, int, float, bool, list, tuple, dict)):
             if isinstance(obj, dict):
                 return {k: make_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, (list, tuple)):
+            if isinstance(obj, (list, tuple)):
                 return [make_serializable(v) for v in obj]
             return obj
         return str(obj)
-    
+
     data = {
         "goal_id": goal_id,
         "task_id": task_id,
@@ -300,6 +332,7 @@ def log_task_response_wrapping(
         "task_response": make_serializable(task_response),
         "goal_result_response_type": goal_result_response_type,
     }
+
     _write_log(_format_entry(trace_id, "TASK_RESPONSE_WRAPPING", data))
 
 
@@ -317,6 +350,7 @@ def log_synthesis_ready(
         "dependency_statuses": dependency_statuses,
         "all_succeeded": all_succeeded,
     }
+
     _write_log(_format_entry(trace_id, "SYNTHESIS_READY", data))
 
 
@@ -348,6 +382,7 @@ def log_synthesis_input(
         "request_options": request_options,
         "context_metadata": context_metadata,
     }
+
     _write_log(_format_entry(trace_id, "SYNTHESIS_INPUT", data))
 
 
@@ -365,9 +400,10 @@ def log_synthesis_result(
 ) -> None:
     """Log the synthesis model response."""
     response_str = raw_response or ""
+
     if len(response_str) > 5000:
         response_str = response_str[:5000] + "... [TRUNCATED]"
-    
+
     data = {
         "synthesis_goal_id": synthesis_goal_id,
         "model": model,
@@ -379,6 +415,7 @@ def log_synthesis_result(
         "response_length": response_length,
         "latency": latency,
     }
+
     _write_log(_format_entry(trace_id, "SYNTHESIS_RESULT", data))
 
 
@@ -393,9 +430,10 @@ def log_final_result(
 ) -> None:
     """Log the final PARIKA result."""
     response_str = response or ""
+
     if len(response_str) > 5000:
         response_str = response_str[:5000] + "... [TRUNCATED]"
-    
+
     data = {
         "success": success,
         "used_tools": used_tools,
@@ -404,6 +442,7 @@ def log_final_result(
         "total_execution_time": total_execution_time,
         "request_id": request_id,
     }
+
     _write_log(_format_entry(trace_id, "FINAL_RESULT", data))
 
 
@@ -429,6 +468,7 @@ def log_experience_registration(
         "task_succeeded": task_succeeded,
         "task_id": task_id,
     }
+
     _write_log(_format_entry(trace_id, "EXPERIENCE_REGISTRATION", data))
 
 
@@ -448,6 +488,7 @@ def log_experience_retrieval(
         "aggregate_success_rate": aggregate_success_rate,
         "passed_to_planner": passed_to_planner,
     }
+
     _write_log(_format_entry(trace_id, "EXPERIENCE_RETRIEVAL", data))
 
 

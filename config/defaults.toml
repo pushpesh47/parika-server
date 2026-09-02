@@ -68,6 +68,7 @@ level = "DEBUG"
 console = false
 directory = "logs"
 file = "parika.log"
+forensic_file = "parika-forensic-logs.log"
 
 [data]
 directory = "data"
