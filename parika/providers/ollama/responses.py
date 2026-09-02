@@ -70,6 +70,9 @@ class OllamaChatResponse(ProviderResponse):
     """
 
     total_duration_ns: int | None = None
+    load_duration_ns: int | None = None
+    prompt_eval_duration_ns: int | None = None
+    eval_duration_ns: int | None = None
     prompt_eval_count: int | None = None
     eval_count: int | None = None
 
@@ -95,5 +98,8 @@ class OllamaGenerateResponse(ProviderResponse):
     done: bool = True
 
     total_duration_ns: int | None = None
+    load_duration_ns: int | None = None
+    prompt_eval_duration_ns: int | None = None
+    eval_duration_ns: int | None = None
     prompt_eval_count: int | None = None
     eval_count: int | None = None

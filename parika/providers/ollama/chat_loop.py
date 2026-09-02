@@ -149,6 +149,9 @@ def run_chat_loop(
                 done=bool(metrics.get("done", True)),
                 tool_invocations=tuple(tool_invocations),
                 total_duration_ns=metrics.get("total_duration"),
+                load_duration_ns=metrics.get("load_duration"),
+                prompt_eval_duration_ns=metrics.get("prompt_eval_duration"),
+                eval_duration_ns=metrics.get("eval_duration"),
                 prompt_eval_count=metrics.get("prompt_eval_count"),
                 eval_count=metrics.get("eval_count"),
             )
@@ -191,6 +194,9 @@ def run_chat_loop(
                 done=True,
                 tool_invocations=tuple(tool_invocations),
                 total_duration_ns=metrics.get("total_duration"),
+                load_duration_ns=metrics.get("load_duration"),
+                prompt_eval_duration_ns=metrics.get("prompt_eval_duration"),
+                eval_duration_ns=metrics.get("eval_duration"),
                 prompt_eval_count=metrics.get("prompt_eval_count"),
                 eval_count=metrics.get("eval_count"),
             )

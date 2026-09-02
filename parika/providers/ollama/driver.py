@@ -383,11 +383,28 @@ class OllamaProviderDriver(ProviderDriver):
             self._logger, model.id, (perf_counter() - started_at) * 1000
         )
 
+        # Log Ollama native timing fields for observability
+        self._logger.debug(
+            "model=%s ollama_timing: total_duration_ns=%s load_duration_ns=%s "
+            "prompt_eval_duration_ns=%s eval_duration_ns=%s "
+            "prompt_eval_count=%s eval_count=%s",
+            model.id,
+            final_chunk.get("total_duration"),
+            final_chunk.get("load_duration"),
+            final_chunk.get("prompt_eval_duration"),
+            final_chunk.get("eval_duration"),
+            final_chunk.get("prompt_eval_count"),
+            final_chunk.get("eval_count"),
+        )
+
         return OllamaGenerateResponse(
             model_id=model.id,
             text=final_chunk.get("response", ""),
             done=bool(final_chunk.get("done", True)),
             total_duration_ns=final_chunk.get("total_duration"),
+            load_duration_ns=final_chunk.get("load_duration"),
+            prompt_eval_duration_ns=final_chunk.get("prompt_eval_duration"),
+            eval_duration_ns=final_chunk.get("eval_duration"),
             prompt_eval_count=final_chunk.get("prompt_eval_count"),
             eval_count=final_chunk.get("eval_count"),
         )
@@ -562,6 +579,20 @@ class OllamaProviderDriver(ProviderDriver):
                 request.options.context_window_tokens,
                 reported_prompt_eval_count,
             )
+
+        # Log Ollama native timing fields for observability
+        self._logger.debug(
+            "model=%s ollama_timing: total_duration_ns=%s load_duration_ns=%s "
+            "prompt_eval_duration_ns=%s eval_duration_ns=%s "
+            "prompt_eval_count=%s eval_count=%s",
+            model.id,
+            final_chunk.get("total_duration"),
+            final_chunk.get("load_duration"),
+            final_chunk.get("prompt_eval_duration"),
+            final_chunk.get("eval_duration"),
+            final_chunk.get("prompt_eval_count"),
+            final_chunk.get("eval_count"),
+        )
 
         message_payload = final_chunk.get("message")
         message_payload = message_payload if isinstance(message_payload, dict) else {}
