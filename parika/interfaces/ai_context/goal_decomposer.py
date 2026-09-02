@@ -23,12 +23,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from parika.core.brain.context_engine import HeuristicTokenEstimator, TokenEstimator
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.configuration.configuration import Configuration
 from parika.core.planner.goal import Goal
 from parika.core.provider_manager.chat_message import ChatMessage
 from parika.core.provider_manager.chat_request import ChatRequest
+from parika.core.provider_manager.context_budget import resolve_runtime_context_budget
 from parika.core.provider_manager.options import RequestOptions
 from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.provider_manager.provider_model import ProviderModel
@@ -37,12 +39,42 @@ from parika.core.planner.model_selection.routing_strategy import select_fixed_ro
 from parika.core.planner.model_selection.selector import select_provider_model
 from parika.core.planner.model_selection.requirements import ExecutionRequirements, ThinkingMode, Requirement
 from parika.core.provider_manager.model_capability import ModelCapability
+from parika.core.provider_manager.tool_spec import ToolSpec
 from parika.core.forensic_log import (
     get_current_trace_id,
     log_decomposer_input,
     log_decomposition_raw,
     log_decomposition_goals,
 )
+
+
+_PROMPT_TOKEN_ESTIMATOR: TokenEstimator = HeuristicTokenEstimator()
+"""
+Shared `TokenEstimator` used to measure the complete assembled decomposition
+prompt -- the same `TokenEstimator` Protocol/default implementation Brain's
+own Context Budgeting already uses (`parika.core.brain.context_engine`),
+reused here rather than reimplemented.
+"""
+
+
+def _estimate_prompt_tokens(
+    messages: tuple[ChatMessage, ...],
+    *,
+    estimator: TokenEstimator,
+) -> int:
+    """
+    Estimate the complete, already-fully-assembled decomposition prompt's
+    total token cost using `estimator` -- every message's role+content.
+
+    GoalDecomposer does not advertise tools, so only messages are measured.
+    """
+    parts: list[str] = []
+
+    for message in messages:
+        parts.append(message.role)
+        parts.append(message.content)
+
+    return estimator.estimate("\n".join(parts))
 
 
 def _get_all_enabled_capabilities(
@@ -226,7 +258,34 @@ class GoalDecomposer:
         routing_config = load_routing_config(self._configuration)
         decomposition_reasoning = routing_config.fixed_thinking if routing_config.is_fixed else False
 
-        # FORENSIC: Log decomposer input
+        # Get the routing model for decomposition
+        routing_model = self._get_routing_model()
+        if routing_model is None:
+            raise DecompositionError(
+                "No model available for goal decomposition. "
+                "Ensure at least one provider with a text_generation model is configured and healthy."
+            )
+        
+        # Unpack the tuple
+        provider_id, model = routing_model
+
+        # Estimate the assembled prompt tokens using the same TokenEstimator
+        # infrastructure as the normal Planner path (goal_builder.py)
+        estimated_prompt_tokens = _estimate_prompt_tokens(
+            messages, estimator=_PROMPT_TOKEN_ESTIMATOR
+        )
+
+        # Resolve the Runtime Context Budget from the selected routing model's
+        # limits and configuration -- same mechanism Planner uses for every
+        # provider request. This yields the effective context window that
+        # Ollama's driver will translate into `num_ctx`.
+        context_budget = resolve_runtime_context_budget(
+            model.limits,
+            configuration=self._configuration,
+            required_prompt_tokens=estimated_prompt_tokens,
+        )
+
+        # FORENSIC: Log decomposer input (after budget is computed for complete info)
         trace_id = get_current_trace_id()
         if trace_id:
             # Extract capability info
@@ -238,7 +297,14 @@ class GoalDecomposer:
                 trace_id=trace_id,
                 model="goal_decomposition (routing model)",
                 provider="routing_model",
-                request_options={"reasoning": decomposition_reasoning, "temperature": 0.0, "seed": 42, "top_p": 1.0},
+                request_options={
+                    "reasoning": decomposition_reasoning,
+                    "temperature": 0.0,
+                    "seed": 42,
+                    "top_p": 1.0,
+                    "context_window_tokens": context_budget.effective_context_window,
+                    "estimated_prompt_tokens": estimated_prompt_tokens,
+                },
                 reasoning=decomposition_reasoning,
                 temperature=0.0,
                 seed=42,
@@ -248,17 +314,6 @@ class GoalDecomposer:
                 system_prompt=system_prompt,
                 messages=[{"role": m.role, "content": m.content} for m in messages],
             )
-
-        # Get the routing model for decomposition
-        routing_model = self._get_routing_model()
-        if routing_model is None:
-            raise DecompositionError(
-                "No model available for goal decomposition. "
-                "Ensure at least one provider with a text_generation model is configured and healthy."
-            )
-        
-        # Unpack the tuple
-        provider_id, model = routing_model
 
         # Execute decomposition via direct provider inference with retries
         max_retries = 2
@@ -272,6 +327,8 @@ class GoalDecomposer:
                     temperature=0.0,
                     seed=42,
                     top_p=1.0,
+                    context_window_tokens=context_budget.effective_context_window,
+                    estimated_prompt_tokens=estimated_prompt_tokens,
                 ),
             )
 
