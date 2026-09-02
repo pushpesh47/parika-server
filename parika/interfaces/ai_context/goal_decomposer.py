@@ -394,30 +394,22 @@ class GoalDecomposer:
     ) -> list[Goal]:
         """Parse LLM response into Goal objects."""
         try:
-            # Try to extract JSON from response - the LLM outputs JSON in a code block
-            # Look for ```json ... ``` or just the JSON object
-            
-            # First try to find JSON in a code block
-            code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
-            if code_block_match:
-                json_str = code_block_match.group(1)
-                data = json.loads(json_str)
-            else:
-                # Fallback: find the last {...} block that parses as JSON
-                json_matches = list(re.finditer(r'\{.*?\}', raw_response, re.DOTALL))
-                if not json_matches:
-                    raise ValueError("No JSON object found in response")
-                
-                data = None
-                for match in reversed(json_matches):
-                    try:
-                        data = json.loads(match.group())
-                        break
-                    except json.JSONDecodeError:
-                        continue
-                
-                if data is None:
-                    raise ValueError("No valid JSON object found in response")
+            # First, try to parse the entire response as JSON directly.
+            # This handles the common case where the LLM outputs raw JSON.
+            try:
+                data = json.loads(raw_response)
+            except json.JSONDecodeError:
+                # If that fails, try to extract JSON from a code block
+                code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+                if code_block_match:
+                    json_str = code_block_match.group(1)
+                    data = json.loads(json_str)
+                else:
+                    # Fallback: find balanced-brace JSON object using a stack-based approach
+                    # This is more robust than regex for nested JSON
+                    data = self._extract_balanced_json(raw_response)
+                    if data is None:
+                        raise ValueError("No valid JSON object found in response")
             
             goal_data_list = data.get("goals", [])
             
@@ -461,6 +453,30 @@ class GoalDecomposer:
         
         except (json.JSONDecodeError, ValueError, KeyError) as ex:
             raise DecompositionError(f"Failed to parse decomposition response: {ex}") from ex
+    
+    def _extract_balanced_json(self, text: str) -> dict | None:
+        """Extract the first complete JSON object using balanced brace matching."""
+        # Find the first '{'
+        start = text.find('{')
+        if start == -1:
+            return None
+        
+        # Use a stack to find the matching '}'
+        brace_count = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    # Found the matching closing brace
+                    json_str = text[start:i+1]
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        return None
+        
+        return None
 
     def _find_closest_capability(
         self,

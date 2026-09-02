@@ -405,9 +405,34 @@ class Brain:
         if isinstance(result, dict):
             # Try to extract key fields
             if "result" in result:
-                return str(result["result"])[:200]
-            return str(result)[:200]
-        return str(result)[:200]
+                return str(result["result"])
+            return str(result)
+
+        if isinstance(result, (list, tuple)):
+            summaries = []
+            for item in result:
+                if isinstance(item, dict):
+                    parts = []
+
+                    if item.get("title"):
+                        parts.append(f"title: {item['title']}")
+
+                    if item.get("snippet"):
+                        parts.append(f"snippet: {item['snippet']}")
+
+                    if item.get("url"):
+                        parts.append(f"url: {item['url']}")
+
+                    if parts:
+                        summaries.append(" | ".join(parts))
+                    else:
+                        summaries.append(str(item))
+                else:
+                    summaries.append(str(item))
+
+            return "\n".join(summaries)
+
+        return str(result)
 
     def handle(self, request: BrainRequest) -> BrainResponse:
         """
