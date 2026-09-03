@@ -141,15 +141,16 @@ gpu = [
 
 
 # Voice Module: local, on-device speech-to-text (`faster-whisper`) and
-# text-to-speech (`piper-tts`), supporting English and Hindi (see
-# `docs/architecture/adr/0002-voice-capability.md`). Optional and gracefully
-# degrading, following exactly the `ocr`/`vision`/`video`/`gpu` extras' own
-# precedent: PARIKA starts and runs identically with or without this extra
-# installed; `voice.speech_to_text`/`voice.text_to_speech` simply have no
-# compatible Provider model (never a crash) until it is installed and
-# configured (see `config/defaults.toml`'s `[providers.local_speech]`
-# section). Neither package is an LLM/reasoning provider -- both perform
-# speech recognition/synthesis only.
+# text-to-speech (`piper-tts` and `kokoro-onnx`), supporting English and
+# Hindi (see `docs/architecture/adr/0002-voice-capability.md`). Optional
+# and gracefully degrading, following exactly the `ocr`/`vision`/`video`/
+# `gpu` extras' own precedent: PARIKA starts and runs identically with
+# or without this extra installed; `voice.speech_to_text`/
+# `voice.text_to_speech` simply have no compatible Provider model
+# (never a crash) until it is installed and configured (see
+# `config/defaults.toml`'s `[providers.local_speech]` section). Neither
+# package is an LLM/reasoning provider -- both perform speech
+# recognition/synthesis only.
 #
 # Compatibility with this project's pinned `requires-python = ">=3.14"`,
 # verified before adding either dependency:
@@ -157,17 +158,20 @@ gpu = [
 #   `ctranslate2`/`av`/`onnxruntime`/`tokenizers` dependencies (SYSTRAN/
 #   faster-whisper#1439).
 # - `piper-tts` depends on `onnxruntime<2`; `onnxruntime>=1.24.1` ships
-#   official Python 3.14 wheels (Linux/Windows x86_64), which resolves the
-#   previous 3.14 installation blocker. `piper-tts` itself does not yet
-#   officially declare 3.14 in its classifiers -- treat as "verify on your
-#   platform before relying on it in production."
-# - License note: `piper-tts` is GPL-3.0-or-later, unlike PARIKA Core's own
-#   MIT license. It remains strictly optional (this extra), never a base
-#   dependency, so installing it is the operator's own explicit choice --
-#   exactly like any other optional extra here.
+#   official Python 3.14 wheels (Linux/Windows x86_64), which resolves
+#   the previous 3.14 installation blocker. `piper-tts` itself does not
+#   yet officially declare 3.14 in its classifiers -- treat as "verify
+#   on your platform before relying on it in production."
+# - `kokoro-onnx` depends on `onnxruntime` and `phonemizer-fork`;
+#   `onnxruntime>=1.24.1` ships official Python 3.14 wheels.
+# - License note: `piper-tts` is GPL-3.0-or-later, unlike PARIKA Core's
+#   own MIT license. It remains strictly optional (this extra), never a
+#   base dependency, so installing it is the operator's own explicit
+#   choice -- exactly like any other optional extra here.
 voice = [
     "faster-whisper>=1.2.1",
     "piper-tts>=1.4",
+    "kokoro-onnx>=0.4",
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12==9.*",
 ]

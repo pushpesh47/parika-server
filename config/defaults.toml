@@ -372,16 +372,25 @@ output_directory = "generated"
 # detect). `stt_device`/`tts_device` accept `"auto"` (tries GPU, then
 # gracefully falls back to CPU), `"cpu"`, or `"cuda"`.
 #
-# TTS (`tts_*`): `tts_engine` currently supports only `"piper"`. Two
-# independent voice "slots" are configured -- English (`tts_voice`/
-# `tts_model_path`/`tts_config_path`) and Hindi (`tts_hindi_voice`/
-# `tts_hindi_model_path`/`tts_hindi_config_path`) -- so both languages can
-# have their own dedicated Piper voice model. `tts_voice`/`tts_hindi_voice`
-# are human-readable labels only; `tts_model_path`/`tts_hindi_model_path`
-# must each point to an installed Piper `.onnx` voice model file for that
-# language's text-to-speech to become available (an unset/missing path
-# simply leaves that language's text-to-speech unavailable -- never a
-# crash; the *other* language, if configured, is unaffected).
+# TTS (`tts_*`): `tts_engine` supports `"piper"` and `"kokoro"`.
+#
+# Piper: Two independent voice "slots" are configured -- English
+# (`tts_voice`/`tts_model_path`/`tts_config_path`) and Hindi
+# (`tts_hindi_voice`/`tts_hindi_model_path`/`tts_hindi_config_path`) -- so
+# both languages can have their own dedicated Piper voice model.
+# `tts_voice`/`tts_hindi_voice` are human-readable labels only;
+# `tts_model_path`/`tts_hindi_model_path` must each point to an installed
+# Piper `.onnx` voice model file for that language's text-to-speech to become
+# available (an unset/missing path simply leaves that language's text-to-
+# speech unavailable -- never a crash; the *other* language, if configured,
+# is unaffected).
+#
+# Kokoro: A single ONNX model (`kokoro-v1.0.onnx`) with all voice styles
+# embedded in the voices file (`voices-v1.0.bin`). `tts_kokoro_voice`
+# selects the voice style (default: `hf_beta`). Language mapping: `hi` ->
+# `hi`, `en`/`en-us` -> `en-us`. CPU-first for Phase 1 (no GPU contention
+# with local LLM inference). Model files are NOT downloaded automatically;
+# they must be placed in the configured paths manually.
 #
 # Indian female voice policy (see `docs/architecture/adr/
 # 0002-voice-capability.md`'s language-model decision for the full
@@ -419,6 +428,11 @@ tts_noise_w = 0.8
 tts_hindi_voice = "hi_IN-priyamvada-medium"
 tts_hindi_model_path = "/mnt/dev/python/parika/models/voice/hi_IN-priyamvada-medium/hi_IN-priyamvada-medium.onnx"
 tts_hindi_config_path = ""
+
+tts_kokoro_voice = "hf_beta"
+tts_kokoro_model_path = "/mnt/dev/python/parika/models/voice/kokoro/kokoro-v1.0.onnx"
+tts_kokoro_voices_path = "/mnt/dev/python/parika/models/voice/kokoro/voices-v1.0.bin"
+tts_kokoro_speed = 1.0
 
 ###############################################################################
 # Voice Module

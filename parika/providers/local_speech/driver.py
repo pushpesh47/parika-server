@@ -40,6 +40,7 @@ from . import discovery
 from .audio import pcm16_to_wav
 from .config import LocalSpeechProviderConfig
 from .engines.faster_whisper_engine import FasterWhisperSttEngine
+from .engines.kokoro_engine import KokoroTtsEngine
 from .engines.piper_engine import PiperTtsEngine, PiperVoiceSpec
 from .engines.stt_engine import SttEngine
 from .engines.tts_engine import TtsEngine
@@ -219,35 +220,55 @@ class LocalSpeechProviderDriver(ProviderDriver):
 
     def _get_tts_engine(self) -> TtsEngine:
         if self._tts_engine is None:
-            additional_voices: dict[str, PiperVoiceSpec] = {}
-
-            if self._config.tts_hindi_model_path:
-                additional_voices["hi"] = PiperVoiceSpec(
-                    model_path=self._config.tts_hindi_model_path,
-                    config_path=self._config.tts_hindi_config_path or None,
-                    speaker_id=self._config.tts_hindi_speaker_id,
+            if self._config.tts_engine == "kokoro":
+                self._logger.info(
+                    "Loading Kokoro voice: %s (model=%s, voices=%s)...",
+                    self._config.tts_kokoro_voice,
+                    self._config.tts_kokoro_model_path,
+                    self._config.tts_kokoro_voices_path,
                 )
+                self._tts_engine = KokoroTtsEngine(
+                    model_path=self._config.tts_kokoro_model_path,
+                    voices_path=self._config.tts_kokoro_voices_path,
+                    voice_name=self._config.tts_kokoro_voice,
+                    speed=self._config.tts_kokoro_speed,
+                    language="en",
+                )
+            elif self._config.tts_engine == "piper":
+                additional_voices: dict[str, PiperVoiceSpec] = {}
 
-            self._logger.info(
-                "Loading Piper voice(s): en=%s%s (device=%s)...",
-                self._config.tts_voice,
-                (
-                    f", hi={self._config.tts_hindi_voice}"
-                    if "hi" in additional_voices
-                    else ""
-                ),
-                self._config.tts_device,
-            )
-            self._tts_engine = PiperTtsEngine(
-                model_path=self._config.tts_model_path,
-                config_path=self._config.tts_config_path or None,
-                device=self._config.tts_device,
-                speaker_id=self._config.tts_speaker_id,
-                length_scale=self._config.tts_length_scale,
-                noise_scale=self._config.tts_noise_scale,
-                noise_w=self._config.tts_noise_w,
-                language="en",
-                additional_voices=additional_voices or None,
-            )
+                if self._config.tts_hindi_model_path:
+                    additional_voices["hi"] = PiperVoiceSpec(
+                        model_path=self._config.tts_hindi_model_path,
+                        config_path=self._config.tts_hindi_config_path or None,
+                        speaker_id=self._config.tts_hindi_speaker_id,
+                    )
+
+                self._logger.info(
+                    "Loading Piper voice(s): en=%s%s (device=%s)...",
+                    self._config.tts_voice,
+                    (
+                        f", hi={self._config.tts_hindi_voice}"
+                        if "hi" in additional_voices
+                        else ""
+                    ),
+                    self._config.tts_device,
+                )
+                self._tts_engine = PiperTtsEngine(
+                    model_path=self._config.tts_model_path,
+                    config_path=self._config.tts_config_path or None,
+                    device=self._config.tts_device,
+                    speaker_id=self._config.tts_speaker_id,
+                    length_scale=self._config.tts_length_scale,
+                    noise_scale=self._config.tts_noise_scale,
+                    noise_w=self._config.tts_noise_w,
+                    language="en",
+                    additional_voices=additional_voices or None,
+                )
+            else:
+                raise LocalSpeechRequestError(
+                    f"Unsupported tts_engine '{self._config.tts_engine}'. "
+                    "Supported values: 'piper', 'kokoro'."
+                )
 
         return self._tts_engine

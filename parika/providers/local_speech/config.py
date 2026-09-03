@@ -73,6 +73,16 @@ DEFAULT_TTS_HINDI_MODEL_PATH = ""
 DEFAULT_TTS_HINDI_CONFIG_PATH = ""
 DEFAULT_TTS_HINDI_SPEAKER_ID: int | None = None
 
+# Kokoro TTS engine. `hf_beta` is a real voice style available in the
+# upstream `voices-v1.0.bin` file. Kokoro uses a single ONNX model
+# (`kokoro-v1.0.onnx`) with all voice styles embedded in the voices
+# file. Language mapping: `hi` -> `hi`, `en`/`en-us` -> `en-us`.
+# CPU-first for Phase 1 (no GPU contention with local LLM inference).
+DEFAULT_TTS_KOKORO_VOICE = "hf_beta"
+DEFAULT_TTS_KOKORO_MODEL_PATH = ""
+DEFAULT_TTS_KOKORO_VOICES_PATH = ""
+DEFAULT_TTS_KOKORO_SPEED = 1.0
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LocalSpeechProviderConfig:
@@ -115,6 +125,11 @@ class LocalSpeechProviderConfig:
     tts_hindi_model_path: str = DEFAULT_TTS_HINDI_MODEL_PATH
     tts_hindi_config_path: str = DEFAULT_TTS_HINDI_CONFIG_PATH
     tts_hindi_speaker_id: int | None = DEFAULT_TTS_HINDI_SPEAKER_ID
+
+    tts_kokoro_voice: str = DEFAULT_TTS_KOKORO_VOICE
+    tts_kokoro_model_path: str = DEFAULT_TTS_KOKORO_MODEL_PATH
+    tts_kokoro_voices_path: str = DEFAULT_TTS_KOKORO_VOICES_PATH
+    tts_kokoro_speed: float = DEFAULT_TTS_KOKORO_SPEED
 
 
 def load_local_speech_config(
@@ -254,6 +269,29 @@ def load_local_speech_config(
             configuration.get(
                 "providers.local_speech.tts_hindi_speaker_id",
                 defaults.tts_hindi_speaker_id,
+            )
+        ),
+        tts_kokoro_voice=str(
+            configuration.get(
+                "providers.local_speech.tts_kokoro_voice", defaults.tts_kokoro_voice
+            )
+        ),
+        tts_kokoro_model_path=str(
+            configuration.get(
+                "providers.local_speech.tts_kokoro_model_path",
+                defaults.tts_kokoro_model_path,
+            )
+        ),
+        tts_kokoro_voices_path=str(
+            configuration.get(
+                "providers.local_speech.tts_kokoro_voices_path",
+                defaults.tts_kokoro_voices_path,
+            )
+        ),
+        tts_kokoro_speed=float(
+            configuration.get(
+                "providers.local_speech.tts_kokoro_speed",
+                defaults.tts_kokoro_speed,
             )
         ),
     )
