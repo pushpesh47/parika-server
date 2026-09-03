@@ -13,8 +13,7 @@ that seeds `VoiceLanguagePreferenceStore` at startup.
 Mirrors `parika.modules.generation.config`'s pattern exactly,
 minimized to what this Module actually needs. STT/TTS engine
 selection, model paths, device placement, and synthesis tuning
-(including the per-language Piper voice model paths) all live in the
-Local Speech Provider's own configuration
+(all live in the Local Speech Provider's own configuration
 (`parika.providers.local_speech.config`), not here -- this Module
 never hardcodes, or even knows, which engine backs its Provider
 Capabilities. Keeping language *preference* here and language *engine

@@ -8,7 +8,7 @@ this Module's own Provider-backed speech Capabilities through the
 existing Model Selection Framework -- exactly the same nested-`Goal`-
 via-`Brain.handle()` shape `parika.modules.generation.engine` already
 establishes for `image.*`/`video.*`. Introduces no new execution
-architecture. No `faster-whisper`/`Piper`-specific concept exists
+architecture. No `faster-whisper`/`Kokoro`-specific concept exists
 anywhere in this module: the nested Goal's `provider_request_builder`
 returns a provider-independent `SpeechRequest`, and the result
 consumed back is a provider-independent `SpeechResult` -- whichever

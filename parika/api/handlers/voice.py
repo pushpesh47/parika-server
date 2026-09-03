@@ -175,15 +175,16 @@ def handle_voice_stop_speaking(
 
 def _voice_availability(runtime: ParikaRuntime) -> tuple[bool, bool, bool, bool]:
     """
-    `(english_voice_configured, hindi_voice_configured, stt_available,
+    `(kokoro_voice_configured, stt_available,
     tts_available)`, read from the Local Speech Provider's own
     configuration and registered models -- never a second source of
     truth for what `[providers.local_speech]` already declares.
     """
 
     local_speech_config = load_local_speech_config(runtime.configuration)
-    english_voice_configured = bool(local_speech_config.tts_model_path)
-    hindi_voice_configured = bool(local_speech_config.tts_hindi_model_path)
+    kokoro_voice_configured = bool(
+        local_speech_config.tts_kokoro_model_path and local_speech_config.tts_kokoro_voices_path
+    )
 
     stt_available = False
     tts_available = False
@@ -199,8 +200,8 @@ def _voice_availability(runtime: ParikaRuntime) -> tuple[bool, bool, bool, bool]
                 tts_available = True
 
     return (
-        english_voice_configured,
-        hindi_voice_configured,
+        kokoro_voice_configured,
+        kokoro_voice_configured,
         stt_available,
         tts_available,
     )

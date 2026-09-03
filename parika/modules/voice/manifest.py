@@ -49,7 +49,7 @@ def create_voice_module_manifest() -> ModuleManifest:
             "synthesis model), together with their internal, "
             "SPEECH/TEXT_TO_SPEECH-category Provider Capabilities, "
             "each satisfied by a compatible Provider model (e.g. the "
-            "Local Speech Provider's faster-whisper/Piper engines), "
+            "Local Speech Provider's faster-whisper/Kokoro engines), "
             "never advertised directly to the general chat model."
         ),
         author="PARIKA",

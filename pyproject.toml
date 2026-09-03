@@ -141,7 +141,7 @@ gpu = [
 
 
 # Voice Module: local, on-device speech-to-text (`faster-whisper`) and
-# text-to-speech (`piper-tts` and `kokoro-onnx`), supporting English and
+# text-to-speech (`kokoro-onnx`), supporting English and
 # Hindi (see `docs/architecture/adr/0002-voice-capability.md`). Optional
 # and gracefully degrading, following exactly the `ocr`/`vision`/`video`/
 # `gpu` extras' own precedent: PARIKA starts and runs identically with
@@ -153,24 +153,14 @@ gpu = [
 # recognition/synthesis only.
 #
 # Compatibility with this project's pinned `requires-python = ">=3.14"`,
-# verified before adding either dependency:
+# verified before adding the dependency:
 # - `faster-whisper>=1.3` ships Python 3.14-compatible wheels for its
 #   `ctranslate2`/`av`/`onnxruntime`/`tokenizers` dependencies (SYSTRAN/
 #   faster-whisper#1439).
-# - `piper-tts` depends on `onnxruntime<2`; `onnxruntime>=1.24.1` ships
-#   official Python 3.14 wheels (Linux/Windows x86_64), which resolves
-#   the previous 3.14 installation blocker. `piper-tts` itself does not
-#   yet officially declare 3.14 in its classifiers -- treat as "verify
-#   on your platform before relying on it in production."
 # - `kokoro-onnx` depends on `onnxruntime` and `phonemizer-fork`;
 #   `onnxruntime>=1.24.1` ships official Python 3.14 wheels.
-# - License note: `piper-tts` is GPL-3.0-or-later, unlike PARIKA Core's
-#   own MIT license. It remains strictly optional (this extra), never a
-#   base dependency, so installing it is the operator's own explicit
-#   choice -- exactly like any other optional extra here.
 voice = [
     "faster-whisper>=1.2.1",
-    "piper-tts>=1.4",
     "kokoro-onnx>=0.4",
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12==9.*",

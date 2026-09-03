@@ -14,7 +14,7 @@ from parika.providers.local_speech.config import LocalSpeechProviderConfig
 
 def test_neither_engine_available_discovers_nothing(monkeypatch) -> None:
     monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: False)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: False)
+    monkeypatch.setattr(discovery, "kokoro_dependency_available", lambda: False)
 
     models = discovery.discover_models(config=LocalSpeechProviderConfig())
 
@@ -23,7 +23,7 @@ def test_neither_engine_available_discovers_nothing(monkeypatch) -> None:
 
 def test_stt_offered_when_faster_whisper_dependency_available(monkeypatch) -> None:
     monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: True)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: False)
+    monkeypatch.setattr(discovery, "kokoro_dependency_available", lambda: False)
 
     models = discovery.discover_models(config=LocalSpeechProviderConfig())
 
@@ -35,84 +35,51 @@ def test_tts_offered_only_when_dependency_and_model_file_are_both_present(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: False)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: True)
+    monkeypatch.setattr(discovery, "kokoro_dependency_available", lambda: True)
 
     # Dependency available but no configured model file -> still not offered.
     models = discovery.discover_models(
-        config=LocalSpeechProviderConfig(tts_model_path="")
+        config=LocalSpeechProviderConfig(tts_kokoro_model_path="")
     )
     assert models == ()
 
     # Dependency available, configured model file does not exist -> not offered.
-    missing_path = str(tmp_path / "missing-voice.onnx")
+    missing_path = str(tmp_path / "missing-model.onnx")
     models = discovery.discover_models(
-        config=LocalSpeechProviderConfig(tts_model_path=missing_path)
+        config=LocalSpeechProviderConfig(tts_kokoro_model_path=missing_path)
     )
     assert models == ()
 
     # Dependency available and the configured model file exists -> offered.
-    voice_path = tmp_path / "voice.onnx"
-    voice_path.write_bytes(b"fake-onnx-model")
-    models = discovery.discover_models(
-        config=LocalSpeechProviderConfig(tts_model_path=str(voice_path))
-    )
-
-    assert len(models) == 1
-    assert models[0].id == discovery.TTS_MODEL_ID
-
-
-def test_tts_offered_when_only_hindi_voice_is_configured(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: False)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: True)
-
-    hindi_voice_path = tmp_path / "hindi.onnx"
-    hindi_voice_path.write_bytes(b"fake-onnx-model")
-
-    # English slot unset -- Hindi-only is still independently offered.
+    model_path = tmp_path / "kokoro-v1.0.onnx"
+    model_path.write_bytes(b"fake-onnx-model")
+    voices_path = tmp_path / "voices-v1.0.bin"
+    voices_path.write_bytes(b"fake-voices-file")
     models = discovery.discover_models(
         config=LocalSpeechProviderConfig(
-            tts_model_path="", tts_hindi_model_path=str(hindi_voice_path)
+            tts_kokoro_model_path=str(model_path),
+            tts_kokoro_voices_path=str(voices_path),
         )
     )
 
     assert len(models) == 1
     assert models[0].id == discovery.TTS_MODEL_ID
-    assert "hi:" in models[0].name
-    assert "en:" not in models[0].name
-
-
-def test_tts_name_lists_both_languages_when_both_are_configured(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: False)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: True)
-
-    english_voice_path = tmp_path / "english.onnx"
-    english_voice_path.write_bytes(b"fake-onnx-model")
-    hindi_voice_path = tmp_path / "hindi.onnx"
-    hindi_voice_path.write_bytes(b"fake-onnx-model")
-
-    models = discovery.discover_models(
-        config=LocalSpeechProviderConfig(
-            tts_model_path=str(english_voice_path),
-            tts_hindi_model_path=str(hindi_voice_path),
-        )
-    )
-
-    assert len(models) == 1
-    assert "en:" in models[0].name
-    assert "hi:" in models[0].name
 
 
 def test_both_engines_available_discovers_both_models(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(discovery, "faster_whisper_dependency_available", lambda: True)
-    monkeypatch.setattr(discovery, "piper_dependency_available", lambda: True)
+    monkeypatch.setattr(discovery, "kokoro_dependency_available", lambda: True)
 
-    voice_path = tmp_path / "voice.onnx"
-    voice_path.write_bytes(b"fake-onnx-model")
+    model_path = tmp_path / "kokoro-v1.0.onnx"
+    model_path.write_bytes(b"fake-onnx-model")
+    voices_path = tmp_path / "voices-v1.0.bin"
+    voices_path.write_bytes(b"fake-voices-file")
 
     models = discovery.discover_models(
-        config=LocalSpeechProviderConfig(tts_model_path=str(voice_path))
+        config=LocalSpeechProviderConfig(
+            tts_kokoro_model_path=str(model_path),
+            tts_kokoro_voices_path=str(voices_path),
+        )
     )
 
     model_ids = {model.id for model in models}

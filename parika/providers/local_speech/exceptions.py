@@ -34,7 +34,7 @@ class LocalSpeechEngineUnavailableError(
 ):
     """
     Raised when the configured STT/TTS engine's optional Python
-    dependency (e.g. `faster-whisper`, `piper-tts`) is not installed,
+    dependency (e.g. `faster-whisper`, `kokoro-onnx`) is not installed,
     or when its configured model file is not present on disk.
 
     Never a crash on its own -- the composition root

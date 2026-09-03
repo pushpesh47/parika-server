@@ -5,7 +5,7 @@ Defines the provider-independent speech request type.
 
 `SpeechRequest` is the generic analogue of a concrete speech
 provider's own engine-specific request (e.g. a faster-whisper
-transcription call, or a Piper synthesis call): it carries only the
+transcription call, or a Kokoro synthesis call): it carries only the
 semantic speech intent every speech-capable provider needs -- what
 operation is being requested, either input audio (speech-to-text) or
 input text (text-to-speech), and optional language/voice hints -- with

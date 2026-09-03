@@ -2,7 +2,7 @@
 PARIKA Local Speech Provider - TTS Engine Protocol
 
 Defines the small, provider-internal contract every concrete
-text-to-speech engine adapter (e.g. `piper_engine.py`) must implement.
+text-to-speech engine adapter (e.g. `kokoro_engine.py`) must implement.
 `LocalSpeechProviderDriver` depends only on this Protocol, never on a
 concrete engine package -- see this package's `__init__.py` docstring
 for the full rationale.
@@ -77,7 +77,7 @@ class TtsEngine(Protocol):
             language:
                 Optional language hint (e.g. `"en"`, `"hi"`) selecting
                 *which* configured voice to speak with, for an engine
-                that holds more than one (see `PiperTtsEngine`'s own
+                that holds more than one (see `KokoroTtsEngine`'s own
                 per-language voice selection). `None` lets the engine
                 use its configured default/primary voice. An engine
                 with only one voice configured simply ignores this.

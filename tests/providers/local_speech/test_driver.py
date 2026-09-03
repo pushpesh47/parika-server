@@ -229,7 +229,7 @@ def test_stt_engine_construction_fails_gracefully_without_dependency(logger) -> 
 
 def test_tts_engine_construction_fails_gracefully_without_dependency(logger) -> None:
     """
-    `piper-tts` is not installed in this environment -- lazily
+    `kokoro-onnx` is not installed in this environment -- lazily
     constructing the real engine must raise a clean, typed exception
     rather than an ImportError leaking through.
     """
@@ -244,24 +244,3 @@ def test_tts_engine_construction_fails_gracefully_without_dependency(logger) -> 
             model,
             SpeechRequest(operation=SpeechOperation.TEXT_TO_SPEECH, text="Hello."),
         )
-
-
-def test_unsupported_tts_engine_raises_clear_error(logger) -> None:
-    """
-    An unknown tts_engine value must raise a clear configuration error,
-    not silently fall back to Piper.
-    """
-
-    config = LocalSpeechProviderConfig(tts_engine="unknown_engine")
-    driver = LocalSpeechProviderDriver(config=config, logger=logger)
-    model = ProviderModel(id="local_speech_tts", name="fake")
-
-    with pytest.raises(LocalSpeechRequestError) as exc_info:
-        driver.execute(
-            model,
-            SpeechRequest(operation=SpeechOperation.TEXT_TO_SPEECH, text="Hello."),
-        )
-
-    assert "Unsupported tts_engine 'unknown_engine'" in str(exc_info.value)
-    assert "piper" in str(exc_info.value)
-    assert "kokoro" in str(exc_info.value)

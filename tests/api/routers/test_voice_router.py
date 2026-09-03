@@ -3,7 +3,7 @@ Tests for `POST /api/v1/voice/transcribe`, `POST /api/v1/voice/respond`,
 `POST /api/v1/voice/speak`, and `POST /api/v1/voice/speak/{operation_id}
 /stop`.
 
-No real `faster-whisper`/Piper installation is required: the shared
+No real `faster-whisper`/Kokoro installation is required: the shared
 `client` fixture's runtime registers the Local Speech Provider with
 zero discovered models (neither optional dependency is installed in
 this environment), so these tests inject fake `SttEngine`/`TtsEngine`

@@ -209,15 +209,15 @@ def _register_llm_capability(
             # plain dict, which is unhashable, so real ProviderModel
             # instances cannot be placed in a frozenset. Provider.models
             # is not runtime-validated, so a tuple is used here instead.
-            models=(
-                ProviderModel(
-                    id=model_id,
-                    name="Llama 3",
-                    capabilities=frozenset(
-                        {ModelCapability.TEXT_GENERATION}
+models=(
+                    ProviderModel(
+                        id="local_speech_tts",
+                        name="Kokoro",
+                        capabilities=frozenset(
+                            {ModelCapability.TEXT_TO_SPEECH}
+                        ),
                     ),
-                ),
-            ),  # type: ignore[arg-type]
+                ),  # type: ignore[arg-type]
         ),
         _FakeProviderDriver(),
     )
@@ -521,15 +521,15 @@ class TestProviderStrategy:
         )
         provider_manager.register(
             Provider(
-                id="provider.ollama",
-                name="Ollama",
-                enabled=False,
+                id="provider.local_speech",
+                name="Local Speech",
+                state=ProviderState.CONNECTED,
                 models=(
                     ProviderModel(
-                        id="llama3",
-                        name="Llama 3",
+                        id="local_speech_tts",
+                        name="Kokoro",
                         capabilities=frozenset(
-                            {ModelCapability.TEXT_GENERATION}
+                            {ModelCapability.TEXT_TO_SPEECH}
                         ),
                     ),
                 ),  # type: ignore[arg-type]
@@ -691,7 +691,7 @@ class TestTextToSpeechCategoryIsIndependentFromSpeech:
                 models=(
                     ProviderModel(
                         id="local_speech_tts",
-                        name="Piper",
+                        name="Kokoro",
                         capabilities=frozenset(
                             {ModelCapability.TEXT_TO_SPEECH}
                         ),
@@ -778,7 +778,7 @@ class TestTextToSpeechCategoryIsIndependentFromSpeech:
                 models=(
                     ProviderModel(
                         id="local_speech_tts",
-                        name="Piper",
+                        name="Kokoro",
                         capabilities=frozenset(
                             {ModelCapability.TEXT_TO_SPEECH}
                         ),

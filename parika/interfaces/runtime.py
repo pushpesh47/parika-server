@@ -310,7 +310,7 @@ def build_default_runtime(
         discover_local_speech_models:
             Whether to attempt Local Speech provider model discovery
             immediately (a fast, local-only check for whether
-            `faster-whisper`/a configured Piper voice model are
+            `faster-whisper`/Kokoro model files are
             installed -- never a network call). Disable only for
             tests that want to control this themselves.
 

@@ -7,7 +7,7 @@ Wire-format request/response for the Voice API
 /stop`, `GET`/`PUT /api/v1/voice/settings`).
 
 Clients never see, and these schemas never mention, `faster-whisper`,
-`Piper`, a model path, a device, or any other server-side speech
+`Kokoro`, a model path, a device, or any other server-side speech
 engine implementation detail (see this Module's own architecture
 documentation, "Client Contract").
 
@@ -146,7 +146,7 @@ class VoiceSpeakResponseBody(ApiModel):
     sample_rate: int
     cancelled: bool
     # The concrete language ("en"/"hi") actually used to select the
-    # Piper voice.
+    # Kokoro voice.
     output_language: str | None = None
 
 

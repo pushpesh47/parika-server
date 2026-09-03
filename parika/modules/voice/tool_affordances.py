@@ -7,7 +7,7 @@ generically by AI Context Engineering
 (`parika/interfaces/ai_context/tool_context.py`) -- exactly the same
 contract shape every other Module's affordances already use.
 
-Neither parameter schema mentions faster-whisper, Piper, a model
+Neither parameter schema mentions faster-whisper, Kokoro, a model
 path, a device, or any other provider-specific concept: they describe
 only the semantic speech operation, matching the architecture's
 requirement that clients/callers never need to know which engine

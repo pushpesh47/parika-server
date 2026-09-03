@@ -55,7 +55,7 @@ def create_local_speech_provider(
         name="Local Speech",
         description=(
             "Local, on-device speech-to-text (faster-whisper) and "
-            "text-to-speech (Piper) engines, running entirely on "
+            "text-to-speech (Kokoro) engines, running entirely on "
             "this machine -- never an LLM, never a remote service."
         ),
         state=state,

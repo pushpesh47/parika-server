@@ -11,7 +11,7 @@ the Local Speech Provider today), checking `TtsOperationRegistry
 .is_cancelled()` between chunks so a concurrent
 `POST /voice/speak/{operation_id}/stop` request can take effect
 mid-synthesis rather than only after the entire response has already
-been synthesized. Never constructs or inspects a Piper-specific type.
+been synthesized.
 
 Relationship to `ToolManager`'s progress lifecycle guard (Section 19
 of the Voice architecture task): cancellation is reported through

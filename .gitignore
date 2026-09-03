@@ -52,3 +52,5 @@ Thumbs.db
 
 #temp files
 tmp/
+
+/models/voice/kokoro/kokoro-v1.0.onnx

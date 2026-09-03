@@ -35,20 +35,10 @@ def test_reads_every_configured_field() -> None:
             "providers.local_speech.stt_default_language": "hi",
             "providers.local_speech.stt_model_directory": "/models/whisper",
             "providers.local_speech.stt_beam_size": 3,
-            "providers.local_speech.tts_engine": "piper",
-            "providers.local_speech.tts_voice": "hi_IN-test-medium",
-            "providers.local_speech.tts_model_path": "/models/piper/voice.onnx",
-            "providers.local_speech.tts_config_path": "/models/piper/voice.json",
-            "providers.local_speech.tts_device": "cuda",
-            "providers.local_speech.tts_sample_rate": 24000,
-            "providers.local_speech.tts_speaker_id": 2,
-            "providers.local_speech.tts_length_scale": 1.2,
-            "providers.local_speech.tts_noise_scale": 0.5,
-            "providers.local_speech.tts_noise_w": 0.9,
-            "providers.local_speech.tts_hindi_voice": "hi_IN-priyamvada-medium",
-            "providers.local_speech.tts_hindi_model_path": "/models/piper/hindi.onnx",
-            "providers.local_speech.tts_hindi_config_path": "/models/piper/hindi.json",
-            "providers.local_speech.tts_hindi_speaker_id": 1,
+            "providers.local_speech.tts_kokoro_voice": "hf_beta",
+            "providers.local_speech.tts_kokoro_model_path": "/models/kokoro/model.onnx",
+            "providers.local_speech.tts_kokoro_voices_path": "/models/kokoro/voices.bin",
+            "providers.local_speech.tts_kokoro_speed": 1.5,
         }
     )
 
@@ -61,28 +51,10 @@ def test_reads_every_configured_field() -> None:
     assert config.stt_default_language == "hi"
     assert config.stt_model_directory == "/models/whisper"
     assert config.stt_beam_size == 3
-    assert config.tts_voice == "hi_IN-test-medium"
-    assert config.tts_model_path == "/models/piper/voice.onnx"
-    assert config.tts_config_path == "/models/piper/voice.json"
-    assert config.tts_device == "cuda"
-    assert config.tts_sample_rate == 24000
-    assert config.tts_speaker_id == 2
-    assert config.tts_length_scale == 1.2
-    assert config.tts_noise_scale == 0.5
-    assert config.tts_noise_w == 0.9
-    assert config.tts_hindi_voice == "hi_IN-priyamvada-medium"
-    assert config.tts_hindi_model_path == "/models/piper/hindi.onnx"
-    assert config.tts_hindi_config_path == "/models/piper/hindi.json"
-    assert config.tts_hindi_speaker_id == 1
-
-
-def test_hindi_voice_fields_default_to_unconfigured() -> None:
-    config = load_local_speech_config(None)
-
-    assert config.tts_hindi_model_path == ""
-    assert config.tts_hindi_config_path == ""
-    assert config.tts_hindi_speaker_id is None
-    assert config.tts_hindi_voice == "hi_IN-priyamvada-medium"
+    assert config.tts_kokoro_voice == "hf_beta"
+    assert config.tts_kokoro_model_path == "/models/kokoro/model.onnx"
+    assert config.tts_kokoro_voices_path == "/models/kokoro/voices.bin"
+    assert config.tts_kokoro_speed == 1.5
 
 
 def test_empty_string_language_and_directory_normalize_to_none() -> None:

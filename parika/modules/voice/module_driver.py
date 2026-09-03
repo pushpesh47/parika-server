@@ -120,7 +120,7 @@ _VOICE_TOOL_SPECS: tuple[VoiceToolSpec, ...] = (
         provider_description=(
             "Local, on-device text-to-speech, satisfied by a "
             "Provider model specialized for speech synthesis (e.g. "
-            "the Local Speech Provider's Piper voice model)."
+            "the Local Speech Provider's Kokoro voice model)."
         ),
         provider_category=CapabilityCategory.TEXT_TO_SPEECH,
         tool_affordance=affordances.TEXT_TO_SPEECH_TOOL_AFFORDANCE,

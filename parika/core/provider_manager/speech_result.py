@@ -4,7 +4,7 @@ PARIKA Core - ProviderManager Component
 Defines the provider-independent speech result type.
 
 `SpeechResult` is the generic analogue of a concrete speech provider's
-own response (e.g. faster-whisper's segment list, or Piper's raw PCM
+own response (e.g. faster-whisper's segment list, or Kokoro's raw PCM
 output): the normalized outcome of one speech recognition/synthesis
 operation that every provider-independent layer (Modules) consumes,
 with no provider-specific wire concept. The Provider selected by
@@ -14,7 +14,7 @@ exactly like every other `ProviderResponse` subtype (see
 `GenerationResult` for the established pattern this type mirrors).
 
 Never carries a provider's raw engine payload (e.g. faster-whisper's
-segment/word timestamps, or Piper's internal synthesis config) -- only
+segment/word timestamps, or Kokoro's internal synthesis config) -- only
 the normalized outcome every caller needs.
 """
 

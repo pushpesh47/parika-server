@@ -9,7 +9,7 @@ never a remote service.
 
 See `driver.py`'s module docstring for the full architecture, and
 `engines/__init__.py`'s module docstring for why the concrete STT/TTS
-implementation (faster-whisper, Piper) is fully isolated behind small
+implementation (faster-whisper, Kokoro) is fully isolated behind small
 Protocols.
 """
 

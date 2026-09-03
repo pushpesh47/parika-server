@@ -7,9 +7,8 @@ text-to-speech implementation. `kokoro-onnx` depends on `onnxruntime`
 which ships Python 3.14-compatible wheels.
 
 The `kokoro_onnx` package itself is imported lazily, inside `__init__`,
-never at module import time -- mirroring `piper_engine.py`'s own
-lazy-import convention exactly, for the same graceful-degradation
-reason.
+never at module import time -- following the same lazy-import convention
+as the STT engine for graceful-degradation.
 """
 
 from __future__ import annotations
