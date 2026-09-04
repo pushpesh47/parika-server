@@ -620,6 +620,7 @@ def build_default_runtime(
         workspace_permissions=workspace_permissions,
         brain=brain,
         sync_pool=sync_pool,
+        service_container=service_container,
     )
 
     _register_ollama_provider(
@@ -1032,6 +1033,7 @@ def _register_modules(
     workspace_permissions: WorkspacePermissionManager,
     brain: Brain,
     sync_pool,  # PostgreSQL sync pool
+    service_container: ServiceContainer,
 ) -> None:
     """
     Register the built-in Web Search, Runtime Info, Filesystem, Shell,
@@ -1305,6 +1307,9 @@ def _register_modules(
         configuration=configuration,
     )
     module_manager.register(create_voice_module(voice_driver))
+    # Register the driver in ServiceContainer so API handlers can access
+    # the TextToSpeechToolDriver directly for streaming synthesis.
+    service_container.register(VoiceModuleDriver, voice_driver)
 
     # Media Module: registers `media.play`/`media.pause`/.../
     # `media.get_state`. Registered last, after Voice, for the same

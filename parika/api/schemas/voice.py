@@ -150,6 +150,24 @@ class VoiceSpeakResponseBody(ApiModel):
     output_language: str | None = None
 
 
+class VoiceSpeakStreamChunk(ApiModel):
+    """
+    Single chunk in the streaming TTS response (NDJSON format).
+
+    Each line of the streaming response is one of these objects.
+    The stream ends with a chunk where `final=True`.
+    """
+    operation_id: str
+    chunk_index: int
+    audio_base64: str
+    mime_type: str
+    sample_rate: int
+    final: bool
+    cancelled: bool
+    output_language: str | None = None
+    error: str | None = None
+
+
 class VoiceStopSpeakingResponseBody(ApiModel):
     operation_id: str
     stopped: bool

@@ -35,7 +35,8 @@ package follows.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncGenerator
+from uuid import uuid4
 
 from parika.core.tool_manager.request import ToolRequest
 from parika.interfaces.runtime import ParikaRuntime
@@ -43,8 +44,10 @@ from parika.interfaces.postgresql_session_store import PostgreSQLSessionStore
 from parika.modules.voice.capability_ids import (
     SPEECH_TO_TEXT_TOOL_ID,
     TEXT_TO_SPEECH_TOOL_ID,
+    TEXT_TO_SPEECH_CAPABILITY_ID,
 )
 from parika.modules.voice.language import VoiceLanguagePreferenceStore
+from parika.modules.voice.module_driver import VoiceModuleDriver
 from parika.modules.voice.operation_registry import TtsOperationRegistry
 from parika.providers.local_speech.config import load_local_speech_config
 
@@ -269,3 +272,168 @@ def handle_voice_update_settings(
         )
 
     return handle_voice_get_settings(runtime, VoiceGetSettingsRequest())
+
+
+async def handle_voice_speak_stream(
+    runtime: ParikaRuntime, request: VoiceSpeakRequest, http_request=None
+) -> AsyncGenerator[dict[str, Any], None]:
+    """
+    Stream speech synthesis for already-known text, yielding audio
+    chunks as they are synthesized.
+
+    This is the Phase 2 incremental TTS endpoint. Unlike
+    `handle_voice_speak` which returns the complete audio in one
+    response, this function yields each chunk as an NDJSON line,
+    allowing the client to start playback immediately while synthesis
+    continues for subsequent chunks.
+
+    The streaming uses the same `TextToSpeechToolDriver` but calls its
+    `synthesize_chunks_streaming` method directly (bypassing
+    `ToolManager.execute()`), since streaming requires incremental
+    yield rather than a single aggregated result.
+    """
+    text = str(request.text).strip()
+
+    if not text:
+        yield {
+            "operation_id": request.operation_id or uuid4().hex,
+            "chunk_index": 0,
+            "audio_base64": "",
+            "mime_type": "audio/wav",
+            "sample_rate": 0,
+            "final": True,
+            "cancelled": True,
+            "output_language": None,
+            "error": "Empty text",
+        }
+        return
+
+    voice = request.voice or None
+    requested_language = request.language or None
+    operation_id = str(request.operation_id or uuid4().hex)
+
+    # Get the TTS driver from the VoiceModuleDriver
+    voice_driver = runtime.service_container.get(VoiceModuleDriver)
+    tts_driver = voice_driver._tool_drivers.get(TEXT_TO_SPEECH_CAPABILITY_ID)
+
+    if tts_driver is None:
+        yield {
+            "operation_id": operation_id,
+            "chunk_index": 0,
+            "audio_base64": "",
+            "mime_type": "audio/wav",
+            "sample_rate": 0,
+            "final": True,
+            "cancelled": True,
+            "output_language": None,
+            "error": "TTS driver not available",
+        }
+        return
+
+    # Resolve output language
+    resolved_language = tts_driver._language_preference.resolve_output_language(
+        explicit=str(requested_language) if requested_language else None
+    )
+
+    # Stream chunks
+    async for chunk in _stream_chunks_async(
+        tts_driver,
+        text=text,
+        voice=str(voice) if voice else None,
+        language=resolved_language,
+        operation_id=operation_id,
+        request=http_request,
+    ):
+        yield chunk
+
+
+async def _stream_chunks_async(
+    tts_driver,
+    *,
+    text: str,
+    voice: str | None,
+    language: str,
+    operation_id: str,
+    request,  # FastAPI request object for disconnect detection
+) -> AsyncGenerator[dict[str, Any], None]:
+    """
+    Async wrapper around the driver's synchronous streaming method.
+    Yields chunks incrementally as they are synthesized.
+    """
+    import asyncio
+
+    # Bounded queue for natural backpressure - maxsize=1 means
+    # producer blocks after each chunk until consumer pulls it.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+    sentinel = object()
+    producer_exception: Exception | None = None
+
+    def _producer():
+        nonlocal producer_exception
+        try:
+            for chunk in tts_driver.synthesize_chunks_streaming(
+                text=text,
+                voice=voice,
+                language=language,
+                operation_id=operation_id,
+            ):
+                # Check for client disconnect before putting in queue
+                # This is best-effort; the actual disconnect will be detected
+                # when the consumer tries to yield and the response is closed.
+                try:
+                    asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
+                except RuntimeError:
+                    # Event loop closed, stop producing
+                    break
+        except Exception as ex:
+            producer_exception = ex
+            try:
+                asyncio.run_coroutine_threadsafe(queue.put({"_producer_error": str(ex)}), loop).result()
+            except RuntimeError:
+                pass
+        finally:
+            try:
+                asyncio.run_coroutine_threadsafe(queue.put(sentinel), loop).result()
+            except RuntimeError:
+                pass
+
+    loop = asyncio.get_event_loop()
+
+    # Start producer in executor
+    producer_task = loop.run_in_executor(None, _producer)
+
+    try:
+        # Consume from queue incrementally
+        while True:
+            # Check if client disconnected
+            if request is not None:
+                try:
+                    disconnected = await request.is_disconnected()
+                except RuntimeError:
+                    disconnected = True
+                if disconnected:
+                    break
+
+            item = await queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, dict) and "_producer_error" in item:
+                yield {
+                    "operation_id": operation_id,
+                    "chunk_index": -1,
+                    "audio_base64": "",
+                    "mime_type": "audio/wav",
+                    "sample_rate": 0,
+                    "final": True,
+                    "cancelled": False,  # Not cancelled, it's an error
+                    "output_language": language,
+                    "error": item["_producer_error"],
+                }
+                break
+            yield item
+    finally:
+        # Wait for producer to finish (or be cancelled)
+        try:
+            await asyncio.wait_for(producer_task, timeout=1.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            producer_task.cancel()

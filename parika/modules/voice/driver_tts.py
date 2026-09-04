@@ -13,6 +13,10 @@ the Local Speech Provider today), checking `TtsOperationRegistry
 mid-synthesis rather than only after the entire response has already
 been synthesized.
 
+Text sanitization (`text_sanitization.sanitize_for_tts()`) is applied
+before chunking to remove Markdown formatting artifacts that would
+otherwise be spoken literally.
+
 Relationship to `ToolManager`'s progress lifecycle guard (Section 19
 of the Voice architecture task): cancellation is reported through
 `self._progress.completed(..., cancelled=True)`, never through
@@ -41,10 +45,11 @@ from parika.core.utilities.progress import NullProgressReporter, ProgressReporte
 from . import engine
 from .audio import concatenate_wav_chunks
 from .config import VoiceToolConfig
-from .exceptions import VoiceInputInvalidError, VoiceWriteError
+from .exceptions import VoiceInputInvalidError, VoiceProviderError, VoiceWriteError
 from .language import VoiceLanguagePreferenceStore
 from .operation_registry import TtsOperationRegistry
 from .text_chunking import split_into_speech_chunks
+from .text_sanitization import sanitize_for_tts
 
 
 class TextToSpeechToolDriver:
@@ -77,6 +82,15 @@ class TextToSpeechToolDriver:
         if not text:
             raise VoiceInputInvalidError(
                 "request.arguments['text'] must be a non-empty string."
+            )
+
+        # Sanitize text for TTS: remove Markdown formatting artifacts
+        # while preserving meaningful punctuation and content.
+        text = sanitize_for_tts(text)
+
+        if not text:
+            raise VoiceInputInvalidError(
+                "request.arguments['text'] must contain speakable content after sanitization."
             )
 
         voice = request.arguments.get("voice") or None
@@ -181,6 +195,113 @@ class TextToSpeechToolDriver:
         wav_bytes, sample_rate = concatenate_wav_chunks(tuple(wav_chunks))
 
         return wav_bytes, sample_rate, cancelled
+
+    def synthesize_chunks_streaming(
+        self,
+        text: str,
+        *,
+        voice: str | None,
+        language: str | None,
+        operation_id: str,
+    ):
+        """
+        Synthesize text incrementally, yielding each audio chunk as it
+        becomes available.
+
+        This is the Phase 2 streaming interface: each chunk is
+        synthesized and yielded immediately without waiting for the
+        entire response. Cancellation is checked between chunks.
+
+        Yields:
+            dict with keys: operation_id, chunk_index, audio_base64, mime_type,
+            sample_rate, final (bool), cancelled (bool), language (str),
+            error (str | None)
+
+        Errors are yielded as a final chunk with error field populated,
+        rather than raised.
+        """
+        # Sanitize text for TTS
+        text = sanitize_for_tts(text)
+
+        if not text:
+            yield {
+                "operation_id": operation_id,
+                "chunk_index": 0,
+                "audio_base64": "",
+                "mime_type": "audio/wav",
+                "sample_rate": 0,
+                "final": True,
+                "cancelled": True,
+                "language": None,
+                "error": "Empty text after sanitization",
+            }
+            return
+
+        chunks = split_into_speech_chunks(
+            text, max_characters=self._config.tts_chunk_max_characters
+        )
+
+        resolved_language = language or self._language_preference.resolve_output_language(
+            explicit=None
+        )
+
+        self._operations.begin(operation_id)
+
+        for idx, chunk in enumerate(chunks):
+            if self._operations.is_cancelled(operation_id):
+                yield {
+                    "operation_id": operation_id,
+                    "chunk_index": idx,
+                    "audio_base64": "",
+                    "mime_type": "audio/wav",
+                    "sample_rate": 0,
+                    "final": True,
+                    "cancelled": True,
+                    "language": resolved_language,
+                    "error": None,
+                }
+                return
+
+            try:
+                result = engine.synthesize_with_provider(
+                    self._brain,
+                    self._provider_capability_id,
+                    text=chunk,
+                    voice=voice,
+                    language=resolved_language,
+                )
+            except VoiceProviderError as ex:
+                self._operations.fail(operation_id)
+                yield {
+                    "operation_id": operation_id,
+                    "chunk_index": idx,
+                    "audio_base64": "",
+                    "mime_type": "audio/wav",
+                    "sample_rate": 0,
+                    "final": True,
+                    "cancelled": False,
+                    "language": resolved_language,
+                    "error": str(ex),
+                }
+                return
+
+            yield {
+                "operation_id": operation_id,
+                "chunk_index": idx,
+                "audio_base64": result.audio_base64,
+                "mime_type": result.audio_mime_type,
+                "sample_rate": result.sample_rate,
+                "final": idx == len(chunks) - 1,
+                "cancelled": False,
+                "language": resolved_language,
+                "error": None,
+            }
+
+        # Final completion yield if not cancelled
+        if not self._operations.is_cancelled(operation_id):
+            self._operations.complete(operation_id)
+        else:
+            self._operations.cancel(operation_id)
 
 
 def _decode(audio_base64: str) -> bytes:

@@ -12,16 +12,22 @@ operations. `POST /respond` is the audio-input analogue of
 (`parika/api/handlers/chat.py::handle_chat()`), never a second
 reasoning pipeline, and never auto-triggers speech output -- see
 `parika/api/handlers/voice.py`'s module docstring for exactly why.
+
+`POST /speak/stream` (Phase 2) streams synthesized audio chunks
+incrementally as NDJSON (newline-delimited JSON), enabling the client
+to start playback immediately while synthesis continues for subsequent
+chunks.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 
 from ..auth.backend import AuthContext
 from ..auth.dependency import RequireAuth
 from ..dependencies import get_core_execution_owner, get_runtime
-from ..handlers.voice import handle_voice_get_settings
+from ..handlers.voice import handle_voice_get_settings, handle_voice_speak_stream
 from ..requests import (
     VoiceRespondRequest as InternalVoiceRespondRequest,
     VoiceSpeakRequest as InternalVoiceSpeakRequest,
@@ -142,6 +148,53 @@ async def speak(
     result = await future
 
     return VoiceSpeakResponseBody.model_validate(result)
+
+
+@router.post("/speak/stream")
+async def speak_stream(
+    body: VoiceSpeakRequestBody,
+    auth: AuthContext = RequireAuth,
+    core_execution_owner=Depends(get_core_execution_owner),
+    runtime=Depends(get_runtime),
+    http_request: Request = None,
+) -> StreamingResponse:
+    """
+    `text -> incremental audio stream (NDJSON)`.
+
+    Phase 2 streaming TTS endpoint: synthesizes and delivers audio
+    chunks immediately as they are produced, without waiting for the
+    entire response. Each line of the response is a JSON object
+    (VoiceSpeakStreamChunk) containing one audio chunk. The stream
+    ends with a chunk where `final=true`.
+
+    Supply `operation_id` to enable cancellation via
+    `POST /speak/{operation_id}/stop` from a concurrent request.
+
+    Response format: NDJSON (application/x-ndjson)
+    """
+    from ..requests import VoiceSpeakRequest as InternalVoiceSpeakRequest
+
+    request = InternalVoiceSpeakRequest(
+        text=body.text,
+        voice=body.voice,
+        language=body.language,
+        operation_id=body.operation_id,
+    )
+
+    async def generate():
+        async for chunk in handle_voice_speak_stream(runtime, request, http_request):
+            import json
+            yield json.dumps(chunk, separators=(",", ":")) + "\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @router.post("/speak/{operation_id}/stop", response_model=VoiceStopSpeakingResponseBody)
