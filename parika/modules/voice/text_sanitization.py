@@ -24,6 +24,7 @@ Processing order (each step operates on the output of the previous):
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Pattern for fenced code blocks: ```lang\ncontent\n```
 _CODE_BLOCK_PATTERN = re.compile(r"```[a-zA-Z0-9_-]*\n(.*?)\n```", re.DOTALL)
@@ -135,7 +136,10 @@ def sanitize_for_tts(text: str) -> str:
     # 12. Handle blockquotes - remove > markers
     text = _BLOCKQUOTE_PATTERN.sub("", text)
 
-    # 13. Normalize whitespace
+    # 13. Remove emojis
+    text = _remove_emojis(text)
+
+    # 14. Normalize whitespace
     # Replace multiple newlines with double newline (paragraph break)
     text = _MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)
     # Replace multiple spaces/tabs with single space
@@ -146,6 +150,56 @@ def sanitize_for_tts(text: str) -> str:
 
     return text.strip()
 
+def _remove_emojis(text: str) -> str:
+    """
+    Remove emoji characters and emoji presentation sequences.
+
+    Preserves normal Unicode text, including Devanagari, Latin text,
+    combining marks, and meaningful punctuation.
+    """
+    result: list[str] = []
+    pending_space = False
+
+    punctuation = ",.;:!?।॥"
+
+    for char in text:
+        codepoint = ord(char)
+
+        is_emoji = (
+            0x1F000 <= codepoint <= 0x1FAFF
+            or 0x2600 <= codepoint <= 0x27BF
+            or 0x2300 <= codepoint <= 0x23FF
+            or 0x2B00 <= codepoint <= 0x2BFF
+        )
+
+        is_variation_selector = 0xFE00 <= codepoint <= 0xFE0F
+        is_emoji_joiner = codepoint == 0x200D
+
+        if is_emoji:
+            # Remove whitespace immediately before an emoji.
+            while result and result[-1].isspace():
+                result.pop()
+
+            pending_space = True
+            continue
+
+        if is_variation_selector or is_emoji_joiner:
+            continue
+
+        if pending_space:
+            # Ignore whitespace immediately after the removed emoji.
+            if char.isspace():
+                continue
+
+            # Never insert whitespace before punctuation.
+            if char not in punctuation and result:
+                result.append(" ")
+
+            pending_space = False
+
+        result.append(char)
+
+    return "".join(result)
 
 def sanitize_for_tts_preserving_links(text: str, *, announce_urls: bool = False) -> str:
     """
@@ -203,7 +257,11 @@ def sanitize_for_tts_preserving_links(text: str, *, announce_urls: bool = False)
     text = _HORIZONTAL_RULE_PATTERN.sub("", text)
     text = _BLOCKQUOTE_PATTERN.sub("", text)
 
-    # 13. Normalize whitespace
+    # 13. Remove emojis
+    text = _remove_emojis(text)
+
+
+    # 14. Normalize whitespace
     text = _MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)
     text = _MULTIPLE_SPACES_PATTERN.sub(" ", text)
     lines = [line.strip() for line in text.split("\n")]
