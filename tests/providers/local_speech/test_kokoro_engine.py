@@ -198,7 +198,7 @@ def test_kokoro_language_mapping_hi(monkeypatch) -> None:
     assert captured_lang["lang"] == "hi"
 
 
-def test_kokoro_language_mapping_en(monkeypatch) -> None:
+def test_kokoro_english_text_uses_hindi(monkeypatch) -> None:
     monkeypatch.setattr(kokoro_engine, "kokoro_dependency_available", lambda: True)
 
     captured_lang: dict[str, str] = {}
@@ -231,10 +231,10 @@ def test_kokoro_language_mapping_en(monkeypatch) -> None:
     )
     engine.synthesize("Hello", language="en")
 
-    assert captured_lang["lang"] == "en-us"
+    assert captured_lang["lang"] == "hi"
 
 
-def test_kokoro_language_mapping_en_us(monkeypatch) -> None:
+def test_kokoro_hinglish_text_uses_hindi(monkeypatch) -> None:
     monkeypatch.setattr(kokoro_engine, "kokoro_dependency_available", lambda: True)
 
     captured_lang: dict[str, str] = {}
@@ -267,10 +267,10 @@ def test_kokoro_language_mapping_en_us(monkeypatch) -> None:
     )
     engine.synthesize("Hello", language="en-us")
 
-    assert captured_lang["lang"] == "en-us"
+    assert captured_lang["lang"] == "hi"
 
 
-def test_kokoro_language_mapping_unknown_fallbacks_to_en_us(monkeypatch) -> None:
+def test_kokoro_unknown_input_language_is_ignored(monkeypatch) -> None:
     monkeypatch.setattr(kokoro_engine, "kokoro_dependency_available", lambda: True)
 
     captured_lang: dict[str, str] = {}
@@ -303,10 +303,10 @@ def test_kokoro_language_mapping_unknown_fallbacks_to_en_us(monkeypatch) -> None
     )
     engine.synthesize("Hello", language="fr")
 
-    assert captured_lang["lang"] == "en-us"
+    assert captured_lang["lang"] == "hi"
 
 
-def test_kokoro_language_none_uses_default(monkeypatch) -> None:
+def test_kokoro_language_is_invariant(monkeypatch) -> None:
     monkeypatch.setattr(kokoro_engine, "kokoro_dependency_available", lambda: True)
 
     captured_lang: dict[str, str] = {}
@@ -335,13 +335,11 @@ def test_kokoro_language_none_uses_default(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "kokoro_onnx", fake_module)
 
     engine = kokoro_engine.KokoroTtsEngine(
-        model_path="/models/kokoro.onnx",
-        voices_path="/models/voices.bin",
-        language="en",
+        model_path="/models/kokoro.onnx", voices_path="/models/voices.bin"
     )
     engine.synthesize("Hello", language=None)
 
-    assert captured_lang["lang"] == "en-us"
+    assert captured_lang["lang"] == "hi"
 
 
 def test_kokoro_voice_override(monkeypatch) -> None:

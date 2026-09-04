@@ -157,7 +157,6 @@ class VoiceModuleDriver(ModuleDriver):
         self.language_preference = language_preference or VoiceLanguagePreferenceStore(
             default=VoiceLanguagePreference(
                 input_language=voice_config.input_language,
-                output_language=voice_config.output_language,
             )
         )
 

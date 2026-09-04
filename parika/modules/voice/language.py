@@ -70,7 +70,7 @@ class VoiceInputLanguage(StrEnum):
     HINDI = "hi"
 
 
-class VoiceOutputLanguage(StrEnum):
+class _RemovedVoiceOutputLanguage(StrEnum):
     """
     Requested speech-synthesis language policy for one Voice output
     operation (`voice.text_to_speech`/`voice.speak`).
@@ -83,9 +83,7 @@ class VoiceOutputLanguage(StrEnum):
     language into a single concept.
     """
 
-    ENGLISH = "en"
     HINDI = "hi"
-    FOLLOW_INPUT = "follow_input"
 
 
 SUPPORTED_SPOKEN_LANGUAGES: frozenset[str] = frozenset({"en", "hi"})
@@ -95,7 +93,7 @@ recognizes/synthesizes end-to-end. `"auto"` and `"follow_input"` are
 *policies*, never themselves a spoken language.
 """
 
-DEFAULT_FALLBACK_LANGUAGE = "en"
+TTS_LANGUAGE = "hi"
 """
 Used only when no other signal (explicit request, current preference,
 detected input language) resolves an output language at all -- e.g.
@@ -130,7 +128,7 @@ def parse_input_language(value: str | None) -> VoiceInputLanguage:
     """
 
     if value is None:
-        return VoiceInputLanguage.AUTO
+        return VoiceInputLanguage.HINDI
 
     normalized = value.strip().lower()
 
@@ -146,7 +144,7 @@ def parse_input_language(value: str | None) -> VoiceInputLanguage:
         ) from None
 
 
-def parse_output_language(value: str | None) -> VoiceOutputLanguage:
+def parse_output_language(value: str | None) -> str:
     """
     Parse a wire-level output-language string into
     `VoiceOutputLanguage`.
@@ -160,19 +158,22 @@ def parse_output_language(value: str | None) -> VoiceOutputLanguage:
     """
 
     if value is None:
-        return VoiceOutputLanguage.FOLLOW_INPUT
+        return TTS_LANGUAGE
 
     normalized = value.strip().lower()
 
-    if not normalized or normalized == VoiceOutputLanguage.FOLLOW_INPUT.value:
-        return VoiceOutputLanguage.FOLLOW_INPUT
+    if not normalized:
+        return TTS_LANGUAGE
+
+    if normalized == TTS_LANGUAGE:
+        return TTS_LANGUAGE
 
     try:
-        return VoiceOutputLanguage(normalized)
+        raise ValueError
     except ValueError:
         raise VoiceLanguageError(
             f"Unsupported output language '{value}'. PARIKA Voice "
-            "currently supports only 'follow_input', 'en', or 'hi'."
+            "currently supports only 'hi'."
         ) from None
 
 
@@ -204,7 +205,6 @@ class VoiceLanguagePreference:
     """
 
     input_language: VoiceInputLanguage = VoiceInputLanguage.AUTO
-    output_language: VoiceOutputLanguage = VoiceOutputLanguage.FOLLOW_INPUT
     last_detected_input_language: str | None = None
 
 
@@ -233,17 +233,6 @@ class VoiceLanguagePreferenceStore:
         with self._lock:
             self._preference = replace(
                 self._preference, input_language=input_language
-            )
-            return self._preference
-
-    def set_output_language(
-        self, output_language: VoiceOutputLanguage
-    ) -> VoiceLanguagePreference:
-        """Update the current output-language policy."""
-
-        with self._lock:
-            self._preference = replace(
-                self._preference, output_language=output_language
             )
             return self._preference
 
@@ -285,38 +274,3 @@ class VoiceLanguagePreferenceStore:
             return parse_input_language(explicit)
 
         return self.get().input_language
-
-    def resolve_output_language(self, *, explicit: str | None) -> str:
-        """
-        Resolve the concrete output language (always `"en"` or
-        `"hi"`, never a policy value) for one `text_to_speech`
-        request, per this Module's documented TTS language-selection
-        order:
-
-        1. An explicit, supported output language for this operation,
-           if supplied.
-        2. The current `output_language` preference, when it is
-           itself a concrete language (`en`/`hi`).
-        3. When the current preference is `FOLLOW_INPUT`: the most
-           recently detected/used input language, if one is on
-           record.
-        4. `DEFAULT_FALLBACK_LANGUAGE`, when nothing else resolves.
-        """
-
-        if explicit and is_supported_spoken_language(explicit):
-            return explicit
-
-        preference = self.get()
-
-        if preference.output_language in (
-            VoiceOutputLanguage.ENGLISH,
-            VoiceOutputLanguage.HINDI,
-        ):
-            return str(preference.output_language)
-
-        if preference.last_detected_input_language and is_supported_spoken_language(
-            preference.last_detected_input_language
-        ):
-            return preference.last_detected_input_language
-
-        return DEFAULT_FALLBACK_LANGUAGE

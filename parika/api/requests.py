@@ -272,7 +272,6 @@ class VoiceUpdateSettingsRequest:
     """
 
     input_language: str | None = None
-    output_language: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

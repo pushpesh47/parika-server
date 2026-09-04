@@ -261,7 +261,6 @@ async def update_settings(
         lambda: core_execution_owner.router.dispatch(
             InternalVoiceUpdateSettingsRequest(
                 input_language=body.input_language,
-                output_language=body.output_language,
             )
         )
     )

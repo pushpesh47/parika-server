@@ -230,7 +230,6 @@ class LocalSpeechProviderDriver(ProviderDriver):
                 voices_path=self._config.tts_kokoro_voices_path,
                 voice_name=self._config.tts_kokoro_voice,
                 speed=self._config.tts_kokoro_speed,
-                language="en",
             )
 
         return self._tts_engine

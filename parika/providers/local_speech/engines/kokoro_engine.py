@@ -9,6 +9,11 @@ which ships Python 3.14-compatible wheels.
 The `kokoro_onnx` package itself is imported lazily, inside `__init__`,
 never at module import time -- following the same lazy-import convention
 as the STT engine for graceful-degradation.
+
+Kokoro TTS Language Policy (PARIKA v1):
+    Hindi (`hi`) is the sole supported TTS language. All text -- Hindi,
+    English, Hinglish, or mixed -- is synthesized with `lang="hi"`.
+    No language selection, detection, or fallback occurs in this engine.
 """
 
 from __future__ import annotations
@@ -29,13 +34,10 @@ def kokoro_dependency_available() -> bool:
     return importlib.util.find_spec("kokoro_onnx") is not None
 
 
-# Language mapping from PARIKA language codes to Kokoro language codes.
-# PARIKA's Voice Module (VoiceLanguagePreferenceStore) resolves output
-# language to concrete "en" or "hi" before reaching the engine.
-KOKORO_LANG_MAP = {
-    "hi": "hi",
-    "en": "en-us",
-}
+# Kokoro TTS uses Hindi (`hi`) as the sole language for all synthesis.
+# This is not configurable: the same `hf_beta` voice with `lang="hi"`
+# correctly handles Hindi, English, Hinglish, and mixed text.
+KOKORO_TTS_LANG = "hi"
 
 
 class KokoroTtsEngine(TtsEngine):
@@ -47,14 +49,9 @@ class KokoroTtsEngine(TtsEngine):
     `voice_name` parameter selects which style to use (default:
     "hf_beta").
 
-    `synthesize(..., language=...)` maps the language to Kokoro's
-    expected language codes via `KOKORO_LANG_MAP`. An unrecognized
-    language falls back to `"en-us"`.
-
-    The engine uses CPU by default for Phase 1 (no GPU contention with
-    local LLM inference). Device selection is not currently exposed
-    because `kokoro-onnx` does not provide a meaningful device selection
-    API.
+    All synthesis uses `lang="hi"` regardless of input text language.
+    The `language` parameter in `synthesize()` is accepted for interface
+    compatibility but ignored.
     """
 
     # Kokoro ONNX uses a fixed 24 kHz sample rate.
@@ -67,7 +64,6 @@ class KokoroTtsEngine(TtsEngine):
         voices_path: str,
         voice_name: str = "hf_beta",
         speed: float = 1.0,
-        language: str = "en",
     ) -> None:
         """
         Construct the engine, loading the underlying Kokoro model.
@@ -83,7 +79,7 @@ class KokoroTtsEngine(TtsEngine):
                 Filesystem path to the Kokoro voices file
                 (`voices-v1.0.bin`). Read from
                 `[providers.local_speech].kokoro_voices_path`; never
-                hardcoded here.
+                hardcoded.
 
             voice_name:
                 Kokoro voice style name (e.g. "hf_beta"). Read from
@@ -94,12 +90,6 @@ class KokoroTtsEngine(TtsEngine):
                 Speech speed multiplier. Read from
                 `[providers.local_speech].kokoro_speed`; never
                 hardcoded.
-
-            language:
-                The default language code (e.g. "en") this engine uses
-                when no explicit language is requested -- used only to
-                resolve `synthesize(..., language=...)` requests; never
-                sent to Kokoro directly.
 
         Raises:
             LocalSpeechEngineUnavailableError:
@@ -138,7 +128,6 @@ class KokoroTtsEngine(TtsEngine):
 
         self._voice_name = voice_name
         self._speed = speed
-        self._language = language
 
         try:
             self._kokoro = Kokoro(model_path=model_path, voices_path=voices_path)
@@ -162,18 +151,6 @@ class KokoroTtsEngine(TtsEngine):
 
         return self._SAMPLE_RATE
 
-    def _map_language(self, language: str | None) -> str:
-        """
-        Map PARIKA language code to Kokoro language code.
-
-        Falls back to "en-us" for unrecognized/None languages.
-        """
-
-        if language is None:
-            return KOKORO_LANG_MAP.get(self._language, "en-us")
-
-        return KOKORO_LANG_MAP.get(language, "en-us")
-
     def synthesize(
         self,
         text: str,
@@ -181,6 +158,18 @@ class KokoroTtsEngine(TtsEngine):
         voice: str | None = None,
         language: str | None = None,
     ) -> TtsEngineResult:
+        """
+        Synthesize text to speech.
+
+        Args:
+            text: Text to synthesize.
+            voice: Optional voice override (defaults to configured voice).
+            language: Accepted for interface compatibility but IGNORED.
+                      Kokoro always uses `lang="hi"` for all text.
+
+        Returns:
+            TtsEngineResult with PCM bytes and sample rate.
+        """
         from .. import exceptions
 
         if not text.strip():
@@ -188,16 +177,17 @@ class KokoroTtsEngine(TtsEngine):
                 "Cannot synthesize empty text."
             )
 
-        kokoro_lang = self._map_language(language)
         kokoro_voice = voice or self._voice_name
 
         try:
             # Kokoro returns float32 numpy array, sample_rate
+            # Always use Hindi (hi) language - verified to work for
+            # Hindi, English, Hinglish, and mixed text with hf_beta voice.
             audio_float32, sample_rate = self._kokoro.create(
                 text=text,
                 voice=kokoro_voice,
                 speed=self._speed,
-                lang=kokoro_lang,
+                lang=KOKORO_TTS_LANG,
             )
 
             # Convert float32 [-1.0, 1.0] to int16 little-endian PCM bytes

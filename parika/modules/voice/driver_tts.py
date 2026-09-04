@@ -100,17 +100,9 @@ class TextToSpeechToolDriver:
             request.arguments.get("operation_id") or uuid4().hex
         )
 
-        # Resolve the *output* language once, up front, per this
-        # Module's documented TTS language-selection order: explicit
-        # request argument -> current output-language preference
-        # (`en`/`hi` directly, or `follow_input` against the most
-        # recently detected/used input language) -> configured
-        # fallback. Never lets the chat model choose a voice/language
-        # itself -- see `language.VoiceLanguagePreferenceStore
-        # .resolve_output_language()`.
-        resolved_language = self._language_preference.resolve_output_language(
-            explicit=str(requested_language) if requested_language else None
-        )
+        # TTS language is an implementation invariant, independent of
+        # input text and any STT language preference.
+        resolved_language = "hi"
 
         self._progress.started(message="Synthesizing speech...")
         self._operations.begin(operation_id)
@@ -241,9 +233,7 @@ class TextToSpeechToolDriver:
             text, max_characters=self._config.tts_chunk_max_characters
         )
 
-        resolved_language = language or self._language_preference.resolve_output_language(
-            explicit=None
-        )
+        resolved_language = "hi"
 
         self._operations.begin(operation_id)
 

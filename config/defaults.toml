@@ -16,7 +16,7 @@ environment = "production"
 [assistant]
 name = "PARIKA"
 full_name = "Personal Adaptive Responsive Intelligence Kernel Assistant"
-nick_name = "PARI"
+nick_name = "परी"
 creator = "Pushpesh"
 organization = "Independent Developer"
 purpose = "To provide a modular, adaptive, and extensible intelligence kernel capable of understanding, reasoning, learning, remembering, planning, executing tasks, and orchestrating intelligent capabilities."
@@ -423,7 +423,6 @@ tts_kokoro_speed = 1.0
 enabled = true
 tts_chunk_max_characters = 280
 input_language = "auto"
-output_language = "follow_input"
 
 ###############################################################################
 # Media

@@ -56,9 +56,7 @@ def _checked_input_language(value: str | None) -> str | None:
 def _checked_output_language(value: str | None) -> str | None:
     """
     Shared body for every `@field_validator` below validating an
-    *output*-language field: accepts `None`/`"follow_input"`/`"en"`/
-    `"hi"` (case-insensitively), raising `ValueError` for anything
-    else.
+    *output*-language field: accepts only `None` or `"hi"`.
     """
 
     if value is None:
@@ -182,7 +180,7 @@ class VoiceSettingsResponseBody(ApiModel):
     """
 
     input_language: str  # "auto", "en", or "hi"
-    output_language: str  # "en", "hi", or "follow_input"
+    output_language: str = "hi"
     last_detected_input_language: str | None = None
     english_voice_configured: bool
     hindi_voice_configured: bool
@@ -197,14 +195,8 @@ class VoiceSettingsUpdateRequestBody(ApiModel):
     """
 
     input_language: str | None = None
-    output_language: str | None = None
 
     @field_validator("input_language")
     @classmethod
     def _validate_input_language(cls, value: str | None) -> str | None:
         return _checked_input_language(value)
-
-    @field_validator("output_language")
-    @classmethod
-    def _validate_output_language(cls, value: str | None) -> str | None:
-        return _checked_output_language(value)

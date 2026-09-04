@@ -205,7 +205,7 @@ def _status_voice_lines(session: InterfaceSession) -> list[str]:
     return [
         "Voice:",
         f"  Input language: {preference.input_language.value}",
-        f"  Output language: {preference.output_language.value}",
+        "  Output language: hi",
         f"  English voice: {english_voice}",
         f"  Hindi voice: {hindi_voice}",
         f"  STT: {'Available' if stt_available else 'Unavailable'}",

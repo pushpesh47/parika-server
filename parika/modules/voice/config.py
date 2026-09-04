@@ -7,7 +7,7 @@ bounded pieces before synthesizing each one (see
 `text_chunking.py`) -- the mechanism that makes "Stop Speaking"
 observable mid-response rather than only after an entire response has
 already finished synthesizing -- and the *initial* Voice language
-preference (`input_language`/`output_language`; see `language.py`)
+preference (`input_language`; see `language.py`); TTS is invariant Hindi.
 that seeds `VoiceLanguagePreferenceStore` at startup.
 
 Mirrors `parika.modules.generation.config`'s pattern exactly,
@@ -29,15 +29,12 @@ from parika.core.configuration.configuration import Configuration
 
 from .language import (
     VoiceInputLanguage,
-    VoiceOutputLanguage,
     parse_input_language,
-    parse_output_language,
 )
 
 DEFAULT_ENABLED = True
 DEFAULT_TTS_CHUNK_MAX_CHARACTERS = 280
 DEFAULT_INPUT_LANGUAGE = VoiceInputLanguage.AUTO
-DEFAULT_OUTPUT_LANGUAGE = VoiceOutputLanguage.FOLLOW_INPUT
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -65,16 +62,11 @@ class VoiceToolConfig:
             Voice API's settings endpoint without touching
             configuration.
 
-        output_language:
-            The initial Voice output-language preference
-            (`en`/`hi`/`follow_input`), seeding
-            `VoiceLanguagePreferenceStore` at startup.
     """
 
     enabled: bool = DEFAULT_ENABLED
     tts_chunk_max_characters: int = DEFAULT_TTS_CHUNK_MAX_CHARACTERS
     input_language: VoiceInputLanguage = DEFAULT_INPUT_LANGUAGE
-    output_language: VoiceOutputLanguage = DEFAULT_OUTPUT_LANGUAGE
 
 
 def load_voice_config(configuration: Configuration | None) -> VoiceToolConfig:
@@ -95,12 +87,5 @@ def load_voice_config(configuration: Configuration | None) -> VoiceToolConfig:
         ),
         input_language=parse_input_language(
             str(configuration.get("voice.input_language", DEFAULT_INPUT_LANGUAGE.value))
-        ),
-        output_language=parse_output_language(
-            str(
-                configuration.get(
-                    "voice.output_language", DEFAULT_OUTPUT_LANGUAGE.value
-                )
-            )
         ),
     )

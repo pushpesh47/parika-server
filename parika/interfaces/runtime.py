@@ -485,7 +485,7 @@ def build_default_runtime(
     media_connection_registry = MediaConnectionRegistry()
 
     tts_operation_registry = TtsOperationRegistry()
-    # Seeded from `[voice].input_language`/`output_language` here (the
+    # Seeded from `[voice].input_language` here (the
     # composition root) rather than inside `VoiceModuleDriver`, since
     # this instance is shared with the Voice API's settings endpoints
     # via `ServiceContainer` -- exactly like `tts_operation_registry`
@@ -494,7 +494,6 @@ def build_default_runtime(
     voice_language_preference = VoiceLanguagePreferenceStore(
         default=VoiceLanguagePreference(
             input_language=_initial_voice_config.input_language,
-            output_language=_initial_voice_config.output_language,
         )
     )
 

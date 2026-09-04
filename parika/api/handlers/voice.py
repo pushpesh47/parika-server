@@ -232,7 +232,7 @@ def handle_voice_get_settings(
 
     return {
         "input_language": str(preference.input_language),
-        "output_language": str(preference.output_language),
+        "output_language": "hi",
         "last_detected_input_language": preference.last_detected_input_language,
         "english_voice_configured": english_voice_configured,
         "hindi_voice_configured": hindi_voice_configured,
@@ -254,21 +254,13 @@ def handle_voice_update_settings(
     `resolve_output_language()`.
     """
 
-    from parika.modules.voice.language import (
-        parse_input_language,
-        parse_output_language,
-    )
+    from parika.modules.voice.language import parse_input_language
 
     preference_store = runtime.service_container.get(VoiceLanguagePreferenceStore)
 
     if request.input_language is not None:
         preference_store.set_input_language(
             parse_input_language(request.input_language)
-        )
-
-    if request.output_language is not None:
-        preference_store.set_output_language(
-            parse_output_language(request.output_language)
         )
 
     return handle_voice_get_settings(runtime, VoiceGetSettingsRequest())
@@ -331,9 +323,7 @@ async def handle_voice_speak_stream(
         return
 
     # Resolve output language
-    resolved_language = tts_driver._language_preference.resolve_output_language(
-        explicit=str(requested_language) if requested_language else None
-    )
+    resolved_language = "hi"
 
     # Stream chunks
     async for chunk in _stream_chunks_async(
