@@ -231,4 +231,3 @@ def test_language_preference_is_seeded_from_voice_configuration(wiring, logger) 
 
     preference = driver.language_preference.get()
     assert str(preference.input_language) == "hi"
-    assert str(preference.output_language) == "hi"

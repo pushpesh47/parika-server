@@ -69,6 +69,9 @@ def _fake_kokoro_module(
         def __init__(self, model_path: str, voices_path: str, **kwargs):
             self.model_path = model_path
             self.voices_path = voices_path
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             if fail_load:
                 raise RuntimeError("failed to load model")
 
@@ -169,6 +172,9 @@ def test_kokoro_language_mapping_hi(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -205,6 +211,9 @@ def test_kokoro_english_text_uses_hindi(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -241,6 +250,9 @@ def test_kokoro_hinglish_text_uses_hindi(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -277,6 +289,9 @@ def test_kokoro_unknown_input_language_is_ignored(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -313,6 +328,9 @@ def test_kokoro_language_is_invariant(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -349,6 +367,9 @@ def test_kokoro_voice_override(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -387,6 +408,9 @@ def test_kokoro_speed_parameter(monkeypatch) -> None:
 
     class _FakeKokoro:
         def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = types.SimpleNamespace(
+                phonemize=lambda text, lang: text
+            )
             pass
 
         def get_voices(self) -> list[str]:
@@ -416,3 +440,47 @@ def test_kokoro_speed_parameter(monkeypatch) -> None:
     engine.synthesize("Hello")
 
     assert captured_speed["speed"] == 1.5
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    ["Hello", "hello", "HELLO", "मैं परी हूँ।", "Hello मैं परी हूँ।"],
+)
+def test_kokoro_tokenizes_in_hindi_and_strips_language_markers(
+    monkeypatch, source_text
+) -> None:
+    monkeypatch.setattr(kokoro_engine, "kokoro_dependency_available", lambda: True)
+    captured: dict[str, object] = {}
+
+    class _FakeTokenizer:
+        def phonemize(self, text: str, *, lang: str) -> str:
+            captured["phonemize_text"] = text
+            captured["phonemize_lang"] = lang
+            return "(en)" + text + "(hi)(en-us)"
+
+    class _FakeKokoro:
+        def __init__(self, model_path: str, voices_path: str, **kwargs):
+            self.tokenizer = _FakeTokenizer()
+
+        def get_voices(self) -> list[str]:
+            return ["hf_beta"]
+
+        def create(self, **kwargs):
+            captured["create"] = kwargs
+            return np.zeros(1, dtype=np.float32), 24000
+
+    fake_module = types.ModuleType("kokoro_onnx")
+    fake_module.Kokoro = _FakeKokoro
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", fake_module)
+
+    engine = kokoro_engine.KokoroTtsEngine(
+        model_path="/models/kokoro.onnx", voices_path="/models/voices.bin"
+    )
+    engine.synthesize(source_text)
+
+    create = captured["create"]
+    assert captured["phonemize_lang"] == "hi"
+    assert create["lang"] == "hi"
+    assert create["is_phonemes"] is True
+    assert create["text"] == source_text
+    assert "(" not in create["text"]

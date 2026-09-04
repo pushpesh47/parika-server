@@ -10,11 +10,6 @@ from parika.core.tool_manager.request import ToolRequest
 from parika.modules.voice.config import VoiceToolConfig
 from parika.modules.voice.driver_tts import TextToSpeechToolDriver
 from parika.modules.voice.exceptions import VoiceInputInvalidError
-from parika.modules.voice.language import (
-    VoiceLanguagePreference,
-    VoiceLanguagePreferenceStore,
-    VoiceOutputLanguage,
-)
 from parika.modules.voice.operation_registry import (
     TtsOperationRegistry,
     TtsOperationStatus,
@@ -24,14 +19,13 @@ from .conftest import failed_result, tts_result
 
 
 def _driver(
-    fake_brain, *, registry=None, chunk_max_characters=280, language_preference=None
+    fake_brain, *, registry=None, chunk_max_characters=280
 ):
     return TextToSpeechToolDriver(
         brain=fake_brain,
         provider_capability_id="voice.provider_text_to_speech",
         config=VoiceToolConfig(tts_chunk_max_characters=chunk_max_characters),
         operation_registry=registry or TtsOperationRegistry(),
-        language_preference=language_preference,
     )
 
 
@@ -200,43 +194,13 @@ class TestTextToSpeechStreaming:
         assert "error" in chunks[0]
         assert "Empty text" in chunks[0]["error"]
 
-    def test_streaming_preserves_language(self, fake_brain) -> None:
-        """Streaming chunks include the resolved output language."""
+    def test_streaming_always_reports_hindi_language(self, fake_brain) -> None:
         fake_brain.queue("voice.provider_text_to_speech", tts_result())
-        preference = VoiceLanguagePreferenceStore(
-            default=VoiceLanguagePreference(output_language=VoiceOutputLanguage.HINDI)
-        )
-
-        driver = _driver(fake_brain, language_preference=preference)
-        chunks = list(driver.synthesize_chunks_streaming(
-            text="Namaste.",
-            voice=None,
-            language=None,  # Use preference
-            operation_id="op-stream-8",
+        chunks = list(_driver(fake_brain).synthesize_chunks_streaming(
+            text="Hello मैं परी हूँ.", voice=None, language="en", operation_id="op-stream-8"
         ))
-
-        assert len(chunks) == 1
         assert chunks[0]["language"] == "hi"
-
-    def test_streaming_explicit_language_overrides(self, fake_brain) -> None:
-        """Explicit language in streaming overrides preference."""
-        fake_brain.queue("voice.provider_text_to_speech", tts_result())
-        preference = VoiceLanguagePreferenceStore(
-            default=VoiceLanguagePreference(output_language=VoiceOutputLanguage.HINDI)
-        )
-
-        driver = _driver(fake_brain, language_preference=preference)
-        chunks = list(driver.synthesize_chunks_streaming(
-            text="Hello.",
-            voice=None,
-            language="en",  # Explicit override
-            operation_id="op-stream-9",
-        ))
-
-        assert len(chunks) == 1
-        assert chunks[0]["language"] == "en"
-        goal = fake_brain.goals_for("voice.provider_text_to_speech")[0]
-        assert goal.provider_request_builder(None, None).language == "en"
+        assert fake_brain.goals_for("voice.provider_text_to_speech")[0].provider_request_builder(None, None).language == "hi"
 
     def test_streaming_multiple_chunks_each_self_contained_wav(self, fake_brain) -> None:
         """Each streaming chunk is a self-contained WAV with correct headers."""
