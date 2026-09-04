@@ -19,6 +19,7 @@ Kokoro TTS Language Policy (PARIKA v1):
 from __future__ import annotations
 
 import importlib.util
+import re
 
 import numpy as np
 
@@ -38,6 +39,17 @@ def kokoro_dependency_available() -> bool:
 # This is not configurable: the same `hf_beta` voice with `lang="hi"`
 # correctly handles Hindi, English, Hinglish, and mixed text.
 KOKORO_TTS_LANG = "hi"
+
+
+_ESPEAK_LANGUAGE_MARKER = re.compile(
+    r"\([a-z]{2,3}(?:-[a-z0-9]{2,8})?\)"
+)
+
+
+def _strip_language_markers(phonemes: str) -> str:
+    """Remove eSpeak language-switch annotations without touching phonemes."""
+
+    return _ESPEAK_LANGUAGE_MARKER.sub("", phonemes)
 
 
 class KokoroTtsEngine(TtsEngine):
@@ -180,14 +192,19 @@ class KokoroTtsEngine(TtsEngine):
         kokoro_voice = voice or self._voice_name
 
         try:
+            phonemes = _strip_language_markers(
+                self._kokoro.tokenizer.phonemize(text, lang=KOKORO_TTS_LANG)
+            )
+
             # Kokoro returns float32 numpy array, sample_rate
-            # Always use Hindi (hi) language - verified to work for
-            # Hindi, English, Hinglish, and mixed text with hf_beta voice.
+            # The already-phonemized text prevents Kokoro from adding
+            # eSpeak language-switch annotations during synthesis.
             audio_float32, sample_rate = self._kokoro.create(
-                text=text,
+                text=phonemes,
                 voice=kokoro_voice,
                 speed=self._speed,
                 lang=KOKORO_TTS_LANG,
+                is_phonemes=True,
             )
 
             # Convert float32 [-1.0, 1.0] to int16 little-endian PCM bytes
