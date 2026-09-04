@@ -1403,6 +1403,48 @@
         }
       }
     },
+    "/api/v1/voice/speak/stream": {
+      "post": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Speak Stream",
+        "description": "`text -> incremental audio stream (NDJSON)`.\n\nPhase 2 streaming TTS endpoint: synthesizes and delivers audio\nchunks immediately as they are produced, without waiting for the\nentire response. Each line of the response is a JSON object\n(VoiceSpeakStreamChunk) containing one audio chunk. The stream\nends with a chunk where `final=true`.\n\nSupply `operation_id` to enable cancellation via\n`POST /speak/{operation_id}/stop` from a concurrent request.\n\nResponse format: NDJSON (application/x-ndjson)",
+        "operationId": "speak_stream_api_v1_voice_speak_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSpeakRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Streaming audio chunks as NDJSON",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSpeakStreamChunk"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/voice/speak/{operation_id}/stop": {
       "post": {
         "tags": [
@@ -1610,6 +1652,94 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/ws/chat/{session_id}": {
+      "get": {
+        "tags": [
+          "websocket",
+          "chat"
+        ],
+        "summary": "Chat WebSocket",
+        "description": "WebSocket endpoint for streaming chat.\n\nProtocol:\n- Client sends: `{\"text\": \"user message\"}`\n- Server responds with token fragments: `{\"type\": \"token\", \"content\": \"...\"}`\n- Server sends final response: `{\"type\": \"done\", \"done\": true, \"response\": {...}}`\n\nAuthentication: Bearer token in Authorization header, X-API-Key header, or token query parameter.\n\nSee `docs/guides/Running.md` section 12 for full protocol details.",
+        "operationId": "websocket_chat_api_v1_ws_chat_session_id_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols - WebSocket upgrade successful"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "x-websocket": true
+      }
+    },
+    "/api/v1/ws/media/{client_id}": {
+      "get": {
+        "tags": [
+          "websocket",
+          "media"
+        ],
+        "summary": "Media WebSocket",
+        "description": "WebSocket endpoint for bidirectional media control.\n\nServer -> Client (commands):\n- `{\"type\": \"media.play\", \"payload\": {\"source\": {...}}}`\n- `{\"type\": \"media.pause\"}` / `\"media.resume\"` / `\"media.stop\"` / `\"media.skip\"` / `\"media.previous\"` / `\"media.mute\"` / `\"media.unmute\"` / `\"media.show\"` / `\"media.hide\"`\n- `{\"type\": \"media.seek\", \"payload\": {\"position_seconds\": ...}}`\n- `{\"type\": \"media.set_volume\", \"payload\": {\"volume_percent\": ...}}`\n\nClient -> Server (events):\n- `{\"type\": \"media.ready\"}` - handshake, marks connection as media-ready\n- `{\"type\": \"media.state_changed\", \"payload\": {\"state\": {...}}}`\n- `{\"type\": \"media.position_changed\", \"payload\": {\"position\": ...}}`\n- `{\"type\": \"media.play_started\" | \"media.play_paused\" | \"media.play_stopped\" | \"media.play_ended\" | \"media.buffering\"}`\n- `{\"type\": \"media.error\", \"payload\": {\"message\": \"...\"}}`\n- `{\"type\": \"media.source_changed\", \"payload\": {\"source\": {...}}}`\n\nAuthentication: Bearer token in Authorization header, X-API-Key header, or token query parameter.\n\nSee `docs/guides/Running.md` Media API section for full protocol with examples.",
+        "operationId": "websocket_media_api_v1_ws_media_client_id_get",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols - WebSocket upgrade successful"
+          },
+          "401": {
+            "description": "Authentication required"
+          }
+        },
+        "x-websocket": true
+      }
+    },
+    "/api/v1/ws/ui": {
+      "get": {
+        "tags": [
+          "websocket",
+          "ui-context"
+        ],
+        "summary": "UI Context WebSocket",
+        "description": "WebSocket endpoint for real-time semantic UI context updates.\n\nProtocol:\n\nServer -> Client (initial snapshot on connect):\n```json\n{\n  \"type\": \"ui.context.snapshot\",\n  \"payload\": { ... UIContextState ... }\n}\n```\n\nServer -> Client (semantic change notifications):\n```json\n{\n  \"type\": \"ui.context.changed\",\n  \"payload\": {\n    \"version\": 1,\n    \"previous_version\": 0,\n    \"changed_fields\": [\"context\", \"focus\"],\n    \"source_event\": \"task.started\",\n    \"timestamp\": \"...\",\n    \"state\": { ... full UIContextState ... }\n  }\n}\n```\n\nAuthentication: Same as other WebSocket endpoints - Bearer token, X-API-Key, or query param token.\n\nSee `parika/api/ws/ui.py` for complete protocol definition.",
+        "operationId": "websocket_ui_api_v1_ws_ui_get",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols - WebSocket upgrade successful"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "503": {
+            "description": "UI Context Projector not ready"
+          }
+        },
+        "x-websocket": true
       }
     }
   },
@@ -4959,6 +5089,72 @@
           "cancelled"
         ],
         "title": "VoiceSpeakResponseBody"
+      },
+      "VoiceSpeakStreamChunk": {
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "title": "Operation Id"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "audio_base64": {
+            "type": "string",
+            "title": "Audio Base64"
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type"
+          },
+          "sample_rate": {
+            "type": "integer",
+            "title": "Sample Rate"
+          },
+          "final": {
+            "type": "boolean",
+            "title": "Final"
+          },
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled"
+          },
+          "output_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Language"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation_id",
+          "chunk_index",
+          "audio_base64",
+          "mime_type",
+          "sample_rate",
+          "final",
+          "cancelled"
+        ],
+        "title": "VoiceSpeakStreamChunk",
+        "description": "Single chunk in the streaming TTS response (NDJSON format).\n\nEach line of the streaming response is one of these objects.\nThe stream ends with a chunk where `final=true`."
       },
       "VoiceStopSpeakingResponseBody": {
         "properties": {
