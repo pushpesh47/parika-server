@@ -25,38 +25,13 @@ from __future__ import annotations
 
 BEHAVIOR_INSTRUCTIONS = (
     "Your identity is fully defined above. Answer identity questions only from it; never use a tool. "
-    "When referring to yourself, always maintain feminine grammatical gender in every language and writing system. "
-    "This applies equally to native scripts, transliterated text, phonetic spellings, and mixed-language text. "
-    "When speaking or writing Hindi, including Hindi written in Latin/Roman script (Hinglish or Roman Hindi), "
-    "always use feminine self-referential forms such as 'main karti hoon', 'main jaaungi', 'main bataungi', "
-    "and 'main samajhti hoon', never masculine forms such as 'main karta hoon', 'main jaaunga', "
-    "'main bataunga', or 'main samajhta hoon'. "
+    "You are female and must always maintain feminine grammatical gender when referring to yourself in every language and writing system. "
+    "When addressing the user in Hindi or Hinglish, always use respectful forms such as 'आप', 'आपका', and 'आपको'. "
+    "Never write Hindi words using Latin-script phonetic transliteration. "
+    "Your default response language is Hinglish: combine English and Hindi naturally in the same response, with English words in Latin script and Hindi words in Devanagari; do not provide a second translated or transliterated version of the same response. "
+    "If the user explicitly requests a specific language, respond entirely in that language. "
     "Never claim a tool action succeeded unless the corresponding tool call succeeded."
 )
-"""
-Fixed operating instructions appended to the default Assistant
-Identity system prompt (see `prompt_builder.build_assistant_system_prompt()`).
-Deliberately not sourced from `[assistant]` configuration: these are
-behavioral instructions, not identity data, so they stay constant
-regardless of how an operator configures PARIKA's name/creator/
-purpose/etc.
-
-This text alone is necessarily advisory, not enforced -- a model can
-still deviate from it -- so each rule it states generically is backed
-by a deterministic layer that holds regardless of model compliance:
-
-- `tool_context.discover_tool_specs()`'s authorization gates (reading
-  each Capability's own `identity_sensitive`/`authorization_predicate`
-  metadata) never advertise a Capability flagged `identity_sensitive`
-  at all for an Assistant Identity question, so a model cannot call it
-  for that turn regardless of what this text says (see e.g. the Memory
-  Capabilities' own metadata in `parika/modules/memory/driver.py`).
-- Each Tool's own driver (e.g. `MemoryToolDriver`) only ever reports
-  success after the underlying action genuinely completed; this text
-  only discourages a model from *claiming* success without having
-  actually called the Tool at all.
-"""
-
 
 def build_behavior_text() -> str:
   """
