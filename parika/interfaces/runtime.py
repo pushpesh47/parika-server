@@ -206,6 +206,10 @@ from parika.providers.local_speech.manifest import (
     LOCAL_SPEECH_PROVIDER_ID,
     create_local_speech_provider,
 )
+from parika.providers.openai_compatible.config import load_openai_compatible_configs
+from parika.providers.openai_compatible.driver import OpenAICompatibleProviderDriver
+from parika.providers.openai_compatible.exceptions import OpenAICompatibleError
+from parika.core.provider_manager.provider import Provider
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -629,6 +633,11 @@ def build_default_runtime(
         logger=logger,
         transport=ollama_transport,
         discover_models=discover_ollama_models,
+    )
+
+    _register_openai_compatible_providers(
+        configuration=configuration, provider_manager=provider_manager,
+        logger=logger, brain=brain, discover_models=discover_ollama_models,
     )
 
     _register_comfyui_provider(
@@ -1743,3 +1752,27 @@ def _register_local_speech_provider(
         provider_manager.refresh_health(LOCAL_SPEECH_PROVIDER_ID)
     except LocalSpeechProviderError as ex:
         log.warning("Could not refresh Local Speech health: %s", ex)
+
+
+def _register_openai_compatible_providers(*, configuration, provider_manager,
+                                           logger, brain, discover_models: bool) -> None:
+    """Register every configured generic cloud provider instance."""
+    log = logger.get_logger(__name__)
+    for cfg in load_openai_compatible_configs(configuration):
+        try:
+            driver = OpenAICompatibleProviderDriver(
+                provider_id=cfg.provider_id, base_url=cfg.base_url,
+                model=cfg.model, api_key_env=cfg.api_key_env, logger=logger,
+                transport=None, **cfg.options,
+            )
+            driver.bind_brain(brain)
+            provider_manager.register(Provider(
+                id=cfg.provider_id, name=cfg.provider_id,
+                description="Configuration-driven OpenAI-compatible provider",
+                metadata={"provider_type": "openai_compatible"},
+            ), driver)
+            if discover_models:
+                provider_manager.discover_models(cfg.provider_id)
+                provider_manager.refresh_health(cfg.provider_id)
+        except OpenAICompatibleError as ex:
+            log.warning("Could not register provider '%s': %s", cfg.provider_id, ex)

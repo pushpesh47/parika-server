@@ -651,12 +651,36 @@ class Planner:
         )
 
         if self._routing_config.is_fixed and is_routing_or_synthesis:
-            selection = select_fixed_routing_model(
-                providers=self._provider_manager.get_all(),
-                requirements=requirements,
-                routing_config=self._routing_config,
-                logger=self._logger,
+            self._logger.debug(
+                "Planner routing decision: "
+                "routing_type=%s is_fixed=%s fixed_model_id=%s "
+                "cloud_fixed_provider=%s cloud_fixed_model=%s "
+                "cloud_fallback_provider=%s cloud_fallback_model=%s",
+                self._routing_config.routing_type,
+                self._routing_config.is_fixed,
+                self._routing_config.fixed_model_id,
+                self._routing_config.cloud_fixed_provider,
+                self._routing_config.cloud_fixed_model,
+                self._routing_config.cloud_fallback_provider,
+                self._routing_config.cloud_fallback_model,
             )
+
+            if self._routing_config.routing_type == "cloud":
+                selection = self._select_cloud_routing_model(
+                    providers=self._provider_manager.get_all(),
+                    requirements=requirements,
+                )
+
+            if selection is None:
+                self._logger.debug("Planner routing branch=local_fixed")
+                selection = select_fixed_routing_model(
+                    providers=self._provider_manager.get_all(),
+                    requirements=requirements,
+                    routing_config=self._routing_config,
+                    logger=self._logger,
+                )
+            else:
+                self._logger.debug("Planner routing branch=cloud")
 
         if selection is None:
             selection = select_provider_model(
@@ -730,3 +754,109 @@ class Planner:
         )
 
         return target, backend_request
+
+    def _select_cloud_routing_model(
+        self,
+        *,
+        providers,
+        requirements,
+    ):
+        """
+        Select a cloud routing model based on cloud configuration.
+
+        Tries cloud primary, then cloud fallback, then local fixed model.
+        Returns None if no cloud model is available.
+        """
+        routing_config = self._routing_config
+        logger = self._logger
+
+        # Try cloud primary
+        if routing_config.cloud_fixed_provider and routing_config.cloud_fixed_model:
+            for provider in providers:
+                if provider.id == routing_config.cloud_fixed_provider:
+                    for model in provider.models:
+                        if model.id == routing_config.cloud_fixed_model:
+                            logger.debug(
+                                "Using cloud primary routing model: provider=%s model=%s",
+                                provider.id,
+                                model.id,
+                            )
+                            return self._create_selection_result(
+                                provider=provider,
+                                model=model,
+                                requirements=requirements,
+                                reason=f"cloud primary routing model configured via [routing.cloud_model] fixed_provider='{provider.id}' fixed_model='{model.id}'",
+                                skip_health_check=True,
+                            )
+
+        # Try cloud fallback
+        if routing_config.cloud_fallback_provider and routing_config.cloud_fallback_model:
+            for provider in providers:
+                if provider.id == routing_config.cloud_fallback_provider:
+                    for model in provider.models:
+                        if model.id == routing_config.cloud_fallback_model:
+                            logger.debug(
+                                "Using cloud fallback routing model: provider=%s model=%s",
+                                provider.id,
+                                model.id,
+                            )
+                            return self._create_selection_result(
+                                provider=provider,
+                                model=model,
+                                requirements=requirements,
+                                reason=f"cloud fallback routing model configured via [routing.cloud_model] fallback_provider='{provider.id}' fallback_model='{model.id}'",
+                                skip_health_check=True,
+                            )
+
+        # Try local fixed model as last resort
+        if routing_config.fixed_provider_id and routing_config.fixed_model_id:
+            for provider in providers:
+                if provider.id == routing_config.fixed_provider_id:
+                    for model in provider.models:
+                        if model.id == routing_config.fixed_model_id:
+                            logger.debug(
+                                "Using local fixed routing model as cloud fallback: provider=%s model=%s",
+                                provider.id,
+                                model.id,
+                            )
+                            return self._create_selection_result(
+                                provider=provider,
+                                model=model,
+                                requirements=requirements,
+                                reason=f"local fixed routing model (cloud fallback) configured via [routing_model] fixed_model='{provider.id}/{model.id}'",
+                                skip_health_check=True,
+                            )
+
+        return None
+
+    def _create_selection_result(self, *, provider, model, requirements, reason, skip_health_check=False):
+        """Create a ModelSelectionResult for a directly selected model."""
+        from parika.core.planner.model_selection.filtering import evaluate_hard_requirements
+        from parika.core.planner.model_selection.requirements import ThinkingMode
+        from parika.core.planner.model_selection.selection_result import ModelSelectionResult
+
+        if not skip_health_check:
+            rejection_reason = evaluate_hard_requirements(provider, model, requirements)
+            if rejection_reason is not None:
+                self._logger.debug(
+                    "Model %s/%s rejected by hard requirements: %s",
+                    provider.id,
+                    model.id,
+                    rejection_reason,
+                )
+                return None
+
+        reasoning_enabled = bool(self._routing_config.fixed_thinking)
+        thinking_mode = ThinkingMode.ON if reasoning_enabled else ThinkingMode.OFF
+
+        return ModelSelectionResult(
+            requirements=requirements,
+            selected_provider_id=provider.id,
+            selected_model=model,
+            thinking_mode=thinking_mode,
+            reasoning_enabled=reasoning_enabled,
+            total_score=None,
+            breakdown=(),
+            reason=reason,
+            evaluated_candidates=(),
+        )

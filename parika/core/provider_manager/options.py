@@ -68,6 +68,9 @@ class RequestOptions:
 
     reasoning: bool | None = None
 
+    response_format: str | None = None
+    response_schema: dict[str, object] | None = None
+
     context_window_tokens: int | None = None
     """
     The effective context window this request's model should be

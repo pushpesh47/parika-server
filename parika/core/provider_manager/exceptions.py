@@ -41,6 +41,18 @@ class ProviderAuthenticationError(ProviderError):
     Raised when authentication with a provider fails.
     """
 
+class ProviderAuthorizationError(ProviderError):
+    """Raised when a provider rejects an otherwise authenticated request."""
+
+class ProviderRateLimitError(ProviderError):
+    """Raised when a provider rate-limits a request."""
+
+class ProviderResponseError(ProviderError):
+    """Raised when a provider response is malformed or unusable."""
+
+class ProviderServerError(ProviderError):
+    """Raised for retryable provider-side server failures."""
+
 
 class ProviderTimeoutError(ProviderError):
     """

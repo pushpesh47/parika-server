@@ -96,11 +96,17 @@ class Configuration:
             with env_path.open("r") as f:
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        key, value = line.split("=", 1)
-                        # Only set if not already in environment (environment takes precedence)
-                        if key not in os.environ:
-                            os.environ[key] = value
+                    if not line or line.startswith("#"):
+                        continue
+                    # Strip inline comments (standard .env convention: # preceded by whitespace)
+                    if " #" in line:
+                        line = line.split(" #")[0].rstrip()
+                    if "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    # Only set if not already in environment (environment takes precedence)
+                    if key not in os.environ:
+                        os.environ[key] = value
 
     def _apply_env_overrides(self) -> None:
         """Apply environment variable overrides to configuration.
@@ -110,11 +116,17 @@ class Configuration:
         Maps to: section.subsection.key
         """
         prefix = "PARIKA_"
+        aliases = {
+            "PARIKA_ROUTING_TYPE": "routing.type",
+        }
         for env_key, env_value in os.environ.items():
             if env_key.startswith(prefix):
                 # Convert PARIKA_DATABASE__HOST -> database.host
                 # Use double underscore for nesting, single underscore stays as underscore
-                config_key = env_key[len(prefix):].replace("__", ".").lower()
+                config_key = aliases.get(
+                    env_key,
+                    env_key[len(prefix):].replace("__", ".").lower(),
+                )
                 self._set_nested_key(self._config, config_key, self._parse_env_value(env_value))
 
     def _parse_env_value(self, value: str) -> Any:

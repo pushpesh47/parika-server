@@ -145,6 +145,8 @@ def _build_tool_spec(definition: CapabilityDefinition) -> ToolSpec:
         description=description,
         capability_id=definition.id,
         parameters=parameters,
+        implementation=str(definition.metadata.get("implementation", "parika_native")),
+        local_only=bool(definition.metadata.get("local_only", False)),
     )
 
 

@@ -33,6 +33,11 @@ from parika.core.provider_manager.chat_request import ChatRequest
 from parika.core.provider_manager.context_budget import resolve_runtime_context_budget
 from parika.core.provider_manager.options import RequestOptions
 from parika.core.provider_manager.provider_manager import ProviderManager
+from parika.core.provider_manager.exceptions import (
+    ProviderConnectionError, ProviderTimeoutError, ProviderRateLimitError,
+    ProviderServerError, ProviderModelNotFoundError,
+    ProviderAuthenticationError, ProviderAuthorizationError,
+)
 from parika.core.provider_manager.provider_model import ProviderModel
 from parika.core.planner.model_selection.routing_config import RoutingConfig, load_routing_config
 from parika.core.planner.model_selection.routing_strategy import select_fixed_routing_model
@@ -378,6 +383,18 @@ class GoalDecomposer:
                 last_exception = ex
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Decomposition attempt {attempt + 1} failed: {ex}")
+                if isinstance(ex, (ProviderConnectionError, ProviderTimeoutError,
+                                   ProviderRateLimitError, ProviderServerError,
+                                   ProviderModelNotFoundError,
+                                   ProviderAuthenticationError, ProviderAuthorizationError)):
+                    fallback = self._next_cloud_routing_model(provider_id, model, routing_config)
+                    if fallback is not None:
+                        provider_id, model = fallback
+                        context_budget = resolve_runtime_context_budget(
+                            model.limits, configuration=self._configuration,
+                            required_prompt_tokens=estimated_prompt_tokens,
+                        )
+                        continue
                 if attempt < max_retries:
                     continue
         
@@ -523,7 +540,38 @@ class GoalDecomposer:
         """Get the routing model from configuration with fallback to automatic selection."""
         # Get routing config
         routing_config = load_routing_config(self._configuration)
-        
+
+        logger = logging.getLogger(__name__)
+        logger.debug(
+            "GoalDecomposer routing decision: "
+            "routing_type=%s is_fixed=%s fixed_model_id=%s "
+            "cloud_fixed_provider=%s cloud_fixed_model=%s "
+            "cloud_fallback_provider=%s cloud_fallback_model=%s",
+            routing_config.routing_type,
+            routing_config.is_fixed,
+            routing_config.fixed_model_id,
+            routing_config.cloud_fixed_provider,
+            routing_config.cloud_fixed_model,
+            routing_config.cloud_fallback_provider,
+            routing_config.cloud_fallback_model,
+        )
+
+        if routing_config.routing_type == "cloud":
+            providers = {p.id: p for p in self._provider_manager.get_all()}
+            candidates = (
+                (routing_config.cloud_fixed_provider, routing_config.cloud_fixed_model),
+                (routing_config.cloud_fallback_provider, routing_config.cloud_fallback_model),
+                (routing_config.fixed_provider_id, routing_config.fixed_model_id),
+            )
+            for provider_id, model_id in candidates:
+                if not provider_id or not model_id or provider_id not in providers:
+                    continue
+                for model in providers[provider_id].models:
+                    if model.id == model_id:
+                        logger.debug("GoalDecomposer routing branch=cloud provider=%s model=%s", provider_id, model.id)
+                        return provider_id, model
+            logger.warning("Configured cloud routing chain unavailable; using local/automatic routing")
+
         if not routing_config.is_fixed:
             # For non-fixed mode, we would need to use the full model selection
             # For now, only support fixed mode as per current config
@@ -571,7 +619,24 @@ class GoalDecomposer:
         
         if auto_selection.succeeded and auto_selection.selected_model is not None:
             logger.info(f"Using automatic routing model: provider={auto_selection.selected_provider_id} model={auto_selection.selected_model.id}")
-            return (auto_selection.selected_provider_id, auto_selection.selected_model)
+        return (auto_selection.selected_provider_id, auto_selection.selected_model)
+
+    def _next_cloud_routing_model(self, current_provider_id, current_model, routing_config):
+        if routing_config.routing_type != "cloud":
+            return None
+        targets = ((routing_config.cloud_fallback_provider, routing_config.cloud_fallback_model),
+                   (routing_config.fixed_provider_id, routing_config.fixed_model_id))
+        providers = {p.id: p for p in self._provider_manager.get_all()}
+        for pid, mid in targets:
+            if not mid or pid == current_provider_id and mid == current_model.id:
+                continue
+            pools = (providers.get(pid, ()) if pid else tuple(providers.values()))
+            models = (m for p in pools for m in p.models) if pid is None else iter(providers.get(pid, ()).models)
+            for candidate in models:
+                if candidate.id == mid:
+                    owner = pid or next(p.id for p in providers.values() if candidate in p.models)
+                    return owner, candidate
+        return None
         
         logger.warning("No model available for goal decomposition")
         return None

@@ -46,6 +46,8 @@ class ToolSpec:
     description: str
     parameters: Mapping[str, Any] = field(default_factory=dict)
     capability_id: str = ""
+    implementation: str = "parika_native"
+    local_only: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(

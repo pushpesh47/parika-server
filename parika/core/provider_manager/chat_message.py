@@ -24,6 +24,17 @@ role message.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
+from typing import Any
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChatToolCall:
+    id: str | None = None
+    name: str = ""
+    arguments: Mapping[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        object.__setattr__(self, "arguments", dict(self.arguments or {}))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -54,6 +65,10 @@ class ChatMessage:
     role: str
     content: str = ""
     images: tuple[str, ...] = ()
+    tool_calls: tuple[ChatToolCall, ...] = ()
+    tool_call_id: str | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "images", tuple(self.images))
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
