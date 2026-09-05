@@ -886,6 +886,14 @@ def _register_initial_agents(
             vision_caps = vision_caps.union({cap})
             vision_allowed = vision_allowed.union({cap})
     
+    # Add wildcard patterns for provider capabilities (vision, image, video generation)
+    # These use the '*' suffix supported by AgentProfile.can_use_capability()
+    vision_allowed = vision_allowed.union({
+        "vision.provider_*",
+        "image.provider_*",
+        "video.provider_*",
+    })
+    
     if vision_caps:
         agent_registry.register(AgentProfile(
             id="agent.vision",

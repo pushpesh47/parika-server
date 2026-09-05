@@ -75,9 +75,10 @@ class AgentProfile:
         if capability_id in self.prohibited_capabilities:
             return False
         if self.allowed_capabilities and capability_id not in self.allowed_capabilities:
-            # Support prefix matching for wildcard patterns (e.g., "repository_intelligence.*")
+            # Support prefix matching for wildcard patterns (e.g., "repository_intelligence.*",
+            # "vision.provider_*", "image.provider_*")
             for allowed in self.allowed_capabilities:
-                if allowed.endswith(".*") and capability_id.startswith(allowed[:-1]):
+                if allowed.endswith("*") and capability_id.startswith(allowed[:-1]):
                     return True
             return False
         if self.allowed_categories and capability_category not in self.allowed_categories:
