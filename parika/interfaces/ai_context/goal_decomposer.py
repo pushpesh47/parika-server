@@ -136,6 +136,10 @@ class DecompositionResult:
     """Decomposed goals ready for Brain"""
     raw_response: str
     """Raw LLM response for debugging"""
+    successful_provider_id: str | None = None
+    """Provider ID that successfully completed decomposition, if any"""
+    successful_model_id: str | None = None
+    """Model ID that successfully completed decomposition, if any"""
 
 
 class DecompositionError(Exception):
@@ -377,6 +381,8 @@ class GoalDecomposer:
                 return DecompositionResult(
                     goals=tuple(goals),
                     raw_response=raw_response,
+                    successful_provider_id=provider_id,
+                    successful_model_id=model.id,
                 )
                 
             except Exception as ex:
@@ -619,7 +625,9 @@ class GoalDecomposer:
         
         if auto_selection.succeeded and auto_selection.selected_model is not None:
             logger.info(f"Using automatic routing model: provider={auto_selection.selected_provider_id} model={auto_selection.selected_model.id}")
-        return (auto_selection.selected_provider_id, auto_selection.selected_model)
+            return (auto_selection.selected_provider_id, auto_selection.selected_model)
+        
+        return None
 
     def _next_cloud_routing_model(self, current_provider_id, current_model, routing_config):
         if routing_config.routing_type != "cloud":
@@ -630,8 +638,15 @@ class GoalDecomposer:
         for pid, mid in targets:
             if not mid or pid == current_provider_id and mid == current_model.id:
                 continue
-            pools = (providers.get(pid, ()) if pid else tuple(providers.values()))
-            models = (m for p in pools for m in p.models) if pid is None else iter(providers.get(pid, ()).models)
+            if pid is not None:
+                # Specific provider requested - must exist in registry
+                provider = providers.get(pid)
+                if provider is None:
+                    continue
+                models = iter(provider.models)
+            else:
+                # No specific provider - search all providers
+                models = (m for p in providers.values() for m in p.models)
             for candidate in models:
                 if candidate.id == mid:
                     owner = pid or next(p.id for p in providers.values() if candidate in p.models)

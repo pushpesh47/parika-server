@@ -669,6 +669,7 @@ class Planner:
                 selection = self._select_cloud_routing_model(
                     providers=self._provider_manager.get_all(),
                     requirements=requirements,
+                    goal=goal,
                 )
 
             if selection is None:
@@ -760,15 +761,44 @@ class Planner:
         *,
         providers,
         requirements,
+        goal: Goal | None = None,
     ):
         """
         Select a cloud routing model based on cloud configuration.
 
         Tries cloud primary, then cloud fallback, then local fixed model.
         Returns None if no cloud model is available.
+        
+        If the goal has preferred_synthesis_provider_id and
+        preferred_synthesis_model_id in its metadata (set by the AI Context
+        layer when goal decomposition succeeded with that provider/model),
+        that provider/model is tried FIRST before the configured chain.
         """
         routing_config = self._routing_config
         logger = self._logger
+
+        # FIRST: Check if there's a preferred provider/model from successful
+        # goal decomposition (request-scoped preference)
+        if goal is not None:
+            preferred_provider_id = goal.metadata.get("preferred_synthesis_provider_id")
+            preferred_model_id = goal.metadata.get("preferred_synthesis_model_id")
+            if preferred_provider_id and preferred_model_id:
+                for provider in providers:
+                    if provider.id == preferred_provider_id:
+                        for model in provider.models:
+                            if model.id == preferred_model_id:
+                                logger.debug(
+                                    "Using preferred synthesis provider from decomposition: provider=%s model=%s",
+                                    provider.id,
+                                    model.id,
+                                )
+                                return self._create_selection_result(
+                                    provider=provider,
+                                    model=model,
+                                    requirements=requirements,
+                                    reason=f"preferred synthesis provider from successful decomposition provider='{provider.id}' model='{model.id}'",
+                                    skip_health_check=True,
+                                )
 
         # Try cloud primary
         if routing_config.cloud_fixed_provider and routing_config.cloud_fixed_model:

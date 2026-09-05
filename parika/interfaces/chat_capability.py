@@ -228,7 +228,7 @@ def decompose_and_build_goals(
     *,
     latest_message: str,
     runtime: ParikaRuntime,
-) -> tuple[Goal, ...]:
+) -> "DecompositionResult":
     """
     Decompose a user message into multiple semantic Goals.
 
@@ -240,11 +240,13 @@ def decompose_and_build_goals(
         runtime: Runtime providing Brain, CapabilityRegistry, ProviderManager
 
     Returns:
-        Tuple of Goals ready for Brain.handle()
+        DecompositionResult with goals and the successful provider/model
         
     Raises:
         goal_decomposer.DecompositionError: If decomposition fails
     """
+    from .ai_context import goal_decomposer
+    
     decomposer = goal_decomposer.create_goal_decomposer(
         capability_registry=runtime.capability_registry,
         provider_manager=runtime.provider_manager,
@@ -252,4 +254,4 @@ def decompose_and_build_goals(
     )
     
     result = decomposer.decompose(latest_message)
-    return result.goals
+    return result

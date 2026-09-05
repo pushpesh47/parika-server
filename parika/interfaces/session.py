@@ -491,10 +491,14 @@ class InterfaceSession:
         # This will return multiple goals for complex requests,
         # or a single chat.respond goal for simple requests
         try:
-            goals = decompose_and_build_goals(
+            decomposition_result = decompose_and_build_goals(
                 latest_message=text,
                 runtime=self._runtime,
             )
+            goals = decomposition_result.goals
+            # Track the provider/model that successfully completed decomposition
+            preferred_synthesis_provider_id = decomposition_result.successful_provider_id
+            preferred_synthesis_model_id = decomposition_result.successful_model_id
         except DecompositionError as ex:
             # Decomposition failed - return a failed ChatTurnResult
             self._logger.warning(f"Goal decomposition failed: {ex}")
@@ -601,6 +605,12 @@ class InterfaceSession:
                 metadata = dict(enhanced_goal.metadata)
                 if goal.id == synthesis_goal_id:
                     metadata[TERMINAL_SYNTHESIS_GOAL_METADATA_KEY] = True
+                    # Carry forward the provider/model that successfully completed
+                    # goal decomposition, so synthesis tries it first.
+                    if preferred_synthesis_provider_id is not None:
+                        metadata["preferred_synthesis_provider_id"] = preferred_synthesis_provider_id
+                    if preferred_synthesis_model_id is not None:
+                        metadata["preferred_synthesis_model_id"] = preferred_synthesis_model_id
 
                 # Preserve original goal metadata (dependencies, etc.) and merge
                 # with our additions
