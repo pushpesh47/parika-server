@@ -324,89 +324,116 @@ class GoalDecomposer:
                 messages=[{"role": m.role, "content": m.content} for m in messages],
             )
 
-        # Execute decomposition via direct provider inference with retries
-        max_retries = 2
+        # Execute decomposition via cloud provider chain with failover
+        max_retries_per_provider = 1
         last_exception = None
         
-        for attempt in range(max_retries + 1):
-            chat_request = ChatRequest(
-                messages=messages,
-                options=RequestOptions(
-                    reasoning=decomposition_reasoning,
-                    temperature=0.0,
-                    seed=42,
-                    top_p=1.0,
-                    context_window_tokens=context_budget.effective_context_window,
-                    estimated_prompt_tokens=estimated_prompt_tokens,
-                ),
-            )
-
-            try:
-                response = self._provider_manager.execute(
-                    provider_id=provider_id,
-                    model=model,
-                    request=chat_request,
+        while True:
+            # Try current provider with retries for transient transport errors
+            for attempt in range(max_retries_per_provider + 1):
+                chat_request = ChatRequest(
+                    messages=messages,
+                    options=RequestOptions(
+                        reasoning=decomposition_reasoning,
+                        temperature=0.0,
+                        seed=42,
+                        top_p=1.0,
+                        context_window_tokens=context_budget.effective_context_window,
+                        estimated_prompt_tokens=estimated_prompt_tokens,
+                    ),
                 )
-                
-                # Extract the response text
-                raw_response = self._extract_text_from_provider_response(response)
-                
-                # FORENSIC: Log raw decomposition output
-                if trace_id:
-                    log_decomposition_raw(
-                        trace_id=trace_id,
-                        raw_response=raw_response,
-                    )
 
-                goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
-                
-                # Validate that decomposition contains a synthesis goal with dependencies
-                _validate_decomposition(goals, user_message)
-                
-                # FORENSIC: Log decomposed goals
-                if trace_id:
-                    goal_list = []
-                    for goal in goals:
-                        goal_list.append({
-                            "id": goal.id,
-                            "capability_id": goal.capability_id,
-                            "inputs": goal.inputs,
-                            "depends_on": list(goal.depends_on),
-                        })
-                    log_decomposition_goals(
-                        trace_id=trace_id,
-                        goals=goal_list,
+                try:
+                    response = self._provider_manager.execute(
+                        provider_id=provider_id,
+                        model=model,
+                        request=chat_request,
                     )
-
-                return DecompositionResult(
-                    goals=tuple(goals),
-                    raw_response=raw_response,
-                    successful_provider_id=provider_id,
-                    successful_model_id=model.id,
-                )
-                
-            except Exception as ex:
-                last_exception = ex
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Decomposition attempt {attempt + 1} failed: {ex}")
-                if isinstance(ex, (ProviderConnectionError, ProviderTimeoutError,
-                                   ProviderRateLimitError, ProviderServerError,
-                                   ProviderModelNotFoundError,
-                                   ProviderAuthenticationError, ProviderAuthorizationError)):
-                    fallback = self._next_cloud_routing_model(provider_id, model, routing_config)
-                    if fallback is not None:
-                        provider_id, model = fallback
-                        context_budget = resolve_runtime_context_budget(
-                            model.limits, configuration=self._configuration,
-                            required_prompt_tokens=estimated_prompt_tokens,
+                    
+                    # Extract the response text
+                    raw_response = self._extract_text_from_provider_response(response)
+                    
+                    # FORENSIC: Log raw decomposition output
+                    if trace_id:
+                        log_decomposition_raw(
+                            trace_id=trace_id,
+                            raw_response=raw_response,
                         )
-                        continue
-                if attempt < max_retries:
-                    continue
+
+                    goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
+                    
+                    # Validate that decomposition contains a synthesis goal with dependencies
+                    _validate_decomposition(goals, user_message)
+                    
+                    # FORENSIC: Log decomposed goals
+                    if trace_id:
+                        goal_list = []
+                        for goal in goals:
+                            goal_list.append({
+                                "id": goal.id,
+                                "capability_id": goal.capability_id,
+                                "inputs": goal.inputs,
+                                "depends_on": list(goal.depends_on),
+                            })
+                        log_decomposition_goals(
+                            trace_id=trace_id,
+                            goals=goal_list,
+                        )
+
+                    return DecompositionResult(
+                        goals=tuple(goals),
+                        raw_response=raw_response,
+                        successful_provider_id=provider_id,
+                        successful_model_id=model.id,
+                    )
+                    
+                except DecompositionError as ex:
+                    # Contract-invalid response from provider - this is a provider failure
+                    # for routing purposes. Advance to next provider in cloud chain.
+                    last_exception = ex
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Decomposition validation failed on provider '{provider_id}' "
+                        f"model '{model.id}': {ex}. Advancing cloud chain."
+                    )
+                    break  # Break retry loop to advance provider chain
+                    
+                except Exception as ex:
+                    last_exception = ex
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Decomposition attempt {attempt + 1} failed: {ex}")
+                    # Transport/provider-level errors: retry same provider if retries remain
+                    if isinstance(ex, (ProviderConnectionError, ProviderTimeoutError,
+                                       ProviderRateLimitError, ProviderServerError,
+                                       ProviderModelNotFoundError,
+                                       ProviderAuthenticationError, ProviderAuthorizationError)):
+                        if attempt < max_retries_per_provider:
+                            continue
+                        # Retries exhausted for this provider - advance cloud chain
+                        logger.warning(
+                            f"Provider '{provider_id}' failed after retries. "
+                            f"Advancing cloud chain."
+                        )
+                        break
+                    # Other unexpected errors: don't retry, advance chain
+                    break
+            
+            # Current provider failed (validation or transport) - advance to next in chain
+            fallback = self._next_cloud_routing_model(provider_id, model, routing_config)
+            if fallback is not None:
+                provider_id, model = fallback
+                context_budget = resolve_runtime_context_budget(
+                    model.limits, configuration=self._configuration,
+                    required_prompt_tokens=estimated_prompt_tokens,
+                )
+                continue
+            
+            # No more providers in chain - all failed
+            break
         
-        # All attempts failed
+        # All providers in chain failed
         raise DecompositionError(
-            f"Goal decomposition failed after {max_retries + 1} attempts: {last_exception}"
+            f"Goal decomposition failed after exhausting cloud provider chain: {last_exception}"
         ) from last_exception
 
     def _parse_decomposition(
@@ -664,25 +691,38 @@ class GoalDecomposer:
             if pid:
                 targets.append((pid, None))
         # Add local fixed model as final fallback
-        if routing_config.fixed_provider_id and routing_config.fixed_model_id:
-            targets.append((routing_config.fixed_provider_id, routing_config.fixed_model_id))
+        if routing_config.fixed_model_id:
+            if routing_config.fixed_provider_id:
+                # Specific provider requested
+                targets.append((routing_config.fixed_provider_id, routing_config.fixed_model_id))
+            else:
+                # Search all providers for the model
+                targets.append((None, routing_config.fixed_model_id))
         providers = {p.id: p for p in self._provider_manager.get_all()}
         for pid, mid in targets:
-            if pid not in providers:
-                continue
-            provider = providers[pid]
-            if mid is None:
-                # Use provider's configured model (first model)
-                if provider.models:
-                    candidate = provider.models[0]
-                    if pid != current_provider_id or candidate.id != current_model.id:
-                        return pid, candidate
-            else:
-                # Specific model requested
-                for candidate in provider.models:
-                    if candidate.id == mid:
+            if pid is not None:
+                if pid not in providers:
+                    continue
+                provider = providers[pid]
+                if mid is None:
+                    # Use provider's configured model (first model)
+                    if provider.models:
+                        candidate = provider.models[0]
                         if pid != current_provider_id or candidate.id != current_model.id:
                             return pid, candidate
+                else:
+                    # Specific model requested
+                    for candidate in provider.models:
+                        if candidate.id == mid:
+                            if pid != current_provider_id or candidate.id != current_model.id:
+                                return pid, candidate
+            else:
+                # Search all providers for the model
+                for provider in providers.values():
+                    for candidate in provider.models:
+                        if candidate.id == mid:
+                            if provider.id != current_provider_id or candidate.id != current_model.id:
+                                return provider.id, candidate
         return None
 
 
