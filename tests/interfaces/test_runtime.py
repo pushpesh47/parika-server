@@ -29,6 +29,7 @@ class _FakeOllamaTransport:
     def __init__(self, *, models: list[dict[str, Any]] | None = None) -> None:
         self._models = models if models is not None else []
         self.calls: list[str] = []
+        self.chat_calls: list[Mapping[str, Any]] = []
 
     def request_json(
         self,
@@ -48,6 +49,10 @@ class _FakeOllamaTransport:
 
         if url.endswith("/api/version"):
             return {"version": "0.0.0-test"}
+
+        if url.endswith("/api/chat"):
+            self.chat_calls.append(payload or {})
+            return {"message": {"role": "assistant", "content": "pong"}, "done": True}
 
         return {}
 
@@ -199,6 +204,79 @@ class TestBuildDefaultRuntime:
         )
 
         assert runtime.service_container.get(Brain) is runtime.brain
+
+        shutdown_runtime(runtime)
+
+    def test_no_ollama_warmup_on_startup(self, tmp_path) -> None:
+        """
+        Verify that PARIKA startup does not send a warm-up request to Ollama.
+
+        The local model must not be proactively loaded into GPU memory
+        during startup. It should only load on-demand when actually used
+        as a fallback after all cloud providers fail.
+        """
+        transport = _FakeOllamaTransport(
+            models=[{"name": "qwen3.5:4b"}]
+        )
+
+        runtime = build_default_runtime(
+            ollama_transport=transport,
+            data_directory=tmp_path / "data",
+        )
+
+        # Verify no /api/chat call was made during startup (no warm-up)
+        assert transport.chat_calls == [], (
+            "Expected no chat calls during startup, but got: "
+            f"{transport.chat_calls}"
+        )
+
+        # Verify Ollama provider is still registered and models discovered
+        provider = runtime.provider_manager.get(OLLAMA_PROVIDER_ID)
+        assert provider.enabled is True
+        assert len(provider.models) == 1
+        assert provider.health is not None
+        assert provider.health.available is True
+
+        shutdown_runtime(runtime)
+
+    def test_no_keep_alive_in_chat_payload(self, tmp_path) -> None:
+        """
+        Verify that Ollama chat requests do not include a PARIKA-configured
+        keep_alive parameter for persistent model residency.
+
+        The local model must load on-demand when invoked as the final
+        fallback, and PARIKA must not request that Ollama keep the model
+        resident after inference completes.
+        """
+        transport = _FakeOllamaTransport(
+            models=[{"name": "qwen3.5:4b"}]
+        )
+
+        runtime = build_default_runtime(
+            ollama_transport=transport,
+            data_directory=tmp_path / "data",
+        )
+
+        # Simulate a local fallback inference by directly invoking the driver
+        provider = runtime.provider_manager.get(OLLAMA_PROVIDER_ID)
+        model = provider.models[0]
+
+        from parika.providers.ollama.requests import OllamaChatRequest
+        from parika.providers.ollama.messages import OllamaMessage
+
+        request = OllamaChatRequest(
+            messages=(OllamaMessage(role="user", content="test"),),
+        )
+
+        # Execute the chat - this should not include keep_alive in the payload
+        driver = runtime.provider_manager._drivers[OLLAMA_PROVIDER_ID]
+        driver.chat(model, request)
+
+        # Verify no keep_alive was sent in any chat payload
+        for payload in transport.chat_calls:
+            assert "keep_alive" not in payload, (
+                f"Expected no keep_alive in chat payload, but found: {payload}"
+            )
 
         shutdown_runtime(runtime)
 

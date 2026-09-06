@@ -105,7 +105,6 @@ class OllamaProviderDriver(ProviderDriver):
         base_url: str = DEFAULT_BASE_URL,
         connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        keep_alive: str | None = None,
     ) -> None:
         """
         Initialize the driver.
@@ -130,12 +129,6 @@ class OllamaProviderDriver(ProviderDriver):
             request_timeout_seconds:
                 Timeout applied to generation/chat calls, which may
                 take much longer than a health check.
-
-            keep_alive:
-                Optional Ollama `keep_alive` parameter to control
-                model residency. If not provided, uses the default
-                Ollama behavior (unload after inactivity). Can be a
-                duration string (e.g., "10m") or "-1" for indefinite.
         """
 
         self._transport = transport
@@ -144,7 +137,6 @@ class OllamaProviderDriver(ProviderDriver):
         self._base_url = base_url.rstrip("/")
         self._connect_timeout_seconds = connect_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
-        self._keep_alive = keep_alive
 
         self._tool_call_resolver = ToolCallResolver(logger=logger)
 
@@ -471,7 +463,7 @@ class OllamaProviderDriver(ProviderDriver):
         """
 
         payload = build_chat_request_payload(
-            model.id, messages, request, keep_alive=self._keep_alive
+            model.id, messages, request
         )
         streaming = request.on_token is not None
 
