@@ -75,10 +75,8 @@ class RoutingConfig:
     fixed_thinking: bool = False
 
     routing_type: str = "local"
-    cloud_fixed_provider: str | None = None
-    cloud_fixed_model: str = ""
+    cloud_primary_provider: str | None = None
     cloud_fallback_provider: str | None = None
-    cloud_fallback_model: str = ""
     """
     The `RequestOptions.reasoning` value to force for the routing
     model when `mode = "fixed"`, instead of the automatic reasoning-
@@ -127,10 +125,8 @@ def load_routing_config(
     )
 
     routing_type = str(configuration.get("routing.type", "local")).lower()
-    cloud_fixed_provider = configuration.get("routing.cloud_model.fixed_provider", None)
-    cloud_fixed_model = str(configuration.get("routing.cloud_model.fixed_model", ""))
-    cloud_fallback_provider = configuration.get("routing.cloud_model.fallback_provider", None)
-    cloud_fallback_model = str(configuration.get("routing.cloud_model.fallback_model", ""))
+    cloud_primary_provider = configuration.get("routing.cloud.primary_provider", None)
+    cloud_fallback_provider = configuration.get("routing.cloud.fallback_provider", None)
 
     return RoutingConfig(
         mode=mode,
@@ -138,10 +134,8 @@ def load_routing_config(
         fixed_model_id=model_id,
         fixed_thinking=fixed_thinking,
         routing_type=routing_type,
-        cloud_fixed_provider=cloud_fixed_provider,
-        cloud_fixed_model=cloud_fixed_model,
+        cloud_primary_provider=cloud_primary_provider,
         cloud_fallback_provider=cloud_fallback_provider,
-        cloud_fallback_model=cloud_fallback_model,
     )
 
 

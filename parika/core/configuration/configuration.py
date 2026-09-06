@@ -118,6 +118,8 @@ class Configuration:
         prefix = "PARIKA_"
         aliases = {
             "PARIKA_ROUTING_TYPE": "routing.type",
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER": "routing.cloud.primary_provider",
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER": "routing.cloud.fallback_provider",
         }
         for env_key, env_value in os.environ.items():
             if env_key.startswith(prefix):

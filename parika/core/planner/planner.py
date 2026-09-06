@@ -654,15 +654,12 @@ class Planner:
             self._logger.debug(
                 "Planner routing decision: "
                 "routing_type=%s is_fixed=%s fixed_model_id=%s "
-                "cloud_fixed_provider=%s cloud_fixed_model=%s "
-                "cloud_fallback_provider=%s cloud_fallback_model=%s",
+                "cloud_primary_provider=%s cloud_fallback_provider=%s",
                 self._routing_config.routing_type,
                 self._routing_config.is_fixed,
                 self._routing_config.fixed_model_id,
-                self._routing_config.cloud_fixed_provider,
-                self._routing_config.cloud_fixed_model,
+                self._routing_config.cloud_primary_provider,
                 self._routing_config.cloud_fallback_provider,
-                self._routing_config.cloud_fallback_model,
             )
 
             if self._routing_config.routing_type == "cloud":
@@ -800,43 +797,45 @@ class Planner:
                                     skip_health_check=True,
                                 )
 
-        # Try cloud primary
-        if routing_config.cloud_fixed_provider and routing_config.cloud_fixed_model:
+        # Try cloud primary - use provider's configured model
+        if routing_config.cloud_primary_provider:
             for provider in providers:
-                if provider.id == routing_config.cloud_fixed_provider:
-                    for model in provider.models:
-                        if model.id == routing_config.cloud_fixed_model:
-                            logger.debug(
-                                "Using cloud primary routing model: provider=%s model=%s",
-                                provider.id,
-                                model.id,
-                            )
-                            return self._create_selection_result(
-                                provider=provider,
-                                model=model,
-                                requirements=requirements,
-                                reason=f"cloud primary routing model configured via [routing.cloud_model] fixed_provider='{provider.id}' fixed_model='{model.id}'",
-                                skip_health_check=True,
-                            )
+                if provider.id == routing_config.cloud_primary_provider:
+                    # Use the provider's configured model
+                    if provider.models:
+                        model = provider.models[0]  # Primary model is the first/configured one
+                        logger.debug(
+                            "Using cloud primary routing model: provider=%s model=%s",
+                            provider.id,
+                            model.id,
+                        )
+                        return self._create_selection_result(
+                            provider=provider,
+                            model=model,
+                            requirements=requirements,
+                            reason=f"cloud primary routing model via provider '{provider.id}' configured model='{model.id}'",
+                            skip_health_check=True,
+                        )
 
-        # Try cloud fallback
-        if routing_config.cloud_fallback_provider and routing_config.cloud_fallback_model:
+        # Try cloud fallback - use provider's configured model
+        if routing_config.cloud_fallback_provider:
             for provider in providers:
                 if provider.id == routing_config.cloud_fallback_provider:
-                    for model in provider.models:
-                        if model.id == routing_config.cloud_fallback_model:
-                            logger.debug(
-                                "Using cloud fallback routing model: provider=%s model=%s",
-                                provider.id,
-                                model.id,
-                            )
-                            return self._create_selection_result(
-                                provider=provider,
-                                model=model,
-                                requirements=requirements,
-                                reason=f"cloud fallback routing model configured via [routing.cloud_model] fallback_provider='{provider.id}' fallback_model='{model.id}'",
-                                skip_health_check=True,
-                            )
+                    # Use the provider's configured model
+                    if provider.models:
+                        model = provider.models[0]  # Primary model is the first/configured one
+                        logger.debug(
+                            "Using cloud fallback routing model: provider=%s model=%s",
+                            provider.id,
+                            model.id,
+                        )
+                        return self._create_selection_result(
+                            provider=provider,
+                            model=model,
+                            requirements=requirements,
+                            reason=f"cloud fallback routing model via provider '{provider.id}' configured model='{model.id}'",
+                            skip_health_check=True,
+                        )
 
         # Try local fixed model as last resort
         if routing_config.fixed_provider_id and routing_config.fixed_model_id:

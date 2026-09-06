@@ -252,14 +252,14 @@ keep_alive = "120m"
 # Generic OpenAI-compatible provider 
 [providers.kilo_code]
 base_url = "https://api.kilo.ai/api/openrouter"
-model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+model = "nvidia/nemotron-3.5-lightning:free"
 api_key_env = "PARIKA_PROVIDER_KILO_CODE_API_KEY"
-supported_parameters = ["max_tokens", "stop"]
+supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
 reasoning_request_path = "reasoning.enabled"
 
 [providers.block_run]
 base_url = "https://api.blockrun.ai/v1"
-model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+model = "nvidia/nemotron-3.5-lightning"
 api_key_env = "PARIKA_PROVIDER_BLOCK_RUN_API_KEY"
 supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
 reasoning_request_path = "chat_template_kwargs.enable_thinking"

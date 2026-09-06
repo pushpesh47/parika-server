@@ -551,31 +551,37 @@ class GoalDecomposer:
         logger.debug(
             "GoalDecomposer routing decision: "
             "routing_type=%s is_fixed=%s fixed_model_id=%s "
-            "cloud_fixed_provider=%s cloud_fixed_model=%s "
-            "cloud_fallback_provider=%s cloud_fallback_model=%s",
+            "cloud_primary_provider=%s cloud_fallback_provider=%s",
             routing_config.routing_type,
             routing_config.is_fixed,
             routing_config.fixed_model_id,
-            routing_config.cloud_fixed_provider,
-            routing_config.cloud_fixed_model,
+            routing_config.cloud_primary_provider,
             routing_config.cloud_fallback_provider,
-            routing_config.cloud_fallback_model,
         )
 
         if routing_config.routing_type == "cloud":
             providers = {p.id: p for p in self._provider_manager.get_all()}
-            candidates = (
-                (routing_config.cloud_fixed_provider, routing_config.cloud_fixed_model),
-                (routing_config.cloud_fallback_provider, routing_config.cloud_fallback_model),
-                (routing_config.fixed_provider_id, routing_config.fixed_model_id),
-            )
-            for provider_id, model_id in candidates:
-                if not provider_id or not model_id or provider_id not in providers:
-                    continue
-                for model in providers[provider_id].models:
-                    if model.id == model_id:
-                        logger.debug("GoalDecomposer routing branch=cloud provider=%s model=%s", provider_id, model.id)
-                        return provider_id, model
+            # Try cloud primary provider first
+            if routing_config.cloud_primary_provider and routing_config.cloud_primary_provider in providers:
+                provider = providers[routing_config.cloud_primary_provider]
+                if provider.models:
+                    model = provider.models[0]
+                    logger.debug("GoalDecomposer routing branch=cloud primary provider=%s model=%s", provider.id, model.id)
+                    return provider.id, model
+            # Try cloud fallback provider
+            if routing_config.cloud_fallback_provider and routing_config.cloud_fallback_provider in providers:
+                provider = providers[routing_config.cloud_fallback_provider]
+                if provider.models:
+                    model = provider.models[0]
+                    logger.debug("GoalDecomposer routing branch=cloud fallback provider=%s model=%s", provider.id, model.id)
+                    return provider.id, model
+            # Try local fixed model as last resort
+            if routing_config.fixed_provider_id and routing_config.fixed_model_id and routing_config.fixed_provider_id in providers:
+                provider = providers[routing_config.fixed_provider_id]
+                for model in provider.models:
+                    if model.id == routing_config.fixed_model_id:
+                        logger.debug("GoalDecomposer routing branch=cloud local_fixed provider=%s model=%s", provider.id, model.id)
+                        return provider.id, model
             logger.warning("Configured cloud routing chain unavailable; using local/automatic routing")
 
         if not routing_config.is_fixed:
@@ -632,28 +638,30 @@ class GoalDecomposer:
     def _next_cloud_routing_model(self, current_provider_id, current_model, routing_config):
         if routing_config.routing_type != "cloud":
             return None
-        targets = ((routing_config.cloud_fallback_provider, routing_config.cloud_fallback_model),
-                   (routing_config.fixed_provider_id, routing_config.fixed_model_id))
+        targets = []
+        # Add cloud fallback provider
+        if routing_config.cloud_fallback_provider:
+            targets.append((routing_config.cloud_fallback_provider, None))
+        # Add local fixed model
+        if routing_config.fixed_provider_id and routing_config.fixed_model_id:
+            targets.append((routing_config.fixed_provider_id, routing_config.fixed_model_id))
         providers = {p.id: p for p in self._provider_manager.get_all()}
         for pid, mid in targets:
-            if not mid or pid == current_provider_id and mid == current_model.id:
+            if pid not in providers:
                 continue
-            if pid is not None:
-                # Specific provider requested - must exist in registry
-                provider = providers.get(pid)
-                if provider is None:
-                    continue
-                models = iter(provider.models)
+            provider = providers[pid]
+            if mid is None:
+                # Use provider's configured model (first model)
+                if provider.models:
+                    candidate = provider.models[0]
+                    if pid != current_provider_id or candidate.id != current_model.id:
+                        return pid, candidate
             else:
-                # No specific provider - search all providers
-                models = (m for p in providers.values() for m in p.models)
-            for candidate in models:
-                if candidate.id == mid:
-                    owner = pid or next(p.id for p in providers.values() if candidate in p.models)
-                    return owner, candidate
-        return None
-        
-        logger.warning("No model available for goal decomposition")
+                # Specific model requested
+                for candidate in provider.models:
+                    if candidate.id == mid:
+                        if pid != current_provider_id or candidate.id != current_model.id:
+                            return pid, candidate
         return None
 
 

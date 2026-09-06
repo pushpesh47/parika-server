@@ -47,14 +47,12 @@ def test_local_fixed_model_configuration_remains_available(monkeypatch) -> None:
     assert routing.fixed_model_id == "qwen3.5:4b"
 
 
-def test_cloud_and_local_routing_configuration_resolve(monkeypatch) -> None:
+def test_cloud_routing_configuration_resolves_primary_provider(monkeypatch) -> None:
     monkeypatch.setenv("PARIKA_ROUTING_TYPE", "cloud")
     monkeypatch.setenv("PARIKA_ROUTING_MODEL__MODE", "fixed")
     monkeypatch.setenv("PARIKA_ROUTING_MODEL__FIXED_MODEL", "qwen3.5:4b")
-    monkeypatch.setenv("PARIKA_ROUTING__CLOUD_MODEL__FIXED_PROVIDER", "experiential_labs")
-    monkeypatch.setenv("PARIKA_ROUTING__CLOUD_MODEL__FIXED_MODEL", "gpt6-astra")
-    monkeypatch.setenv("PARIKA_ROUTING__CLOUD_MODEL__FALLBACK_PROVIDER", "google_gemini")
-    monkeypatch.setenv("PARIKA_ROUTING__CLOUD_MODEL__FALLBACK_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER", "kilo_code")
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER", "block_run")
     configuration = _configuration_with_defaults({})
     configuration._apply_env_overrides()  # type: ignore[attr-defined]
 
@@ -62,9 +60,27 @@ def test_cloud_and_local_routing_configuration_resolve(monkeypatch) -> None:
     assert routing.is_fixed is True
     assert routing.fixed_model_id == "qwen3.5:4b"
     assert routing.routing_type == "cloud"
-    assert (routing.cloud_fixed_provider, routing.cloud_fixed_model) == (
-        "experiential_labs", "gpt6-astra"
-    )
-    assert (routing.cloud_fallback_provider, routing.cloud_fallback_model) == (
-        "google_gemini", "gemini-2.5-flash"
-    )
+    assert routing.cloud_primary_provider == "kilo_code"
+    assert routing.cloud_fallback_provider == "block_run"
+
+
+def test_cloud_routing_new_env_vars_override_config(monkeypatch) -> None:
+    # Test that new env vars override TOML config
+    configuration = _configuration_with_defaults({
+        "routing": {
+            "type": "local",
+            "cloud": {
+                "primary_provider": "old_primary",
+                "fallback_provider": "old_fallback",
+            }
+        }
+    })
+    monkeypatch.setenv("PARIKA_ROUTING_TYPE", "cloud")
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER", "new_primary")
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER", "new_fallback")
+    configuration._apply_env_overrides()  # type: ignore[attr-defined]
+
+    routing = load_routing_config(configuration)
+    assert routing.routing_type == "cloud"
+    assert routing.cloud_primary_provider == "new_primary"
+    assert routing.cloud_fallback_provider == "new_fallback"
