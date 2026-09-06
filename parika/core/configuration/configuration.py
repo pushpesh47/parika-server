@@ -118,8 +118,21 @@ class Configuration:
         prefix = "PARIKA_"
         aliases = {
             "PARIKA_ROUTING_TYPE": "routing.type",
-            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER": "routing.cloud.primary_provider",
-            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER": "routing.cloud.fallback_provider",
+            # Cloud provider slot configuration (primary)
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_PROVIDER": "cloud_providers.primary.provider",
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_BASE_URL": "cloud_providers.primary.base_url",
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_MODEL": "cloud_providers.primary.model",
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.primary.reasoning_request_path",
+            # Cloud provider slot configuration (secondary)
+            "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_PROVIDER": "cloud_providers.secondary.provider",
+            "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_BASE_URL": "cloud_providers.secondary.base_url",
+            "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_MODEL": "cloud_providers.secondary.model",
+            "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.secondary.reasoning_request_path",
+            # Cloud provider slot configuration (fallback)
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_PROVIDER": "cloud_providers.fallback.provider",
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_BASE_URL": "cloud_providers.fallback.base_url",
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_MODEL": "cloud_providers.fallback.model",
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.fallback.reasoning_request_path",
         }
         for env_key, env_value in os.environ.items():
             if env_key.startswith(prefix):

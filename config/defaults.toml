@@ -10,7 +10,7 @@
 
 [application]
 name = "PARIKA"
-version = "0.4.01-alpha"
+version = "0.8.01-alpha"
 environment = "production"
 
 [assistant]
@@ -249,20 +249,47 @@ request_timeout_seconds = 600000.0
 max_tool_iterations = 5
 keep_alive = "120m"
 
-# Generic OpenAI-compatible provider 
-[providers.kilo_code]
-base_url = "https://api.kilo.ai/api/openrouter"
-model = "nvidia/nemotron-3.5-lightning:free"
-api_key_env = "PARIKA_PROVIDER_KILO_CODE_API_KEY"
-supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
-reasoning_request_path = "reasoning.enabled"
+###############################################################################
+# Cloud Provider Slots
+#
+# These three slots (primary, secondary, fallback) define the stable
+# cloud-provider routing chain. The actual provider identity, model,
+# base URL, API key, and reasoning configuration for each slot are
+# supplied entirely through environment variables (see .env.example).
+# No TOML edit is required to change providers.
+#
+# Each slot uses the generic OpenAI-compatible provider driver.
+# The 'provider' field holds the provider identity (e.g. "kilo_code",
+# "block_run", "openai", "anthropic") for metadata/registration purposes.
+# The 'api_key_env' field holds the NAME of the environment variable
+# containing the actual secret; the driver reads the secret from os.environ
+# at construction time.
+###############################################################################
 
-[providers.block_run]
-base_url = "https://api.blockrun.ai/v1"
-model = "nvidia/nemotron-3.5-lightning"
-api_key_env = "PARIKA_PROVIDER_BLOCK_RUN_API_KEY"
+[cloud_providers.primary]
+provider = "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER"
+base_url = "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_BASE_URL"
+model = "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_MODEL"
+api_key_env = "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_KEY"
 supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
-reasoning_request_path = "chat_template_kwargs.enable_thinking"
+reasoning_request_path = "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_REASONING_REQUEST_PATH"
+
+[cloud_providers.secondary]
+provider = "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER"
+base_url = "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_BASE_URL"
+model = "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_MODEL"
+api_key_env = "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_KEY"
+supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
+reasoning_request_path = "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_REASONING_REQUEST_PATH"
+
+[cloud_providers.fallback]
+provider = "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER"
+base_url = "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_BASE_URL"
+model = "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_MODEL"
+api_key_env = "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_KEY"
+supported_parameters = ["temperature", "top_p", "max_tokens", "stop"]
+reasoning_request_path = "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_REASONING_REQUEST_PATH"
+
 ###############################################################################
 # ComfyUI Provider
 #

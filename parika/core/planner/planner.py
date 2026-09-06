@@ -654,11 +654,12 @@ class Planner:
             self._logger.debug(
                 "Planner routing decision: "
                 "routing_type=%s is_fixed=%s fixed_model_id=%s "
-                "cloud_primary_provider=%s cloud_fallback_provider=%s",
+                "cloud_primary_provider=%s cloud_secondary_provider=%s cloud_fallback_provider=%s",
                 self._routing_config.routing_type,
                 self._routing_config.is_fixed,
                 self._routing_config.fixed_model_id,
                 self._routing_config.cloud_primary_provider,
+                self._routing_config.cloud_secondary_provider,
                 self._routing_config.cloud_fallback_provider,
             )
 
@@ -814,6 +815,26 @@ class Planner:
                             model=model,
                             requirements=requirements,
                             reason=f"cloud primary routing model via provider '{provider.id}' configured model='{model.id}'",
+                            skip_health_check=True,
+                        )
+
+        # Try cloud secondary - use provider's configured model
+        if routing_config.cloud_secondary_provider:
+            for provider in providers:
+                if provider.id == routing_config.cloud_secondary_provider:
+                    # Use the provider's configured model
+                    if provider.models:
+                        model = provider.models[0]  # Primary model is the first/configured one
+                        logger.debug(
+                            "Using cloud secondary routing model: provider=%s model=%s",
+                            provider.id,
+                            model.id,
+                        )
+                        return self._create_selection_result(
+                            provider=provider,
+                            model=model,
+                            requirements=requirements,
+                            reason=f"cloud secondary routing model via provider '{provider.id}' configured model='{model.id}'",
                             skip_health_check=True,
                         )
 

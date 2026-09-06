@@ -551,11 +551,12 @@ class GoalDecomposer:
         logger.debug(
             "GoalDecomposer routing decision: "
             "routing_type=%s is_fixed=%s fixed_model_id=%s "
-            "cloud_primary_provider=%s cloud_fallback_provider=%s",
+            "cloud_primary_provider=%s cloud_secondary_provider=%s cloud_fallback_provider=%s",
             routing_config.routing_type,
             routing_config.is_fixed,
             routing_config.fixed_model_id,
             routing_config.cloud_primary_provider,
+            routing_config.cloud_secondary_provider,
             routing_config.cloud_fallback_provider,
         )
 
@@ -567,6 +568,13 @@ class GoalDecomposer:
                 if provider.models:
                     model = provider.models[0]
                     logger.debug("GoalDecomposer routing branch=cloud primary provider=%s model=%s", provider.id, model.id)
+                    return provider.id, model
+            # Try cloud secondary provider
+            if routing_config.cloud_secondary_provider and routing_config.cloud_secondary_provider in providers:
+                provider = providers[routing_config.cloud_secondary_provider]
+                if provider.models:
+                    model = provider.models[0]
+                    logger.debug("GoalDecomposer routing branch=cloud secondary provider=%s model=%s", provider.id, model.id)
                     return provider.id, model
             # Try cloud fallback provider
             if routing_config.cloud_fallback_provider and routing_config.cloud_fallback_provider in providers:
@@ -639,10 +647,23 @@ class GoalDecomposer:
         if routing_config.routing_type != "cloud":
             return None
         targets = []
-        # Add cloud fallback provider
-        if routing_config.cloud_fallback_provider:
-            targets.append((routing_config.cloud_fallback_provider, None))
-        # Add local fixed model
+        # Build the chain: primary -> secondary -> fallback -> local fixed
+        chain = [
+            routing_config.cloud_primary_provider,
+            routing_config.cloud_secondary_provider,
+            routing_config.cloud_fallback_provider,
+        ]
+        # Find current position in chain
+        current_index = -1
+        for i, pid in enumerate(chain):
+            if pid and pid == current_provider_id:
+                current_index = i
+                break
+        # Add remaining providers in chain after current
+        for pid in chain[current_index + 1:]:
+            if pid:
+                targets.append((pid, None))
+        # Add local fixed model as final fallback
         if routing_config.fixed_provider_id and routing_config.fixed_model_id:
             targets.append((routing_config.fixed_provider_id, routing_config.fixed_model_id))
         providers = {p.id: p for p in self._provider_manager.get_all()}

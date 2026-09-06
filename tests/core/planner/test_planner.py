@@ -209,15 +209,15 @@ def _register_llm_capability(
             # plain dict, which is unhashable, so real ProviderModel
             # instances cannot be placed in a frozenset. Provider.models
             # is not runtime-validated, so a tuple is used here instead.
-models=(
-                    ProviderModel(
-                        id="local_speech_tts",
-                        name="Kokoro",
-                        capabilities=frozenset(
-                            {ModelCapability.TEXT_TO_SPEECH}
-                        ),
+            models=(
+                ProviderModel(
+                    id=model_id,
+                    name="Llama 3",
+                    capabilities=frozenset(
+                        {ModelCapability.TEXT_GENERATION}
                     ),
-                ),  # type: ignore[arg-type]
+                ),
+            ),  # type: ignore[arg-type]
         ),
         _FakeProviderDriver(),
     )

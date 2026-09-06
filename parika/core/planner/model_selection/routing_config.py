@@ -75,13 +75,9 @@ class RoutingConfig:
     fixed_thinking: bool = False
 
     routing_type: str = "local"
-    cloud_primary_provider: str | None = None
-    cloud_fallback_provider: str | None = None
     """
-    The `RequestOptions.reasoning` value to force for the routing
-    model when `mode = "fixed"`, instead of the automatic reasoning-
-    level-derived `thinking_mode` every other Goal still uses. Has no
-    effect when `mode = "auto"`.
+    The routing type: "local" or "cloud". When "cloud", the fixed
+    three-slot chain (primary → secondary → fallback) is used.
     """
 
     @property
@@ -89,6 +85,21 @@ class RoutingConfig:
         """Whether the "fixed" routing strategy is active."""
 
         return self.mode == "fixed"
+
+    @property
+    def cloud_primary_provider(self) -> str:
+        """The fixed primary cloud provider slot name."""
+        return "primary"
+
+    @property
+    def cloud_secondary_provider(self) -> str:
+        """The fixed secondary cloud provider slot name."""
+        return "secondary"
+
+    @property
+    def cloud_fallback_provider(self) -> str:
+        """The fixed fallback cloud provider slot name."""
+        return "fallback"
 
 
 def load_routing_config(
@@ -125,8 +136,6 @@ def load_routing_config(
     )
 
     routing_type = str(configuration.get("routing.type", "local")).lower()
-    cloud_primary_provider = configuration.get("routing.cloud.primary_provider", None)
-    cloud_fallback_provider = configuration.get("routing.cloud.fallback_provider", None)
 
     return RoutingConfig(
         mode=mode,
@@ -134,8 +143,6 @@ def load_routing_config(
         fixed_model_id=model_id,
         fixed_thinking=fixed_thinking,
         routing_type=routing_type,
-        cloud_primary_provider=cloud_primary_provider,
-        cloud_fallback_provider=cloud_fallback_provider,
     )
 
 
