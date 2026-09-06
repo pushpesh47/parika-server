@@ -20,6 +20,18 @@ from .transport import OpenAICompatibleTransport, UrllibOpenAICompatibleTranspor
 from parika.core.provider_manager.exceptions import ProviderExecutionError
 from parika.core.provider_manager.egress_policy import CloudEgressPolicy
 
+
+def _set_nested_path(obj: dict[str, Any], path: str, value: Any) -> None:
+    """Set a nested value in a dict using dot notation path (e.g., 'a.b.c')."""
+    keys = path.split(".")
+    current = obj
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+    current[keys[-1]] = value
+
+
 class OpenAICompatibleProviderDriver(ProviderDriver):
     """One driver for arbitrary chat-completions-compatible endpoints."""
     def __init__(self, *, provider_id: str, base_url: str, model: str, api_key_env: str,
@@ -28,7 +40,8 @@ class OpenAICompatibleProviderDriver(ProviderDriver):
                  streaming: bool = True, tool_calling: bool = True,
                  structured_output: bool = False, reasoning: bool = False,
                  parallel_tool_calls: bool = False, allow_native_tools: bool = False,
-                 allow_cloud_egress: bool = True, supported_parameters: set[str] | None = None):
+                 allow_cloud_egress: bool = True, supported_parameters: set[str] | None = None,
+                 reasoning_request_path: str | None = None):
         if not base_url or not model or not api_key_env:
             raise OpenAICompatibleConfigurationError("OpenAI-compatible provider requires base_url, model, and api_key_env")
         import os
@@ -48,6 +61,7 @@ class OpenAICompatibleProviderDriver(ProviderDriver):
         self._supported_parameters = frozenset(supported_parameters) if supported_parameters else frozenset({
             "temperature", "top_p", "seed", "max_tokens", "stop"
         })
+        self._reasoning_request_path = reasoning_request_path
 
     def bind_brain(self, brain) -> None:
         self._brain = brain
@@ -85,6 +99,11 @@ class OpenAICompatibleProviderDriver(ProviderDriver):
         if o.response_format:
             if o.response_format == "json": p["response_format"] = {"type": "json_object"}
             elif o.response_format == "json_schema" and o.response_schema: p["response_format"] = {"type": "json_schema", "json_schema": o.response_schema}
+        
+        # Handle reasoning/thinking parameter if configured
+        if o.reasoning is not None and self._reasoning_request_path:
+            _set_nested_path(p, self._reasoning_request_path, o.reasoning)
+        
         return p
     @staticmethod
     def _message(message):
