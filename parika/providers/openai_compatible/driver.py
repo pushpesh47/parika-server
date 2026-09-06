@@ -123,7 +123,21 @@ class OpenAICompatibleProviderDriver(ProviderDriver):
             if code==404: raise OpenAICompatibleModelNotFoundError("provider model or endpoint unavailable") from ex
             if code==429: raise OpenAICompatibleRateLimitError("provider rate limit") from ex
             if code>=500: raise OpenAICompatibleServerError(f"provider server error HTTP {code}") from ex
-            raise OpenAICompatibleResponseError(f"provider request rejected HTTP {code}") from ex
+            response_body = None
+            try:
+                raw_body = ex.read().decode("utf-8")
+                try:
+                    response_body = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    response_body = raw_body
+            except Exception:
+                pass
+
+            raise OpenAICompatibleResponseError(
+                f"provider request rejected HTTP {code}",
+                response_body=response_body,
+                http_status=code,
+            ) from ex
         except TimeoutError as ex: raise OpenAICompatibleTimeoutError("provider request timed out") from ex
         except ConnectionError as ex: raise OpenAICompatibleConnectionError("provider connection failed") from ex
         except (ValueError, json.JSONDecodeError) as ex: raise OpenAICompatibleResponseError("provider returned malformed JSON") from ex

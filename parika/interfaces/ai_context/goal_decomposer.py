@@ -48,6 +48,7 @@ from parika.core.provider_manager.tool_spec import ToolSpec
 from parika.core.forensic_log import (
     get_current_trace_id,
     log_decomposer_input,
+    log_decomposition_provider_failure,
     log_decomposition_raw,
     log_decomposition_goals,
 )
@@ -402,6 +403,16 @@ class GoalDecomposer:
                     last_exception = ex
                     logger = logging.getLogger(__name__)
                     logger.warning(f"Decomposition attempt {attempt + 1} failed: {ex}")
+                    if trace_id:
+                        log_decomposition_provider_failure(
+                            trace_id=trace_id,
+                            provider_id=provider_id,
+                            model_id=model.id,
+                            attempt=attempt + 1,
+                            exception=ex,
+                            response=getattr(ex, "response_body", None),
+                            http_status=getattr(ex, "http_status", None),
+                        )
                     # Transport/provider-level errors: retry same provider if retries remain
                     if isinstance(ex, (ProviderConnectionError, ProviderTimeoutError,
                                        ProviderRateLimitError, ProviderServerError,

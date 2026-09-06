@@ -206,6 +206,43 @@ def log_decomposition_raw(
     _write_log(_format_entry(trace_id, "DECOMPOSITION_RAW", data))
 
 
+def log_decomposition_provider_failure(
+    trace_id: str,
+    provider_id: str,
+    model_id: str,
+    attempt: int,
+    exception: Exception,
+    *,
+    response: Any = None,
+    http_status: int | None = None,
+    retryable: bool | None = None,
+    retry_remaining: bool | None = None,
+    fallback_triggered: bool = False,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+) -> None:
+    """Log a complete GoalDecomposer provider failure."""
+    exception_type = type(exception).__name__
+    exception_message = str(exception)
+
+    data = {
+        "operation": "goal_decomposition",
+        "provider_id": provider_id,
+        "model_id": model_id,
+        "attempt": attempt,
+        "exception_type": exception_type,
+        "exception_message": exception_message,
+        "response": response,
+        "http_status": http_status,
+        "retryable": retryable,
+        "retry_remaining": retry_remaining,
+        "fallback_triggered": fallback_triggered,
+        "fallback_provider_id": fallback_provider_id,
+        "fallback_model_id": fallback_model_id,
+    }
+
+    _write_log(_format_entry(trace_id, "DECOMPOSITION_PROVIDER_FAILURE", data))
+
 def log_decomposition_goals(
     trace_id: str,
     goals: list[dict[str, Any]],
