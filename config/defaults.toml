@@ -10,7 +10,7 @@
 
 [application]
 name = "PARIKA"
-version = "0.8.01-alpha"
+version = "0.8.71"
 environment = "production"
 
 [assistant]
