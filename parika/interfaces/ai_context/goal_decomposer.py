@@ -104,14 +104,16 @@ Available capability categories and their purposes:
 - SPEECH/TEXT_TO_SPEECH: Voice processing
 
 Rules:
-1. Each goal must target ONE specific capability (e.g., "weather.current", "currency.convert", "web.search")
+1. Each goal must target ONE specific capability (e.g., "weather.current", "currency.convert", "web.search", "image.generate")
 2. Goals should be SEMANTIC objectives, not transport capabilities
 3. chat.respond is for FINAL response synthesis ONLY - do not use it for data gathering
 4. Identify dependencies: if goal B needs goal A's result, declare depends_on
 5. Independent goals (no shared data) should have no dependencies
 6. Simple requests (greeting, single fact) -> 1 goal
 7. Complex requests -> multiple goals
-8. CRITICAL: The FINAL chat.respond synthesis goal MUST depend on ALL data-gathering goals. If the user asks for multiple pieces of information (weather, currency, web search, etc.), create ONE final chat.respond goal that depends on ALL of them.
+8. CRITICAL: The FINAL chat.respond synthesis goal MUST depend on ALL synthesis-required goals (retrieval, data-gathering, information lookup). If the user asks for multiple pieces of information (weather, currency, web search, etc.), create ONE final chat.respond goal that depends on ALL of them.
+9. TERMINAL CAPABILITIES: Some capabilities (image.generate, video.generate, voice.text_to_speech, media.play/pause/stop/etc., filesystem.write, coding.execute_task) complete the requested artifact or action directly and return the result to the user. These are TERMINAL capabilities. A decomposition consisting of ONLY terminal capability goals (without chat.respond) is VALID and COMPLETE. Do NOT add a chat.respond goal for terminal capabilities unless the user explicitly asks for an explanation or summary.
+10. If the request mixes terminal and synthesis-required goals, the terminal goals should be independent, and the chat.respond synthesis goal should depend only on the synthesis-required goals.
 
 Respond with ONLY a JSON object matching this schema:
 {{
@@ -123,6 +125,11 @@ Respond with ONLY a JSON object matching this schema:
     {{"id": "goal_4", "capability_id": "chat.respond", "inputs": {{"message": "Summarize all results: weather, currency, and web search"}}, "depends_on": ["goal_0", "goal_1", "goal_2", "goal_3"]}}
   ]
 }}
+
+Examples of TERMINAL-only decompositions (valid WITHOUT chat.respond):
+- "generate an image of a spaceship" -> [{{"id": "goal_0", "capability_id": "image.generate", "inputs": {{"prompt": "spaceship flying through nebula"}}, "depends_on": []}}]
+- "play some music" -> [{{"id": "goal_0", "capability_id": "media.play", "inputs": {{"query": "some music"}}, "depends_on": []}}]
+- "write hello.txt" -> [{{"id": "goal_0", "capability_id": "filesystem.write", "inputs": {{"path": "hello.txt", "content": "hello"}}, "depends_on": []}}]
 
 Available capabilities (enabled): {available_capabilities}
 
@@ -148,64 +155,87 @@ class DecompositionError(Exception):
     pass
 
 
-def _validate_decomposition(goals: list[Goal], user_message: str) -> None:
+def _validate_decomposition(
+    goals: list[Goal], 
+    user_message: str,
+    capability_registry: CapabilityRegistry,
+) -> None:
     """
     Validate that a decomposition meets the structural contract.
     
-    A valid decomposition for a complex request MUST contain:
-    - At least one data-gathering goal (non-chat.respond)
-    - Exactly one synthesis goal (chat.respond) that depends on ALL data-gathering goals
-    
-    For simple requests, a single chat.respond goal without dependencies is valid.
+    A valid decomposition:
+    - For retrieval/data-gathering goals that require an answer: MUST have exactly one 
+      synthesis goal (chat.respond) that depends on ALL data-gathering goals
+    - For terminal artifact/action goals: can be a complete valid decomposition without
+      any chat.respond synthesis goal
+    - Simple requests: single chat.respond goal without dependencies is valid
+    - Multiple chat.respond goals are never valid
     """
     if not goals:
         raise DecompositionError("Decomposition produced no goals")
     
     chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
-    data_goals = [g for g in goals if g.capability_id != "chat.respond"]
     
     # Check for multiple chat.respond goals
     if len(chat_respond_goals) > 1:
         raise DecompositionError(f"Decomposition contains multiple chat.respond goals: {[g.id for g in chat_respond_goals]}")
     
-    # If there are data goals, there MUST be a synthesis goal that depends on all of them
-    if data_goals:
+    # Classify goals: terminal vs synthesis-required
+    terminal_goals = []
+    synthesis_required_goals = []
+    
+    for goal in goals:
+        if goal.capability_id == "chat.respond":
+            continue
+        # Check capability metadata for decomposition_terminal flag
+        cap_def = capability_registry.get(goal.capability_id)
+        if cap_def and cap_def.metadata.get("decomposition_terminal", False):
+            terminal_goals.append(goal)
+        else:
+            synthesis_required_goals.append(goal)
+    
+    # If there are synthesis-required goals, there MUST be a synthesis goal
+    if synthesis_required_goals:
         if not chat_respond_goals:
             raise DecompositionError(
-                f"Decomposition contains data-gathering goals { [g.id for g in data_goals] } "
+                f"Decomposition contains synthesis-required goals { [g.id for g in synthesis_required_goals] } "
                 f"but no chat.respond synthesis goal. "
-                f"Per the decomposition contract, a synthesis goal depending on all data goals is required."
+                f"Per the decomposition contract, a synthesis goal depending on all synthesis-required goals is required."
             )
         
         synthesis_goal = chat_respond_goals[0]
         synthesis_deps = set(synthesis_goal.depends_on)
-        data_goal_ids = {g.id for g in data_goals}
+        synthesis_required_goal_ids = {g.id for g in synthesis_required_goals}
         
         if not synthesis_deps:
             raise DecompositionError(
                 f"Synthesis goal {synthesis_goal.id} has no dependencies. "
-                f"It must depend on all data-gathering goals: {sorted(data_goal_ids)}"
+                f"It must depend on all synthesis-required goals: {sorted(synthesis_required_goal_ids)}"
             )
         
-        missing_deps = data_goal_ids - synthesis_deps
+        missing_deps = synthesis_required_goal_ids - synthesis_deps
         if missing_deps:
             raise DecompositionError(
-                f"Synthesis goal {synthesis_goal.id} missing dependencies on data goals: {sorted(missing_deps)}. "
-                f"It must depend on ALL data-gathering goals: {sorted(data_goal_ids)}"
+                f"Synthesis goal {synthesis_goal.id} missing dependencies on synthesis-required goals: {sorted(missing_deps)}. "
+                f"It must depend on ALL synthesis-required goals: {sorted(synthesis_required_goal_ids)}"
             )
         
-        extra_deps = synthesis_deps - data_goal_ids
+        extra_deps = synthesis_deps - synthesis_required_goal_ids
         if extra_deps:
             raise DecompositionError(
                 f"Synthesis goal {synthesis_goal.id} depends on unknown goals: {sorted(extra_deps)}. "
-                f"Valid data goal IDs: {sorted(data_goal_ids)}"
+                f"Valid synthesis-required goal IDs: {sorted(synthesis_required_goal_ids)}"
             )
     else:
-        # No data goals - simple request, single chat.respond without deps is OK
-        if len(chat_respond_goals) != 1:
-            raise DecompositionError(f"Expected exactly one chat.respond goal for simple request, got {len(chat_respond_goals)}")
-        if chat_respond_goals[0].depends_on:
-            raise DecompositionError("Simple request chat.respond goal should not have dependencies")
+        # No synthesis-required goals - only terminal goals (and possibly chat.respond)
+        # A decomposition with only terminal goals is valid without chat.respond
+        # If chat.respond exists, it must not have dependencies (simple request case)
+        if chat_respond_goals:
+            if len(chat_respond_goals) != 1:
+                raise DecompositionError(f"Expected exactly one chat.respond goal for simple request, got {len(chat_respond_goals)}")
+            if chat_respond_goals[0].depends_on:
+                raise DecompositionError("Simple request chat.respond goal should not have dependencies")
+        # If no chat.respond and only terminal goals, that's a valid terminal decomposition
 
 
 class GoalDecomposer:
@@ -363,8 +393,8 @@ class GoalDecomposer:
 
                     goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
                     
-                    # Validate that decomposition contains a synthesis goal with dependencies
-                    _validate_decomposition(goals, user_message)
+                    # Validate that decomposition meets structural contract
+                    _validate_decomposition(goals, user_message, self._capability_registry)
                     
                     # FORENSIC: Log decomposed goals
                     if trace_id:

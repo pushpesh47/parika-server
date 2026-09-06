@@ -146,6 +146,9 @@ class CodingAgentModuleDriver(ModuleDriver):
                 # nature without changing its execution backend.
                 category=CapabilityCategory.TOOL,
                 tags=frozenset({"coding", "agent", "automation"}),
+                metadata={  # type: ignore[arg-type]
+                    "decomposition_terminal": True,
+                },
             )
         )
         self._tool_manager.register(

@@ -266,7 +266,8 @@ class GenerationModuleDriver(ModuleDriver):
                     category=CapabilityCategory.TOOL,
                     tags=frozenset({"generation", "media"}),
                     metadata={  # type: ignore[arg-type]
-                        "tool_affordance": spec.tool_affordance
+                        "tool_affordance": spec.tool_affordance,
+                        "decomposition_terminal": True,
                     },
                 )
             )

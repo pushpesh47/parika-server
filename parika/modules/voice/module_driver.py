@@ -217,7 +217,8 @@ class VoiceModuleDriver(ModuleDriver):
                     category=CapabilityCategory.TOOL,
                     tags=frozenset({"voice", "speech", "media"}),
                     metadata={  # type: ignore[arg-type]
-                        "tool_affordance": spec.tool_affordance
+                        "tool_affordance": spec.tool_affordance,
+                        "decomposition_terminal": spec.tool_capability_id == ids.TEXT_TO_SPEECH_CAPABILITY_ID,
                     },
                 )
             )

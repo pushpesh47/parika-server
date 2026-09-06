@@ -152,6 +152,13 @@ class MediaModuleDriver(ModuleDriver):
         for operation in MediaOperation:
             capability_id = OPERATION_CAPABILITY_ID[operation]
 
+            # Media command dispatch capabilities (play, pause, resume, stop, skip,
+            # previous, seek, set_volume, mute, unmute, show, hide) are terminal -
+            # they complete the requested user-visible action by dispatching to the
+            # Web Client. media.get_state is NOT terminal as it returns state info
+            # requiring synthesis.
+            is_terminal = operation != MediaOperation.GET_STATE
+
             self._capability_registry.register(
                 CapabilityDefinition(
                     id=capability_id,
@@ -160,7 +167,8 @@ class MediaModuleDriver(ModuleDriver):
                     category=CapabilityCategory.TOOL,
                     tags=frozenset({"media", "music", "video", "playback"}),
                     metadata={  # type: ignore[arg-type]
-                        "tool_affordance": MEDIA_TOOL_AFFORDANCES[capability_id]
+                        "tool_affordance": MEDIA_TOOL_AFFORDANCES[capability_id],
+                        "decomposition_terminal": is_terminal,
                     },
                 )
             )

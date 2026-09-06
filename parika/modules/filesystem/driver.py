@@ -162,6 +162,11 @@ class FilesystemModuleDriver(ModuleDriver):
             return
 
         for spec in FILESYSTEM_OPERATIONS:
+            # filesystem.write is terminal - it completes the requested side effect
+            # (creating/updating a file). Other filesystem operations return data
+            # requiring synthesis.
+            is_terminal = spec.capability_id == "filesystem.write"
+
             self._capability_registry.register(
                 CapabilityDefinition(
                     id=spec.capability_id,
@@ -178,7 +183,8 @@ class FilesystemModuleDriver(ModuleDriver):
                             "result_semantics": spec.result_semantics,
                             "failure_semantics": spec.failure_semantics,
                             "parameters": spec.parameters,
-                        }
+                        },
+                        "decomposition_terminal": is_terminal,
                     },
                 )
             )
