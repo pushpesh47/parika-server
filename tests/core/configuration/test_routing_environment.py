@@ -287,3 +287,89 @@ def test_cloud_provider_api_key_env_name_passed_to_driver(monkeypatch) -> None:
     configs = load_openai_compatible_configs(configuration)
     primary_cfg = next(c for c in configs if c.provider_id == "primary")
     assert primary_cfg.api_key_env == "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_KEY"
+
+
+def test_supported_parameters_defaults_to_toml(monkeypatch) -> None:
+    """Test that supported_parameters defaults to TOML when env var is absent."""
+    # Don't call _apply_env_overrides since we're testing TOML default without env override
+    configuration = _configuration_with_defaults({
+        "cloud_providers": {
+            "primary": {"supported_parameters": ["temperature", "top_p", "max_tokens", "stop"]}
+        }
+    })
+    # NOTE: Not calling _apply_env_overrides - this tests pure TOML default
+
+    assert configuration.get("cloud_providers.primary.supported_parameters") == ["temperature", "top_p", "max_tokens", "stop"]
+
+
+def test_supported_parameters_primary_override(monkeypatch) -> None:
+    """Test that primary provider supported_parameters can be overridden via env var."""
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_SUPPORTED_PARAMETERS", "top_p,max_tokens,stop")
+    configuration = _configuration_with_defaults({
+        "cloud_providers": {
+            "primary": {"supported_parameters": ["temperature", "top_p", "max_tokens", "stop"]}
+        }
+    })
+    configuration._apply_env_overrides()  # type: ignore[attr-defined]
+
+    assert configuration.get("cloud_providers.primary.supported_parameters") == ["top_p", "max_tokens", "stop"]
+
+
+def test_supported_parameters_secondary_isolation(monkeypatch) -> None:
+    """Test that primary override does not affect secondary/fallback providers."""
+    monkeypatch.setenv("PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_SUPPORTED_PARAMETERS", "top_p,max_tokens")
+    configuration = _configuration_with_defaults({
+        "cloud_providers": {
+            "primary": {"supported_parameters": ["temperature", "top_p", "max_tokens", "stop"]},
+            "secondary": {"supported_parameters": ["temperature", "top_p", "max_tokens", "stop"]},
+            "fallback": {"supported_parameters": ["temperature", "top_p", "max_tokens", "stop"]},
+        }
+    })
+    configuration._apply_env_overrides()  # type: ignore[attr-defined]
+
+    assert configuration.get("cloud_providers.primary.supported_parameters") == ["top_p", "max_tokens"]
+    assert configuration.get("cloud_providers.secondary.supported_parameters") == ["temperature", "top_p", "max_tokens", "stop"]
+    assert configuration.get("cloud_providers.fallback.supported_parameters") == ["temperature", "top_p", "max_tokens", "stop"]
+
+
+def test_driver_excludes_temperature_when_not_in_supported_parameters(monkeypatch) -> None:
+    """Test that driver filters out temperature when not in supported_parameters."""
+    from parika.providers.openai_compatible.driver import OpenAICompatibleProviderDriver
+    from parika.core.provider_manager.chat_request import ChatRequest
+    from parika.core.provider_manager.chat_message import ChatMessage
+    from parika.core.provider_manager.options import RequestOptions
+
+    # Set required API key env var
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    # Create a mock logger
+    class MockLogger:
+        def get_logger(self, name):
+            return self
+        def warning(self, *args, **kwargs):
+            pass
+        def info(self, *args, **kwargs):
+            pass
+        def error(self, *args, **kwargs):
+            pass
+        def debug(self, *args, **kwargs):
+            pass
+
+    driver = OpenAICompatibleProviderDriver(
+        provider_id="test",
+        base_url="https://x",
+        model="m",
+        api_key_env="TEST_API_KEY",
+        logger=MockLogger(),
+        supported_parameters={"top_p", "max_tokens", "stop"},  # NO temperature
+    )
+
+    request = ChatRequest(
+        messages=(ChatMessage(role="user", content="test"),),
+        options=RequestOptions(temperature=0.7, top_p=0.9, max_output_tokens=100)
+    )
+    payload = driver._payload(request)
+
+    assert "temperature" not in payload
+    assert payload["top_p"] == 0.9
+    assert payload["max_tokens"] == 100

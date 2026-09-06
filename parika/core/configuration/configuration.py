@@ -123,16 +123,19 @@ class Configuration:
             "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_BASE_URL": "cloud_providers.primary.base_url",
             "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_MODEL": "cloud_providers.primary.model",
             "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.primary.reasoning_request_path",
+            "PARIKA_ROUTING__CLOUD__PRIMARY_PROVIDER_SUPPORTED_PARAMETERS": "cloud_providers.primary.supported_parameters",
             # Cloud provider slot configuration (secondary)
             "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_PROVIDER": "cloud_providers.secondary.provider",
             "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_BASE_URL": "cloud_providers.secondary.base_url",
             "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_MODEL": "cloud_providers.secondary.model",
             "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.secondary.reasoning_request_path",
+            "PARIKA_ROUTING__CLOUD__SECONDARY_PROVIDER_SUPPORTED_PARAMETERS": "cloud_providers.secondary.supported_parameters",
             # Cloud provider slot configuration (fallback)
             "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_PROVIDER": "cloud_providers.fallback.provider",
             "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_BASE_URL": "cloud_providers.fallback.base_url",
             "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_MODEL": "cloud_providers.fallback.model",
             "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_REASONING_REQUEST_PATH": "cloud_providers.fallback.reasoning_request_path",
+            "PARIKA_ROUTING__CLOUD__FALLBACK_PROVIDER_SUPPORTED_PARAMETERS": "cloud_providers.fallback.supported_parameters",
         }
         for env_key, env_value in os.environ.items():
             if env_key.startswith(prefix):
