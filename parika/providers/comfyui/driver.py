@@ -75,6 +75,7 @@ _DIFFUSION_MODELS_PATH = "/models/diffusion_models"
 _SYSTEM_STATS_PATH = "/system_stats"
 _PROMPT_PATH = "/prompt"
 _HISTORY_PATH = "/history"
+_FREE_PATH = "/free"
 _UPLOAD_PATH = "/upload/image"
 _VIEW_PATH = "/view"
 
@@ -448,11 +449,18 @@ class ComfyUIProviderDriver(ProviderDriver):
         graph: workflows.WorkflowGraph,
         output_node_id: str,
     ) -> GenerationResult:
-        prompt_id = self._submit(graph)
-        outputs = self._await_completion(prompt_id)
-        artifact = self._collect_artifact(outputs, output_node_id)
+        try:
+            prompt_id = self._submit(graph)
+            outputs = self._await_completion(prompt_id)
+            artifact = self._collect_artifact(outputs, output_node_id)
 
-        return GenerationResult(model_id=model.id, artifacts=(artifact,))
+            return GenerationResult(
+                model_id=model.id,
+                artifacts=(artifact,),
+            )
+
+        finally:
+            self._free_comfyui_memory()
 
     def _submit(self, graph: workflows.WorkflowGraph) -> str:
         response = self._request_json(
@@ -585,6 +593,35 @@ class ComfyUIProviderDriver(ProviderDriver):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _free_comfyui_memory(self) -> None:
+        """
+        Ask ComfyUI to unload generation models and release its
+        execution/cache memory after a completed or failed generation.
+
+        Cleanup failures are logged but never replace the original
+        generation exception.
+        """
+
+        try:
+            self._request_json(
+                "POST",
+                _FREE_PATH,
+                payload={
+                    "unload_models": True,
+                    "free_memory": True,
+                },
+                timeout=self._connect_timeout_seconds,
+            )
+
+            self._logger.info(
+                "ComfyUI generation memory cleanup completed."
+            )
+
+        except ComfyUIProviderError as ex:
+            self._logger.warning(
+                "ComfyUI generation memory cleanup failed: %s",
+                ex,
+            )
 
     def _resolve_seed(self, seed: int | None) -> int:
         return seed if seed is not None else random.randint(0, 2**32 - 1)
