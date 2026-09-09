@@ -307,7 +307,8 @@ class UIContextProjector:
             if stage and stage.value == 'started':
                 self._brain_execution_active = True
                 self._brain_execution_succeeded = None
-                self._brain_request_id = metadata.get('request_id')
+                if self._brain_request_id is None:
+                    self._brain_request_id = metadata.get('request_id')
                 self._brain_goals = {}
                 self._brain_synthesis_goal_id = None
                 # Transition to ACTIVE lifecycle

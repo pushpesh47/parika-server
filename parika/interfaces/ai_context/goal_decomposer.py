@@ -94,7 +94,7 @@ def _get_all_enabled_capabilities(
 
 
 _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE = """\
-You are PARIKA's Goal Decomposer. Analyze the user's request and decompose it into independent semantic goals.
+You are PARIKA's Goal Decomposer. Analyze the user's request and decompose it into semantic execution goals ending with one final user-facing response.
 
 Available capability categories and their purposes:
 - TOOL: External APIs, utilities, data access (weather, currency, web search, filesystem, shell, etc.)
@@ -108,12 +108,12 @@ Rules:
 2. Goals should be SEMANTIC objectives, not transport capabilities
 3. chat.respond is for FINAL response synthesis ONLY - do not use it for data gathering
 4. Identify dependencies: if goal B needs goal A's result, declare depends_on
-5. Independent goals (no shared data) should have no dependencies
-6. Simple requests (greeting, single fact) -> 1 goal
-7. Complex requests -> multiple goals
-8. CRITICAL: The FINAL chat.respond synthesis goal MUST depend on ALL synthesis-required goals (retrieval, data-gathering, information lookup). If the user asks for multiple pieces of information (weather, currency, web search, etc.), create ONE final chat.respond goal that depends on ALL of them.
-9. TERMINAL CAPABILITIES: Some capabilities (image.generate, video.generate, voice.text_to_speech, media.play/pause/stop/etc., filesystem.write, coding.execute_task) complete the requested artifact or action directly and return the result to the user. These are TERMINAL capabilities. A decomposition consisting of ONLY terminal capability goals (without chat.respond) is VALID and COMPLETE. Do NOT add a chat.respond goal for terminal capabilities unless the user explicitly asks for an explanation or summary.
-10. If the request mixes terminal and synthesis-required goals, the terminal goals should be independent, and the chat.respond synthesis goal should depend only on the synthesis-required goals.
+5. Independent non-synthesis goals should have no dependencies
+6. Simple requests (greeting, single fact) -> 1 chat.respond goal
+7. Complex requests -> multiple execution goals followed by chat.respond
+8. CRITICAL: Every request MUST produce exactly one final chat.respond goal. chat.respond MUST be the last goal and MUST be the final user-facing response/synthesis step.
+9. The final chat.respond goal MUST depend on ALL preceding goals. If there are no preceding goals, chat.respond has no dependencies.
+10. Terminal capabilities (image.generate, video.generate, voice.text_to_speech, media actions, filesystem.write, coding.execute_task, etc.) perform the requested action, but MUST still be followed by chat.respond so PARIKA can report the result to the user.
 
 Respond with ONLY a JSON object matching this schema:
 {{
@@ -126,16 +126,10 @@ Respond with ONLY a JSON object matching this schema:
   ]
 }}
 
-Examples of TERMINAL-only decompositions (valid WITHOUT chat.respond):
-- "generate an image of a spaceship" -> [{{"id": "goal_0", "capability_id": "image.generate", "inputs": {{"prompt": "spaceship flying through nebula"}}, "depends_on": []}}]
-- "play some music" -> [{{"id": "goal_0", "capability_id": "media.play", "inputs": {{"query": "some music"}}, "depends_on": []}}]
-- "write hello.txt" -> [{{"id": "goal_0", "capability_id": "filesystem.write", "inputs": {{"path": "hello.txt", "content": "hello"}}, "depends_on": []}}]
-
 Available capabilities (enabled): {available_capabilities}
 
 User request: {user_message}
 """
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DecompositionResult:
@@ -156,87 +150,63 @@ class DecompositionError(Exception):
 
 
 def _validate_decomposition(
-    goals: list[Goal], 
+    goals: list[Goal],
     user_message: str,
     capability_registry: CapabilityRegistry,
 ) -> None:
     """
-    Validate that a decomposition meets the structural contract.
-    
+    Validate that a decomposition meets the universal structural contract.
+
     A valid decomposition:
-    - For retrieval/data-gathering goals that require an answer: MUST have exactly one 
-      synthesis goal (chat.respond) that depends on ALL data-gathering goals
-    - For terminal artifact/action goals: can be a complete valid decomposition without
-      any chat.respond synthesis goal
-    - Simple requests: single chat.respond goal without dependencies is valid
-    - Multiple chat.respond goals are never valid
+    - MUST contain exactly one chat.respond goal
+    - chat.respond MUST be the final goal
+    - chat.respond MUST depend on ALL preceding goals
+    - A simple request with only chat.respond is valid with no dependencies
     """
     if not goals:
         raise DecompositionError("Decomposition produced no goals")
-    
-    chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
-    
-    # Check for multiple chat.respond goals
-    if len(chat_respond_goals) > 1:
-        raise DecompositionError(f"Decomposition contains multiple chat.respond goals: {[g.id for g in chat_respond_goals]}")
-    
-    # Classify goals: terminal vs synthesis-required
-    terminal_goals = []
-    synthesis_required_goals = []
-    
-    for goal in goals:
-        if goal.capability_id == "chat.respond":
-            continue
-        # Check capability metadata for decomposition_terminal flag
-        cap_def = capability_registry.get(goal.capability_id)
-        if cap_def and cap_def.metadata.get("decomposition_terminal", False):
-            terminal_goals.append(goal)
-        else:
-            synthesis_required_goals.append(goal)
-    
-    # If there are synthesis-required goals, there MUST be a synthesis goal
-    if synthesis_required_goals:
-        if not chat_respond_goals:
-            raise DecompositionError(
-                f"Decomposition contains synthesis-required goals { [g.id for g in synthesis_required_goals] } "
-                f"but no chat.respond synthesis goal. "
-                f"Per the decomposition contract, a synthesis goal depending on all synthesis-required goals is required."
-            )
-        
-        synthesis_goal = chat_respond_goals[0]
-        synthesis_deps = set(synthesis_goal.depends_on)
-        synthesis_required_goal_ids = {g.id for g in synthesis_required_goals}
-        
-        if not synthesis_deps:
-            raise DecompositionError(
-                f"Synthesis goal {synthesis_goal.id} has no dependencies. "
-                f"It must depend on all synthesis-required goals: {sorted(synthesis_required_goal_ids)}"
-            )
-        
-        missing_deps = synthesis_required_goal_ids - synthesis_deps
-        if missing_deps:
-            raise DecompositionError(
-                f"Synthesis goal {synthesis_goal.id} missing dependencies on synthesis-required goals: {sorted(missing_deps)}. "
-                f"It must depend on ALL synthesis-required goals: {sorted(synthesis_required_goal_ids)}"
-            )
-        
-        extra_deps = synthesis_deps - synthesis_required_goal_ids
-        if extra_deps:
-            raise DecompositionError(
-                f"Synthesis goal {synthesis_goal.id} depends on unknown goals: {sorted(extra_deps)}. "
-                f"Valid synthesis-required goal IDs: {sorted(synthesis_required_goal_ids)}"
-            )
-    else:
-        # No synthesis-required goals - only terminal goals (and possibly chat.respond)
-        # A decomposition with only terminal goals is valid without chat.respond
-        # If chat.respond exists, it must not have dependencies (simple request case)
-        if chat_respond_goals:
-            if len(chat_respond_goals) != 1:
-                raise DecompositionError(f"Expected exactly one chat.respond goal for simple request, got {len(chat_respond_goals)}")
-            if chat_respond_goals[0].depends_on:
-                raise DecompositionError("Simple request chat.respond goal should not have dependencies")
-        # If no chat.respond and only terminal goals, that's a valid terminal decomposition
 
+    chat_respond_goals = [
+        goal for goal in goals
+        if goal.capability_id == "chat.respond"
+    ]
+
+    if len(chat_respond_goals) != 1:
+        raise DecompositionError(
+            "Decomposition must contain exactly one chat.respond goal; "
+            f"got {len(chat_respond_goals)}"
+        )
+
+    synthesis_goal = chat_respond_goals[0]
+
+    if goals[-1].id != synthesis_goal.id:
+        raise DecompositionError(
+            f"chat.respond goal {synthesis_goal.id} must be the final goal"
+        )
+
+    expected_dependencies = {goal.id for goal in goals[:-1]}
+    actual_dependencies = set(synthesis_goal.depends_on)
+
+    missing_dependencies = expected_dependencies - actual_dependencies
+    unexpected_dependencies = actual_dependencies - expected_dependencies
+
+    if missing_dependencies or unexpected_dependencies:
+        details = []
+
+        if missing_dependencies:
+            details.append(
+                f"missing dependencies: {sorted(missing_dependencies)}"
+            )
+
+        if unexpected_dependencies:
+            details.append(
+                f"unexpected dependencies: {sorted(unexpected_dependencies)}"
+            )
+
+        raise DecompositionError(
+            f"Final chat.respond goal {synthesis_goal.id} has invalid dependencies: "
+            + "; ".join(details)
+        )
 
 class GoalDecomposer:
     """
@@ -358,6 +328,7 @@ class GoalDecomposer:
         # Execute decomposition via cloud provider chain with failover
         max_retries_per_provider = 1
         last_exception = None
+        attempted_models: set[tuple[str, str]] = set()
         
         while True:
             # Try current provider with retries for transient transport errors
@@ -375,6 +346,7 @@ class GoalDecomposer:
                 )
 
                 try:
+                    attempted_models.add((provider_id, model.id))
                     response = self._provider_manager.execute(
                         provider_id=provider_id,
                         model=model,
@@ -460,7 +432,7 @@ class GoalDecomposer:
                     break
             
             # Current provider failed (validation or transport) - advance to next in chain
-            fallback = self._next_cloud_routing_model(provider_id, model, routing_config)
+            fallback = self._next_cloud_routing_model(provider_id, model, routing_config, attempted_models)
             if fallback is not None:
                 provider_id, model = fallback
                 context_budget = resolve_runtime_context_budget(
@@ -711,59 +683,126 @@ class GoalDecomposer:
         
         return None
 
-    def _next_cloud_routing_model(self, current_provider_id, current_model, routing_config):
+    def _next_cloud_routing_model(
+        self,
+        current_provider_id,
+        current_model,
+        routing_config,
+        attempted_models: set[tuple[str, str]] | None = None,
+    ):
         if routing_config.routing_type != "cloud":
             return None
+
+        if attempted_models is None:
+            attempted_models = set()
+
         targets = []
+
         # Build the chain: primary -> secondary -> fallback -> local fixed
         chain = [
             routing_config.cloud_primary_provider,
             routing_config.cloud_secondary_provider,
             routing_config.cloud_fallback_provider,
         ]
-        # Find current position in chain
+
+        # Find current position in the cloud chain
         current_index = -1
-        for i, pid in enumerate(chain):
-            if pid and pid == current_provider_id:
+        for i, provider_id in enumerate(chain):
+            if provider_id and provider_id == current_provider_id:
                 current_index = i
                 break
-        # Add remaining providers in chain after current
-        for pid in chain[current_index + 1:]:
-            if pid:
-                targets.append((pid, None))
-        # Add local fixed model as final fallback
+
+        # If the current provider is outside the cloud chain, it means
+        # the local fixed fallback has already been reached. Do not restart
+        # the cloud chain.
+        if current_index == -1:
+            return None
+
+        # Add remaining cloud providers after the current provider.
+        for provider_id in chain[current_index + 1:]:
+            if provider_id:
+                targets.append((provider_id, None))
+
+        # Add local fixed model as the final fallback.
         if routing_config.fixed_model_id:
             if routing_config.fixed_provider_id:
-                # Specific provider requested
-                targets.append((routing_config.fixed_provider_id, routing_config.fixed_model_id))
+                targets.append(
+                    (
+                        routing_config.fixed_provider_id,
+                        routing_config.fixed_model_id,
+                    )
+                )
             else:
-                # Search all providers for the model
-                targets.append((None, routing_config.fixed_model_id))
-        providers = {p.id: p for p in self._provider_manager.get_all()}
-        for pid, mid in targets:
-            if pid is not None:
-                if pid not in providers:
+                targets.append(
+                    (
+                        None,
+                        routing_config.fixed_model_id,
+                    )
+                )
+
+        providers = {
+            provider.id: provider
+            for provider in self._provider_manager.get_all()
+        }
+
+        for provider_id, model_id in targets:
+            if provider_id is not None:
+                if provider_id not in providers:
                     continue
-                provider = providers[pid]
-                if mid is None:
-                    # Use provider's configured model (first model)
-                    if provider.models:
-                        candidate = provider.models[0]
-                        if pid != current_provider_id or candidate.id != current_model.id:
-                            return pid, candidate
+
+                provider = providers[provider_id]
+
+                if model_id is None:
+                    if not provider.models:
+                        continue
+
+                    candidate = provider.models[0]
                 else:
-                    # Specific model requested
-                    for candidate in provider.models:
-                        if candidate.id == mid:
-                            if pid != current_provider_id or candidate.id != current_model.id:
-                                return pid, candidate
+                    candidate = next(
+                        (
+                            model
+                            for model in provider.models
+                            if model.id == model_id
+                        ),
+                        None,
+                    )
+
+                    if candidate is None:
+                        continue
+
+                candidate_key = (provider.id, candidate.id)
+
+                if candidate_key in attempted_models:
+                    continue
+
+                if (
+                    provider.id == current_provider_id
+                    and candidate.id == current_model.id
+                ):
+                    continue
+
+                return provider.id, candidate
+
             else:
-                # Search all providers for the model
+                # Search all providers for the configured local fixed model.
                 for provider in providers.values():
                     for candidate in provider.models:
-                        if candidate.id == mid:
-                            if provider.id != current_provider_id or candidate.id != current_model.id:
-                                return provider.id, candidate
+                        if candidate.id != model_id:
+                            continue
+
+                        candidate_key = (provider.id, candidate.id)
+
+                        if candidate_key in attempted_models:
+                            continue
+
+                        if (
+                            provider.id == current_provider_id
+                            and candidate.id == current_model.id
+                        ):
+                            continue
+
+                        return provider.id, candidate
+
         return None
 
 
