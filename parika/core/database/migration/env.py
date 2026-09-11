@@ -36,6 +36,10 @@ def get_database_dsn() -> str:
     """Get the database DSN from PARIKA configuration."""
     # Check if we're running in test mode
     import os
+    # Allow override via sqlalchemy.url in alembic.ini
+    if config.get_main_option("sqlalchemy.url"):
+        return config.get_main_option("sqlalchemy.url")
+    
     if os.environ.get("PARIKA_TEST_DB") == "1":
         from parika.core.database.config import DatabaseConfig
         # Test credentials MUST come from environment variables
@@ -77,7 +81,11 @@ def get_database_dsn() -> str:
 
 def dsn_to_sqlalchemy_url(dsn: str) -> str:
     """Convert libpq DSN to SQLAlchemy URL format."""
-    # Parse key=value pairs
+    # If it's already a SQLAlchemy URL (sqlite, postgresql://, etc), return as-is
+    if dsn.startswith(("sqlite:", "postgresql:", "postgresql+", "mysql:", "mysql+")):
+        return dsn
+    
+    # Parse key=value pairs (libpq DSN format)
     params = {}
     for part in dsn.split():
         if "=" in part:
@@ -112,29 +120,38 @@ def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     dsn = get_database_dsn()
     url = dsn_to_sqlalchemy_url(dsn)
-
+    
     # Create a SQLAlchemy engine for migrations
     engine = create_engine(url)
-
+    
     with engine.connect() as connection:
-        # Create schemas first (before alembic version table)
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS core"))
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS coding"))
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS cache"))
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS agent"))
-        connection.execute(text("CREATE SCHEMA IF NOT EXISTS execution"))
-        connection.commit()
-
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            include_schemas=True,
-            version_table_schema="core",
-        )
-
+        # Create schemas first (before alembic version table) - only for PostgreSQL
+        if url.startswith("postgresql"):
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS core"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS coding"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS cache"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS agent"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS execution"))
+            connection.commit()
+        
+        # Configure context based on dialect
+        if url.startswith("postgresql"):
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                include_schemas=True,
+                version_table_schema="core",
+            )
+        else:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+            )
+        
         with context.begin_transaction():
-            # Set search path to include all our schemas
-            connection.execute(text("SET search_path TO core, coding, cache, agent, execution, public"))
+            # Set search path to include all our schemas - only for PostgreSQL
+            if url.startswith("postgresql"):
+                connection.execute(text("SET search_path TO core, coding, cache, agent, execution, public"))
             context.run_migrations()
 
 

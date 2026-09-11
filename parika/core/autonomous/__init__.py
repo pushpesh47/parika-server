@@ -1,0 +1,248 @@
+"""
+PARIKA Autonomous Execution Foundation
+
+Provides the core contracts and infrastructure for persistent autonomous execution.
+"""
+
+from .contracts import (
+    MissionStatus,
+    AutonomousTaskStatus,
+    AgentInstanceStatus,
+    WorkerStatus,
+    ExecutionStatus,
+    CheckpointStatus,
+    RecoveryAction,
+    DependencyStatus,
+    MissionContract,
+    AutonomousTaskContract,
+    AgentInstanceContract,
+    WorkerContract,
+    ExecutionContract,
+    CheckpointContract,
+    WorldStateContract,
+    validate_mission_transition,
+    validate_task_transition,
+    validate_worker_transition,
+    validate_execution_transition,
+    validate_checkpoint_transition,
+)
+
+from .models import (
+    MissionModel,
+    AutonomousTaskModel,
+    TaskDependencyModel,
+    AgentInstanceModel,
+    WorkerModel,
+    ExecutionModel,
+    CheckpointModel,
+    WorldStateModel,
+    AutonomousEventModel,
+    Base,
+)
+
+from .events import (
+    AutonomousEvent,
+    MissionCreatedEvent,
+    MissionStartedEvent,
+    MissionProgressEvent,
+    MissionCompletedEvent,
+    MissionFailedEvent,
+    MissionCancelledEvent,
+    MissionPausedEvent,
+    MissionResumedEvent,
+    TaskCreatedEvent,
+    TaskStartedEvent,
+    TaskProgressEvent,
+    TaskCompletedEvent,
+    TaskFailedEvent,
+    TaskCancelledEvent,
+    TaskPausedEvent,
+    TaskResumedEvent,
+    TaskWaitingForDependencyEvent,
+    AgentSpawnedEvent,
+    AgentStartedEvent,
+    AgentCompletedEvent,
+    AgentFailedEvent,
+    WorkerSpawnedEvent,
+    WorkerStartedEvent,
+    WorkerHeartbeatEvent,
+    WorkerFailedEvent,
+    WorkerCancelledEvent,
+    CheckpointCreatedEvent,
+    CheckpointRestoredEvent,
+    RecoveryStartedEvent,
+    RecoveryCompletedEvent,
+    RecoveryFailedEvent,
+)
+
+from .mission_manager import Mission, MissionManager
+from .task_manager import AutonomousTask, AutonomousTaskManager
+from .worker_manager import Worker, Execution, WorkerManager
+from .checkpoint_manager import Checkpoint, CheckpointManager, serialize_task_state, deserialize_task_state
+from .recovery_coordinator import RecoveryCoordinator, RecoveryResult, RecoveryPhase
+from .agent_supervisor import AgentInstance, AgentSupervisor
+from .world_state_manager import WorldState, WorldStateManager
+from .executor import AutonomousExecutor, ExecutorConfig
+from .runtime import AutonomousRuntime, build_autonomous_runtime
+from .authorization import (
+    AutonomousAuthorizationBoundary,
+    create_autonomous_authorization_boundary,
+    AutonomousAuthorizationRequest,
+    AutonomousAuthorizationDecision,
+)
+from .budget import (
+    BudgetEnforcer,
+    BudgetLimit,
+    BudgetUsage,
+    BudgetViolation,
+    BudgetCheckResult,
+)
+from .requirements_serializer import (
+    serialize_execution_requirements,
+    deserialize_execution_requirements,
+    serialize_for_persistence,
+    deserialize_from_persistence,
+)
+from .provider_factories import (
+    build_provider_request,
+    is_supported_autonomous_provider,
+    get_supported_provider_types,
+    get_unsupported_provider_types,
+    AutonomousProviderError,
+)
+from .repository import (
+    MissionRepository,
+    AutonomousTaskRepository,
+    TaskDependencyRepository,
+    AgentInstanceRepository,
+    WorkerRepository,
+    ExecutionRepository,
+    CheckpointRepository,
+    WorldStateRepository,
+    AutonomousEventRepository,
+)
+
+# Phase 2 - use lazy import to avoid circular dependency
+try:
+    from .wait_manager import WaitManager
+except ImportError:
+    WaitManager = None
+
+__all__ = [
+    # Contracts
+    "MissionStatus",
+    "AutonomousTaskStatus",
+    "AgentInstanceStatus",
+    "WorkerStatus",
+    "ExecutionStatus",
+    "CheckpointStatus",
+    "RecoveryAction",
+    "DependencyStatus",
+    "MissionContract",
+    "AutonomousTaskContract",
+    "AgentInstanceContract",
+    "WorkerContract",
+    "ExecutionContract",
+    "CheckpointContract",
+    "WorldStateContract",
+    "validate_mission_transition",
+    "validate_task_transition",
+    "validate_worker_transition",
+    "validate_execution_transition",
+    "validate_checkpoint_transition",
+    # SQLAlchemy Models
+    "MissionModel",
+    "AutonomousTaskModel",
+    "TaskDependencyModel",
+    "AgentInstanceModel",
+    "WorkerModel",
+    "ExecutionModel",
+    "CheckpointModel",
+    "WorldStateModel",
+    "AutonomousEventModel",
+    "Base",
+    # Events
+    "AutonomousEvent",
+    "MissionCreatedEvent",
+    "MissionStartedEvent",
+    "MissionProgressEvent",
+    "MissionCompletedEvent",
+    "MissionFailedEvent",
+    "MissionCancelledEvent",
+    "MissionPausedEvent",
+    "MissionResumedEvent",
+    "TaskCreatedEvent",
+    "TaskStartedEvent",
+    "TaskProgressEvent",
+    "TaskCompletedEvent",
+    "TaskFailedEvent",
+    "TaskCancelledEvent",
+    "TaskPausedEvent",
+    "TaskResumedEvent",
+    "TaskWaitingForDependencyEvent",
+    "AgentSpawnedEvent",
+    "AgentStartedEvent",
+    "AgentCompletedEvent",
+    "AgentFailedEvent",
+    "WorkerSpawnedEvent",
+    "WorkerStartedEvent",
+    "WorkerHeartbeatEvent",
+    "WorkerFailedEvent",
+    "WorkerCancelledEvent",
+    "CheckpointCreatedEvent",
+    "CheckpointRestoredEvent",
+    "RecoveryStartedEvent",
+    "RecoveryCompletedEvent",
+    "RecoveryFailedEvent",
+    # Domain Models & Managers
+    "Mission",
+    "MissionManager",
+    "AutonomousTask",
+    "AutonomousTaskManager",
+    "Worker",
+    "Execution",
+    "WorkerManager",
+    "Checkpoint",
+    "CheckpointManager",
+    "serialize_task_state",
+    "deserialize_task_state",
+    "serialize_execution_requirements",
+    "deserialize_execution_requirements",
+    "serialize_for_persistence",
+    "deserialize_from_persistence",
+    "build_provider_request",
+    "is_supported_autonomous_provider",
+    "get_supported_provider_types",
+    "get_unsupported_provider_types",
+    "AutonomousProviderError",
+    "RecoveryCoordinator",
+    "RecoveryResult",
+    "RecoveryPhase",
+    "AgentInstance",
+    "AgentSupervisor",
+    "WorldState",
+    "WorldStateManager",
+    "AutonomousRuntime",
+    "build_autonomous_runtime",
+    "AutonomousExecutor",
+    "ExecutorConfig",
+    "AutonomousAuthorizationBoundary",
+    "create_autonomous_authorization_boundary",
+    "AutonomousAuthorizationRequest",
+    "AutonomousAuthorizationDecision",
+    "BudgetEnforcer",
+    "BudgetLimit",
+    "BudgetUsage",
+    "BudgetViolation",
+    "BudgetCheckResult",
+    # Repositories
+    "MissionRepository",
+    "AutonomousTaskRepository",
+    "TaskDependencyRepository",
+    "AgentInstanceRepository",
+    "WorkerRepository",
+    "ExecutionRepository",
+    "CheckpointRepository",
+    "WorldStateRepository",
+    "AutonomousEventRepository",
+]

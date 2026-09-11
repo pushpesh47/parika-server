@@ -163,6 +163,37 @@ class UIContextProjector:
         "context.registered",
         "context.updated",
         "context.removed",
+        # Autonomous execution events (Phase 1)
+        "mission.created",
+        "mission.started",
+        "mission.progress",
+        "mission.completed",
+        "mission.failed",
+        "mission.cancelled",
+        "mission.paused",
+        "mission.resumed",
+        "task.created",
+        "task.started",
+        "task.progress",
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "task.paused",
+        "task.resumed",
+        "agent.spawned",
+        "agent.started",
+        "agent.completed",
+        "agent.failed",
+        "worker.spawned",
+        "worker.started",
+        "worker.heartbeat",
+        "worker.failed",
+        "worker.cancelled",
+        "checkpoint.created",
+        "checkpoint.restored",
+        "recovery.started",
+        "recovery.completed",
+        "recovery.failed",
     })
     
     def __init__(
@@ -215,6 +246,13 @@ class UIContextProjector:
         
         # Last active task metadata (for request status after completion)
         self._last_active_task_metadata: MappingProxyType[str, Any] | None = None
+        
+        # Autonomous execution tracking state (Phase 1)
+        self._autonomous_missions: dict[str, dict[str, Any]] = {}  # mission_id -> mission info
+        self._autonomous_tasks: dict[str, dict[str, Any]] = {}  # task_id -> task info
+        self._autonomous_agents: dict[str, dict[str, Any]] = {}  # agent_id -> agent info
+        self._autonomous_workers: dict[str, dict[str, Any]] = {}  # worker_id -> worker info
+        self._active_autonomous_count = 0
         
         # Initialize with fallback state
         self._initialize_fallback_state()
@@ -287,6 +325,9 @@ class UIContextProjector:
         
         # Track brain execution events for request-level status
         self._track_brain_execution(payload)
+        
+        # Track autonomous execution events for autonomous UI state
+        self._track_autonomous_execution(payload)
         
         try:
             self._recompute_and_publish(payload)
@@ -368,6 +409,123 @@ class UIContextProjector:
             if brain_response.synthesis_goal_id == result.goal_id:
                 self._brain_goals[result.goal_id]['is_synthesis'] = True
     
+    def _track_autonomous_execution(self, payload: Any) -> None:
+        """Track autonomous execution events for UI state."""
+        source_id = getattr(payload, 'source_id', None) or getattr(payload, 'event_type', None)
+        if not source_id:
+            return
+        
+        # Mission events
+        if source_id == 'mission.created':
+            mission_id = getattr(payload, 'mission_id', None)
+            if mission_id:
+                self._autonomous_missions[mission_id] = {
+                    'goal': getattr(payload, 'goal', ''),
+                    'status': 'created',
+                    'priority': getattr(payload, 'priority', 0),
+                    'progress': 0.0,
+                }
+                self._active_autonomous_count += 1
+        
+        elif source_id == 'mission.started':
+            mission_id = getattr(payload, 'mission_id', None)
+            if mission_id and mission_id in self._autonomous_missions:
+                self._autonomous_missions[mission_id]['status'] = 'running'
+        
+        elif source_id == 'mission.progress':
+            mission_id = getattr(payload, 'mission_id', None)
+            progress = getattr(payload, 'progress', 0.0)
+            if mission_id and mission_id in self._autonomous_missions:
+                self._autonomous_missions[mission_id]['progress'] = progress
+        
+        elif source_id in ('mission.completed', 'mission.failed', 'mission.cancelled'):
+            mission_id = getattr(payload, 'mission_id', None)
+            if mission_id and mission_id in self._autonomous_missions:
+                self._autonomous_missions[mission_id]['status'] = source_id.split('.')[-1]
+                self._active_autonomous_count = max(0, self._active_autonomous_count - 1)
+        
+        # Task events
+        elif source_id == 'task.created':
+            task_id = getattr(payload, 'task_id', None)
+            if task_id:
+                self._autonomous_tasks[task_id] = {
+                    'mission_id': getattr(payload, 'mission_id', ''),
+                    'name': getattr(payload, 'name', ''),
+                    'status': 'created',
+                    'progress': 0.0,
+                }
+                self._active_autonomous_count += 1
+        
+        elif source_id == 'task.started':
+            task_id = getattr(payload, 'task_id', None)
+            if task_id and task_id in self._autonomous_tasks:
+                self._autonomous_tasks[task_id]['status'] = 'running'
+        
+        elif source_id == 'task.progress':
+            task_id = getattr(payload, 'task_id', None)
+            progress = getattr(payload, 'progress', 0.0)
+            if task_id and task_id in self._autonomous_tasks:
+                self._autonomous_tasks[task_id]['progress'] = progress
+        
+        elif source_id in ('task.completed', 'task.failed', 'task.cancelled'):
+            task_id = getattr(payload, 'task_id', None)
+            if task_id and task_id in self._autonomous_tasks:
+                self._autonomous_tasks[task_id]['status'] = source_id.split('.')[-1]
+                self._active_autonomous_count = max(0, self._active_autonomous_count - 1)
+        
+        # Agent events
+        elif source_id == 'agent.spawned':
+            agent_id = getattr(payload, 'agent_id', None)
+            if agent_id:
+                self._autonomous_agents[agent_id] = {
+                    'mission_id': getattr(payload, 'mission_id', ''),
+                    'task_id': getattr(payload, 'task_id', ''),
+                    'status': 'spawned',
+                }
+        
+        elif source_id == 'agent.started':
+            agent_id = getattr(payload, 'agent_id', None)
+            if agent_id and agent_id in self._autonomous_agents:
+                self._autonomous_agents[agent_id]['status'] = 'running'
+        
+        elif source_id in ('agent.completed', 'agent.failed'):
+            agent_id = getattr(payload, 'agent_id', None)
+            if agent_id and agent_id in self._autonomous_agents:
+                self._autonomous_agents[agent_id]['status'] = source_id.split('.')[-1]
+        
+        # Worker events
+        elif source_id == 'worker.spawned':
+            worker_id = getattr(payload, 'worker_id', None)
+            if worker_id:
+                self._autonomous_workers[worker_id] = {
+                    'task_id': getattr(payload, 'task_id', ''),
+                    'status': 'spawned',
+                }
+        
+        elif source_id == 'worker.started':
+            worker_id = getattr(payload, 'worker_id', None)
+            if worker_id and worker_id in self._autonomous_workers:
+                self._autonomous_workers[worker_id]['status'] = 'running'
+        
+        elif source_id == 'worker.heartbeat':
+            worker_id = getattr(payload, 'worker_id', None)
+            progress = getattr(payload, 'progress', None)
+            if worker_id and worker_id in self._autonomous_workers:
+                self._autonomous_workers[worker_id]['last_heartbeat'] = True
+                if progress is not None:
+                    self._autonomous_workers[worker_id]['progress'] = progress
+        
+        elif source_id in ('worker.failed', 'worker.cancelled'):
+            worker_id = getattr(payload, 'worker_id', None)
+            if worker_id and worker_id in self._autonomous_workers:
+                self._autonomous_workers[worker_id]['status'] = source_id.split('.')[-1]
+        
+        # Checkpoint/Recovery events (for debugging/visibility)
+        elif source_id in ('checkpoint.created', 'checkpoint.restored',
+                          'recovery.started', 'recovery.completed', 'recovery.failed'):
+            # These are informational - could add to a log if needed
+            pass
+
     def _recompute_and_publish(self, source_event: Any = None) -> None:
         """Recompute semantic state and publish if changed."""
         new_state = self._compute_semantic_state(source_event)
@@ -542,15 +700,21 @@ class UIContextProjector:
         
         Resolution priority (highest to lowest):
         1. Explicit active capability/task (strongest evidence)
-        2. Active workflow execution
-        3. Runtime ContextManager context
-        4. Interaction state
-        5. Fallback
+        2. Active autonomous execution (Phase 1)
+        3. Active workflow execution
+        4. Runtime ContextManager context
+        5. Interaction state
+        6. Fallback
         """
         # Try to resolve from active task (highest priority)
         task_candidate = self._resolve_from_active_task()
         if task_candidate is not None:
             return self._build_state_from_candidate(task_candidate, source_event)
+        
+        # Try to resolve from autonomous execution (Phase 1)
+        autonomous_candidate = self._resolve_from_autonomous()
+        if autonomous_candidate is not None:
+            return self._build_state_from_candidate(autonomous_candidate, source_event)
         
         # Try to resolve from active workflow
         workflow_candidate = self._resolve_from_active_workflow()
@@ -703,7 +867,7 @@ class UIContextProjector:
             confidence=confidence,
             source=ContextSource.TASK,
             focus=focus,
-            surfaces=surfaces,
+surfaces=surfaces,
             metadata=metadata,
             attention=attention,
             urgency=urgency,
@@ -711,6 +875,97 @@ class UIContextProjector:
             # but we can pre-compute some if needed
         )
     
+    def _resolve_from_autonomous(self) -> _ContextCandidate | None:
+        """Resolve semantic context from autonomous execution state (Phase 1)."""
+        if self._active_autonomous_count == 0:
+            return None
+        
+        # Find the most recent active autonomous mission/task
+        # Priority: running missions > running tasks > waiting tasks
+        
+        # Check for running missions first
+        running_missions = [
+            (mid, info) for mid, info in self._autonomous_missions.items()
+            if info.get('status') == 'running'
+        ]
+        
+        if running_missions:
+            # Use the most recent running mission
+            mission_id, mission_info = max(running_missions, key=lambda x: x[1].get('progress', 0))
+            
+            # Find associated tasks
+            mission_tasks = [
+                (tid, info) for tid, info in self._autonomous_tasks.items()
+                if info.get('mission_id') == mission_id
+            ]
+            
+            if mission_tasks:
+                # Use the most relevant task
+                task_id, task_info = max(mission_tasks, key=lambda x: x[1].get('progress', 0))
+                
+                capability_id = task_info.get('capability_id')
+                if capability_id:
+                    capability_def = self._capability_registry.get(capability_id) if self._capability_registry.contains(capability_id) else None
+                    
+                    context_name = self._capability_id_to_semantic_context(capability_id, capability_def)
+                    surfaces = self._build_surfaces_for_context(context_name)
+                    
+                    metadata = MappingProxyType({
+                        'autonomous': True,
+                        'mission_id': mission_id,
+                        'task_id': task_id,
+                        'mission_goal': mission_info.get('goal', ''),
+                        'mission_progress': mission_info.get('progress', 0.0),
+                        'task_progress': task_info.get('progress', 0.0),
+                    })
+                    
+                    return _ContextCandidate(
+                        context=context_name,
+                        confidence=0.9,
+                        source=ContextSource.TASK,
+                        focus=self._infer_focus_from_capability(capability_id, capability_def),
+                        surfaces=surfaces,
+                        metadata=metadata,
+                        attention=AttentionLevel.PRIMARY,
+                        urgency=UrgencyLevel.ELEVATED,
+                    )
+        
+        # Check for running tasks not associated with missions
+        running_tasks = [
+            (tid, info) for tid, info in self._autonomous_tasks.items()
+            if info.get('status') == 'running'
+        ]
+        
+        if running_tasks:
+            task_id, task_info = max(running_tasks, key=lambda x: x[1].get('progress', 0))
+            
+            capability_id = task_info.get('capability_id')
+            if capability_id:
+                capability_def = self._capability_registry.get(capability_id) if self._capability_registry.contains(capability_id) else None
+                
+                context_name = self._capability_id_to_semantic_context(capability_id, capability_def)
+                surfaces = self._build_surfaces_for_context(context_name)
+                
+                metadata = MappingProxyType({
+                    'autonomous': True,
+                    'task_id': task_id,
+                    'task_name': task_info.get('name', ''),
+                    'task_progress': task_info.get('progress', 0.0),
+                })
+                
+                return _ContextCandidate(
+                    context=context_name,
+                    confidence=0.85,
+                    source=ContextSource.TASK,
+                    focus=self._infer_focus_from_capability(capability_id, capability_def),
+                    surfaces=surfaces,
+                    metadata=metadata,
+                    attention=AttentionLevel.PRIMARY,
+                    urgency=UrgencyLevel.NORMAL,
+                )
+        
+        return None
+
     def _resolve_from_active_workflow(self) -> _ContextCandidate | None:
         """Resolve semantic context from active workflow executions."""
         # WorkflowEngine doesn't expose a simple "get active executions" method
@@ -1967,6 +2222,16 @@ class UIContextProjector:
         
         # Default
         return "system", FocusArea.GENERAL, 0.5
+    
+    def _capability_id_to_semantic_context(self, capability_id: str, capability_def: Any | None) -> str:
+        """Map capability ID to semantic context name."""
+        context, _, _ = self._infer_context_from_capability(capability_id, capability_def)
+        return context
+    
+    def _infer_focus_from_capability(self, capability_id: str, capability_def: Any | None) -> FocusArea:
+        """Map capability ID to FocusArea."""
+        _, focus, _ = self._infer_context_from_capability(capability_id, capability_def)
+        return focus
     
     def _context_type_to_semantic(self, context_type: str) -> str:
         """Map ContextType to semantic context name."""
