@@ -46,7 +46,7 @@ from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.resource_manager.resource_manager import ResourceManager
 from parika.core.policy_engine.policy_engine import PolicyEngine
 
-# Phase 2 imports
+# Autonomous runtime extension imports
 from parika.core.skill_system.skill_registry import SkillRegistry
 from parika.core.skill_system.skill_catalog import SkillCatalog
 from parika.core.skill_system.skill_loader import SkillLoader
@@ -61,10 +61,10 @@ from parika.core.agent_communication.message_bus import MessageBus
 from parika.core.agent_communication.message_repository import AgentMessageRepository
 from parika.core.multi_agent.mission_coordinator import MissionCoordinator
 from parika.core.multi_agent.agent_selector import AgentSelector
-from parika.core.configuration.phase2_config import Phase2Settings, load_phase2_settings
+from parika.core.configuration.autonomous_config import AutonomousSettings, load_autonomous_settings
 from parika.core.configuration.configuration import Configuration
 
-# Phase 2 - wait manager (lazy import to avoid circular dependency)
+# Wait manager (lazy import to avoid circular dependency)
 try:
     from parika.core.autonomous_waiting.wait_manager import WaitManager
 except ImportError:
@@ -89,7 +89,7 @@ class AutonomousRuntime:
     world_state_manager: WorldStateManager
     executor: "AutonomousExecutor"
     
-    # Phase 2 services
+    # Autonomous extension services
     skill_registry: SkillRegistry
     skill_catalog: SkillCatalog
     skill_loader: SkillLoader
@@ -157,10 +157,10 @@ def build_autonomous_runtime(
     """
     autonomous_logger = logger.get_logger("parika.autonomous")
     
-    # Load Phase 2 configuration
+    # Load autonomous runtime configuration
     configuration = Configuration()
     configuration.load()
-    phase2_settings = load_phase2_settings(configuration)
+    autonomous_settings = load_autonomous_settings(configuration)
     
     # Create repositories
     mission_repository = MissionRepository(pool_manager, logger)
@@ -242,11 +242,11 @@ def build_autonomous_runtime(
         logger=logger,
     )
     
-    # Phase 2: Skill System
+    # Skill System
     security_scanner = SkillSecurityScanner(
         event_bus=event_bus,
         logger=logger,
-        strict_mode=phase2_settings.skills.strict_security_mode,
+        strict_mode=autonomous_settings.skills.strict_security_mode,
     )
     
     skill_registry = SkillRegistry(
@@ -272,7 +272,7 @@ def build_autonomous_runtime(
         logger=logger,
     )
     
-    # Phase 2: Implementation Registry
+    # Implementation Registry
     implementation_registry = ImplementationRegistry(
         capability_registry=capability_resolver._capability_registry,
         tool_manager=tool_manager,
@@ -294,7 +294,7 @@ def build_autonomous_runtime(
         logger=logger,
     )
     
-    # Phase 2: Runtime Registry
+    # Runtime Registry
     runtime_registry = RuntimeRegistry(
         event_bus=event_bus,
         logger=logger,
@@ -306,8 +306,8 @@ def build_autonomous_runtime(
         runtime_id="native",
         name="PARIKA Native Runtime",
         config=MappingProxyType({}),
-        resource_limits=MappingProxyType({"max_concurrent_agents": phase2_settings.runtime.native_max_concurrent_agents}),
-        enabled=phase2_settings.runtime.native_enabled,
+        resource_limits=MappingProxyType({"max_concurrent_agents": autonomous_settings.runtime.native_max_concurrent_agents}),
+        enabled=autonomous_settings.runtime.native_enabled,
     )
     
     native_runtime = NativeRuntimeAdapter(
@@ -324,13 +324,13 @@ def build_autonomous_runtime(
     runtime_registry.register(native_runtime, native_config)
     
     # Register Hermes Runtime if enabled
-    if phase2_settings.hermes.enabled and phase2_settings.runtime.hermes_enabled:
+    if autonomous_settings.hermes.enabled and autonomous_settings.runtime.hermes_enabled:
         hermes_config = RuntimeConfig(
             runtime_type=RuntimeType.HERMES,
             runtime_id="hermes",
             name="Hermes Runtime",
             config=MappingProxyType({}),
-            resource_limits=MappingProxyType({"max_concurrent_agents": phase2_settings.hermes.max_concurrent_agents}),
+            resource_limits=MappingProxyType({"max_concurrent_agents": autonomous_settings.hermes.max_concurrent_agents}),
             enabled=True,
         )
         
@@ -346,12 +346,12 @@ def build_autonomous_runtime(
             resource_manager=resource_manager,
             event_bus=event_bus,
             logger=logger,
-            hermes_binary=phase2_settings.hermes.binary_path,
-            hermes_config_dir=phase2_settings.hermes.config_dir,
+            hermes_binary=autonomous_settings.hermes.binary_path,
+            hermes_config_dir=autonomous_settings.hermes.config_dir,
         )
         runtime_registry.register(hermes_runtime, hermes_config)
     
-    # Phase 2: Agent Communication
+    # Agent Communication
     message_bus = MessageBus(
         repository=message_repository,
         agent_supervisor=agent_supervisor,
@@ -359,7 +359,7 @@ def build_autonomous_runtime(
         logger=logger,
     )
     
-    # Phase 2: Wait Manager
+    # Wait Manager
     wait_manager = WaitManager(
         task_manager=task_manager,
         message_bus=message_bus,
@@ -367,7 +367,7 @@ def build_autonomous_runtime(
         logger=logger,
     )
     
-    # Phase 2: Multi-Agent Coordination
+    # Multi-Agent Coordination
     mission_coordinator = MissionCoordinator(
         mission_manager=mission_manager,
         task_manager=task_manager,
@@ -413,7 +413,7 @@ def build_autonomous_runtime(
         agent_supervisor=agent_supervisor,
         event_bus=event_bus,
         logger=logger,
-        # Phase 2 services
+        # Autonomous extension services
         skill_loader=skill_loader,
         skill_catalog=skill_catalog,
         implementation_resolver=implementation_resolver,
@@ -427,10 +427,10 @@ def build_autonomous_runtime(
     native_runtime._executor = executor
     
     # Update Hermes Runtime with authorization boundary
-    if phase2_settings.hermes.enabled and phase2_settings.runtime.hermes_enabled:
+    if autonomous_settings.hermes.enabled and autonomous_settings.runtime.hermes_enabled:
         hermes_runtime._authorization_boundary = authorization_boundary
     
-    # Update WorldStateManager with Phase 2 services
+    # Update WorldStateManager with autonomous extension services
     world_state_manager._skill_registry = skill_registry
     world_state_manager._runtime_registry = runtime_registry
     world_state_manager._wait_manager = wait_manager
@@ -480,7 +480,7 @@ def build_autonomous_runtime(
         service_container.register(AutonomousExecutor, executor)
         service_container.register(AutonomousAuthorizationBoundary, authorization_boundary)
         service_container.register(BudgetEnforcer, budget_enforcer)
-        # Phase 2 services
+        # Autonomous extension services
         service_container.register(SkillRegistry, skill_registry)
         service_container.register(SkillCatalog, skill_catalog)
         service_container.register(SkillLoader, skill_loader)
@@ -513,11 +513,11 @@ def build_autonomous_runtime(
         pass
     
     # Initialize skill catalog (discover skills)
-    if phase2_settings.skills.auto_discover:
+    if autonomous_settings.skills.auto_discover:
         skill_catalog.initialize()
     
     # Start Hermes runtime if enabled
-    if phase2_settings.hermes.enabled and phase2_settings.runtime.hermes_enabled:
+    if autonomous_settings.hermes.enabled and autonomous_settings.runtime.hermes_enabled:
         import asyncio
         try:
             loop = asyncio.get_event_loop()

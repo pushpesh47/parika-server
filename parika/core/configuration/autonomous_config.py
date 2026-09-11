@@ -1,5 +1,5 @@
 """
-PARIKA Phase 2 Configuration
+PARIKA Autonomous Runtime Configuration
 
 Configuration settings for skills, runtimes, Hermes, and multi-agent features.
 """
@@ -7,6 +7,7 @@ Configuration settings for skills, runtimes, Hermes, and multi-agent features.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from parika.core.configuration.configuration import Configuration
 
@@ -84,8 +85,8 @@ class AutonomousWaitingSettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class Phase2Settings:
-    """Complete Phase 2 configuration."""
+class AutonomousSettings:
+    """Complete autonomous runtime configuration."""
     skills: SkillSettings = field(default_factory=SkillSettings)
     hermes: HermesSettings = field(default_factory=HermesSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
@@ -94,9 +95,9 @@ class Phase2Settings:
     autonomous_waiting: AutonomousWaitingSettings = field(default_factory=AutonomousWaitingSettings)
 
 
-def load_phase2_settings(configuration: Configuration) -> Phase2Settings:
+def load_autonomous_settings(configuration: Configuration) -> AutonomousSettings:
     """
-    Load Phase 2 settings from configuration.
+    Load autonomous runtime settings from configuration.
     """
     # Skills
     skills = SkillSettings(
@@ -164,7 +165,7 @@ def load_phase2_settings(configuration: Configuration) -> Phase2Settings:
         dependency_check_interval_seconds=int(configuration.get("autonomous_waiting.dependency_check_interval_seconds", 10)),
     )
 
-    return Phase2Settings(
+    return AutonomousSettings(
         skills=skills,
         hermes=hermes,
         runtime=runtime,
