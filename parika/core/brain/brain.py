@@ -48,8 +48,10 @@ reports no progress.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 import asyncio
+import re
 import time
 from dataclasses import asdict
 
@@ -91,6 +93,7 @@ from .context_engine import (
 )
 from .exceptions import ContextEngineUnavailableError, InvalidBrainRequestError
 from .goal_result import GoalResult
+from .exceptions import DependencyResolutionError
 
 if TYPE_CHECKING:
     from parika.core.agent_orchestrator.agent_orchestrator import AgentOrchestrator
@@ -378,6 +381,46 @@ class Brain:
             depends_on=step.depends_on,
         )
 
+    def _create_resolved_execution_request(
+        self,
+        step: PlanStep,
+        goal: Goal,
+        resolved_inputs: Mapping[str, Any],
+    ) -> PlanStep:
+        """
+        Create a modified PlanStep for a non-synthesis goal with resolved inputs.
+
+        Replaces the backend request's arguments with the resolved inputs.
+        """
+        from parika.core.capability_executor.request import CapabilityExecutionRequest
+        from parika.core.tool_manager.request import ToolRequest
+        
+        execution_request = step.execution_request
+        backend_request = execution_request.backend_request
+        
+        if isinstance(backend_request, ToolRequest):
+            # For tool goals, replace arguments with resolved inputs
+            new_backend_request = ToolRequest(
+                arguments=dict(resolved_inputs),
+                metadata=backend_request.metadata,
+            )
+        else:
+            # For provider goals, we don't modify (they use different injection)
+            new_backend_request = backend_request
+        
+        new_execution_request = CapabilityExecutionRequest(
+            resolution=execution_request.resolution,
+            target=execution_request.target,
+            backend_request=new_backend_request,
+            metadata=execution_request.metadata,
+        )
+        
+        return PlanStep(
+            goal_id=step.goal_id,
+            execution_request=new_execution_request,
+            depends_on=step.depends_on,
+        )
+
     def _format_dependency_results_for_synthesis(self, dep_results: dict[str, Any]) -> str:
         """Format dependency results into a human-readable summary for the synthesis model."""
         lines = []
@@ -407,6 +450,271 @@ class Brain:
             if "result" in result:
                 return str(result["result"])
             return str(result)
+
+        if isinstance(result, (list, tuple)):
+            summaries = []
+            for item in result:
+                if isinstance(item, dict):
+                    parts = []
+
+                    if item.get("title"):
+                        parts.append(f"title: {item['title']}")
+
+                    if item.get("snippet"):
+                        parts.append(f"snippet: {item['snippet']}")
+
+                    if item.get("url"):
+                        parts.append(f"url: {item['url']}")
+
+                    if parts:
+                        summaries.append(" | ".join(parts))
+                    else:
+                        summaries.append(str(item))
+                else:
+                    summaries.append(str(item))
+
+            return "\n".join(summaries)
+
+        return str(result)
+
+    # ------------------------------------------------------------------
+    # Dependency Reference Resolution
+    # ------------------------------------------------------------------
+
+    _DEP_REF_PATTERN = re.compile(r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\.result([^}]*)\}\}')
+
+    def _resolve_dependency_references(
+        self,
+        goal_id: str,
+        inputs: Mapping[str, Any],
+        deps: dict[str, set[str]],
+        results: dict[str, GoalResult],
+    ) -> dict[str, Any]:
+        """
+        Resolve {{goal_id.result.path}} style references in goal inputs.
+
+        Supports:
+        - {{goal_0.result.path}} -> scalar value
+        - {{goal_0.result.matches[0]}} -> indexed list access
+        - {{goal_0.result.some.nested.path}} -> nested dict access
+
+        Only resolves references to goals that are declared dependencies of the current goal.
+
+        Raises:
+            DependencyResolutionError: If reference cannot be resolved.
+        """
+        # Build a map of available dependency results for declared dependencies
+        declared_deps = deps.get(goal_id, set())
+        dep_results_map = {}
+        for dep_id in declared_deps:
+            if dep_id not in results:
+                raise DependencyResolutionError(
+                    f"Goal '{goal_id}' depends on '{dep_id}' but no result is available."
+                )
+            result = results[dep_id]
+            if not result.succeeded:
+                raise DependencyResolutionError(
+                    f"Goal '{goal_id}' depends on '{dep_id}' which did not succeed "
+                    f"(status: {'skipped' if result.skipped else 'failed'})."
+                )
+            # Extract actual tool result (same logic as _build_dependency_results)
+            tool_result = None
+            if result.response is not None:
+                tool_response = result.response.outputs.get("result")
+                if tool_response is not None and hasattr(tool_response, "result"):
+                    tool_result = tool_response.result
+                else:
+                    tool_result = tool_response
+            dep_results_map[dep_id] = tool_result
+
+        def resolve_value(value: Any) -> Any:
+            """Recursively resolve references in a value."""
+            if isinstance(value, str):
+                return self._resolve_string_references(value, goal_id, dep_results_map, declared_deps)
+            elif isinstance(value, Mapping):
+                return {k: resolve_value(v) for k, v in value.items()}
+            elif isinstance(value, (list, tuple)):
+                return [resolve_value(item) for item in value]
+            else:
+                return value
+
+        return resolve_value(inputs)
+
+    def _resolve_string_references(
+        self,
+        value: str,
+        goal_id: str,
+        dep_results_map: dict[str, Any],
+        declared_deps: set[str],
+    ) -> Any:
+        """
+        Resolve all {{...}} references in a string value.
+
+        If the entire string is a single reference that resolves to a non-string,
+        return the resolved value directly (preserving type).
+        Otherwise, substitute references within the string.
+        """
+        # Check for unmatched braces - detect {{ without matching }}
+        open_braces = value.count('{{')
+        close_braces = value.count('}}')
+        if open_braces != close_braces:
+            raise DependencyResolutionError(
+                f"Goal '{goal_id}': Unmatched braces in input '{value}'. "
+                f"Every '{{{{' must have a matching '}}}}'."
+            )
+        
+        # Find all references in the string
+        matches = list(self._DEP_REF_PATTERN.finditer(value))
+        
+        if not matches:
+            # No valid references found, but we already validated brace matching
+            return value
+
+        # If the entire string is a single reference, return the resolved value directly
+        if len(matches) == 1 and matches[0].span() == (0, len(value)):
+            return self._resolve_single_reference(matches[0], goal_id, dep_results_map, declared_deps)
+
+        # Otherwise, substitute each reference in the string
+        result_parts = []
+        last_end = 0
+        for match in matches:
+            start, end = match.span()
+            result_parts.append(value[last_end:start])
+            resolved = self._resolve_single_reference(match, goal_id, dep_results_map, declared_deps)
+            result_parts.append(str(resolved))
+            last_end = end
+        result_parts.append(value[last_end:])
+        return "".join(result_parts)
+
+    def _resolve_single_reference(
+        self,
+        match: re.Match,
+        goal_id: str,
+        dep_results_map: dict[str, Any],
+        declared_deps: set[str],
+    ) -> Any:
+        """Resolve a single {{goal_id.result...}} reference."""
+        full_match = match.group(0)
+        dep_goal_id = match.group(1)
+        path_str = match.group(2)  # This is the path part like ".path" or ".matches[0]"
+        
+        # path_str includes the leading dot, remove it
+        if path_str.startswith('.'):
+            path_str = path_str[1:]
+        
+        if not path_str:
+            raise DependencyResolutionError(
+                f"Goal '{goal_id}': Empty dependency reference '{full_match}'. "
+                f"Must specify a result field, e.g. '{{{{{dep_goal_id}.result.path}}}}'."
+            )
+        
+        # Check if the dependency goal is declared
+        if dep_goal_id not in declared_deps:
+            raise DependencyResolutionError(
+                f"Goal '{goal_id}': Reference to undeclared dependency '{dep_goal_id}' "
+                f"in '{full_match}'. Declared dependencies: {sorted(declared_deps)}."
+            )
+        
+        # Check if the dependency goal has a result
+        if dep_goal_id not in dep_results_map:
+            raise DependencyResolutionError(
+                f"Goal '{goal_id}': Dependency '{dep_goal_id}' has no result available."
+            )
+        
+        dep_result = dep_results_map[dep_goal_id]
+        if dep_result is None:
+            raise DependencyResolutionError(
+                f"Goal '{goal_id}': Dependency '{dep_goal_id}' has no result data."
+            )
+        
+        # Parse the path (supports .field and [index] notation)
+        return self._extract_value_by_path(dep_result, path_str, dep_goal_id, full_match, goal_id)
+
+    def _extract_value_by_path(
+        self,
+        data: Any,
+        path: str,
+        dep_goal_id: str,
+        full_match: str,
+        goal_id: str,
+    ) -> Any:
+        """Extract a value from data using a path like '.field' or '.field[0].subfield'."""
+        if not path:
+            return data
+        
+        current = data
+        # Split by . but respect brackets
+        # Simple approach: replace [ with .[ then split by .
+        # But we need to handle nested brackets properly
+        # Let's use a simple state machine
+        
+        parts = []
+        current_part = ""
+        in_bracket = False
+        
+        for char in path:
+            if char == '[' and not in_bracket:
+                if current_part:
+                    parts.append(current_part)
+                    current_part = ""
+                in_bracket = True
+                current_part += char
+            elif char == ']' and in_bracket:
+                in_bracket = False
+                current_part += char
+                parts.append(current_part)
+                current_part = ""
+            elif char == '.' and not in_bracket:
+                if current_part:
+                    parts.append(current_part)
+                    current_part = ""
+            else:
+                current_part += char
+        
+        if current_part:
+            parts.append(current_part)
+        
+        # Remove leading empty part if path starts with .
+        if parts and parts[0] == '':
+            parts = parts[1:]
+        
+        for part in parts:
+            if part.startswith('[') and part.endswith(']'):
+                # Index access
+                index_str = part[1:-1]
+                try:
+                    index = int(index_str)
+                except ValueError:
+                    raise DependencyResolutionError(
+                        f"Goal '{goal_id}': Invalid index '{index_str}' in reference '{full_match}'. "
+                        f"Index must be an integer."
+                    )
+                if not isinstance(current, (list, tuple)):
+                    raise DependencyResolutionError(
+                        f"Goal '{goal_id}': Cannot index into non-list value in reference '{full_match}'. "
+                        f"Expected list at path '{path}', got {type(current).__name__}."
+                    )
+                if index < 0 or index >= len(current):
+                    raise DependencyResolutionError(
+                        f"Goal '{goal_id}': Index {index} out of bounds in reference '{full_match}'. "
+                        f"List has {len(current)} elements."
+                    )
+                current = current[index]
+            else:
+                # Field access
+                if not isinstance(current, dict):
+                    raise DependencyResolutionError(
+                        f"Goal '{goal_id}': Cannot access field '{part}' on non-dict value in reference '{full_match}'. "
+                        f"Expected dict at path, got {type(current).__name__}."
+                    )
+                if part not in current:
+                    raise DependencyResolutionError(
+                        f"Goal '{goal_id}': Field '{part}' not found in dependency '{dep_goal_id}' result "
+                        f"for reference '{full_match}'. Available fields: {sorted(current.keys())}."
+                    )
+                current = current[part]
+        
+        return current
 
         if isinstance(result, (list, tuple)):
             summaries = []
@@ -776,6 +1084,34 @@ class Brain:
                 
                 goal = goals_by_id[goal_id]
                 step = steps_by_goal[goal_id]
+                
+                # Resolve dependency references in inputs for non-synthesis goals
+                # Synthesis goals handle dependency injection via _create_synthesis_execution_request
+                # We always attempt resolution for non-synthesis goals to catch undeclared references
+                if not self._is_synthesis_goal(goal):
+                    try:
+                        resolved_inputs = self._resolve_dependency_references(
+                            goal_id, goal.inputs, deps, results
+                        )
+                        # Create a modified PlanStep with resolved inputs
+                        step = self._create_resolved_execution_request(step, goal, resolved_inputs)
+                    except DependencyResolutionError as ex:
+                        # Dependency resolution failed - mark goal as failed
+                        self._logger.error(
+                            "Dependency resolution failed for goal '%s': %s",
+                            goal_id, ex
+                        )
+                        results[goal_id] = GoalResult(
+                            goal_id=goal_id,
+                            capability_id=goal.capability_id,
+                            task_id=None,
+                            status=None,
+                            failure=ex,
+                            depends_on=tuple(step.depends_on),
+                        )
+                        completed_goal_ids.add(goal_id)
+                        failed_goal_ids.add(goal_id)
+                        continue
                 
                 # Check if this is a synthesis goal that needs dependency results
                 if self._is_synthesis_goal(goal) and deps[goal_id]:

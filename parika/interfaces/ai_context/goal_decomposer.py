@@ -93,6 +93,67 @@ def _get_all_enabled_capabilities(
     )
 
 
+def _build_capability_schemas(
+    capability_registry: CapabilityRegistry,
+    available_capabilities: frozenset[str],
+) -> dict[str, dict[str, Any]]:
+    """
+    Build a mapping of capability_id -> parameter schema for all available capabilities.
+
+    Extracts the existing `metadata["tool_affordance"]["parameters"]` from each
+    CapabilityDefinition. This is the same source of truth used by
+    `tool_context.py` when building ToolSpec for native tool calling.
+    """
+    schemas: dict[str, dict[str, Any]] = {}
+
+    for cap_id in available_capabilities:
+        try:
+            definition = capability_registry.get(cap_id)
+        except Exception:
+            continue
+
+        affordance = definition.metadata.get("tool_affordance")
+        if not isinstance(affordance, dict):
+            continue
+
+        parameters = affordance.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+
+        schemas[cap_id] = parameters
+
+    return schemas
+
+
+def _format_capability_schemas_for_prompt(
+    schemas: dict[str, dict[str, Any]],
+) -> str:
+    """Format capability parameter schemas for inclusion in the decomposition prompt."""
+    if not schemas:
+        return "  (no parameter schemas available)"
+
+    lines = []
+    for cap_id, schema in sorted(schemas.items()):
+        lines.append(f"  {cap_id}:")
+        schema_type = schema.get("type", "object")
+        lines.append(f"    type: {schema_type}")
+
+        properties = schema.get("properties", {})
+        if properties:
+            lines.append(f"    properties:")
+            for prop_name, prop_schema in sorted(properties.items()):
+                prop_type = prop_schema.get("type", "any")
+                prop_desc = prop_schema.get("description", "")
+                desc_str = f" - {prop_desc}" if prop_desc else ""
+                lines.append(f"      {prop_name}: {prop_type}{desc_str}")
+
+        required = schema.get("required", [])
+        if required:
+            lines.append(f"    required: {', '.join(sorted(required))}")
+
+    return "\n".join(lines)
+
+
 _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE = """\
 You are PARIKA's Goal Decomposer. Analyze the user's request and decompose it into semantic execution goals ending with one final user-facing response.
 
@@ -114,6 +175,16 @@ Rules:
 8. CRITICAL: Every request MUST produce exactly one final chat.respond goal. chat.respond MUST be the last goal and MUST be the final user-facing response/synthesis step.
 9. The final chat.respond goal MUST depend on ALL preceding goals. If there are no preceding goals, chat.respond has no dependencies.
 10. Terminal capabilities (image.generate, video.generate, voice.text_to_speech, media actions, filesystem.write, coding.execute_task, etc.) perform the requested action, but MUST still be followed by chat.respond so PARIKA can report the result to the user.
+11. DEPENDENCY REFERENCE SYNTAX: When goal B depends on goal A and needs a value from goal A's result, goal B MUST use the formal reference syntax in its inputs:
+    - Use {{goal_A.result.<field>}} to reference a field from goal A's result
+    - Use {{goal_A.result.matches[0]}} to reference the first element of a list
+    - Use {{goal_A.result.some.nested.path}} for nested fields
+    - Do NOT use natural language placeholders like "<Parika project directory identified by goal_0>"
+    - The referenced goal ID MUST match the dependency declared in depends_on
+    - The referenced field MUST exist in the dependency's actual result structure
+
+Capability parameter schemas:
+{capability_schemas}
 
 Respond with ONLY a JSON object matching this schema:
 {{
@@ -126,7 +197,14 @@ Respond with ONLY a JSON object matching this schema:
   ]
 }}
 
-Available capabilities (enabled): {available_capabilities}
+Example with dependency reference:
+{{
+  "goals": [
+    {{"id": "goal_0", "capability_id": "filesystem.search", "inputs": {{"path": "/mnt/dev/languages/python/parika", "pattern": "parika*"}}, "depends_on": []}},
+    {{"id": "goal_1", "capability_id": "filesystem.list", "inputs": {{"path": "{{goal_0.result.path}}"}}, "depends_on": ["goal_0"]}},
+    {{"id": "goal_2", "capability_id": "chat.respond", "inputs": {{"message": "List the PARIKA project directory"}}, "depends_on": ["goal_0", "goal_1"]}}
+  ]
+}}
 
 User request: {user_message}
 """
@@ -160,11 +238,23 @@ def _validate_decomposition(
     A valid decomposition:
     - MUST contain exactly one chat.respond goal
     - chat.respond MUST be the final goal
-    - chat.respond MUST depend on ALL preceding goals
+    - chat.respond MUST depend on ALL preceding NON-TERMINAL goals
     - A simple request with only chat.respond is valid with no dependencies
+    - EXCEPTION: A single terminal goal (marked with decomposition_terminal=True) is valid without chat.respond
     """
     if not goals:
         raise DecompositionError("Decomposition produced no goals")
+
+    # Check for single terminal goal exception
+    if len(goals) == 1:
+        goal = goals[0]
+        try:
+            definition = capability_registry.get(goal.capability_id)
+            if definition.metadata.get("decomposition_terminal") is True:
+                # Single terminal goal is valid without chat.respond
+                return
+        except Exception:
+            pass
 
     chat_respond_goals = [
         goal for goal in goals
@@ -184,7 +274,18 @@ def _validate_decomposition(
             f"chat.respond goal {synthesis_goal.id} must be the final goal"
         )
 
-    expected_dependencies = {goal.id for goal in goals[:-1]}
+    # Determine which goals are terminal (don't produce data for synthesis)
+    terminal_goal_ids = set()
+    for goal in goals[:-1]:  # Exclude the final chat.respond
+        try:
+            definition = capability_registry.get(goal.capability_id)
+            if definition.metadata.get("decomposition_terminal") is True:
+                terminal_goal_ids.add(goal.id)
+        except Exception:
+            pass
+
+    # chat.respond must depend on all non-terminal preceding goals
+    expected_dependencies = {goal.id for goal in goals[:-1] if goal.id not in terminal_goal_ids}
     actual_dependencies = set(synthesis_goal.depends_on)
 
     missing_dependencies = expected_dependencies - actual_dependencies
@@ -253,9 +354,15 @@ class GoalDecomposer:
                 self._capability_registry
             )
 
+        # Build capability parameter schemas from the registry's tool affordance metadata
+        capability_schemas = _build_capability_schemas(
+            self._capability_registry, available_capabilities
+        )
+        capability_schemas_text = _format_capability_schemas_for_prompt(capability_schemas)
+
         # Build the decomposition prompt
         system_prompt = _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE.format(
-            available_capabilities=sorted(available_capabilities),
+            capability_schemas=capability_schemas_text,
             user_message=user_message,
         )
 

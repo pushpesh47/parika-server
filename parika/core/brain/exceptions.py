@@ -35,3 +35,15 @@ class ContextEngineUnavailableError(BrainError):
     time). See
     docs/architecture/Intelligence_Foundation_Design.md section 7.
     """
+
+
+class DependencyResolutionError(BrainError):
+    """
+    Raised when a dependency reference in a goal's inputs cannot be resolved.
+    This occurs when:
+    - The referenced goal does not exist
+    - The referenced goal is not a declared dependency
+    - The dependency result is unavailable
+    - The referenced result field/path does not exist
+    - The reference syntax is malformed
+    """

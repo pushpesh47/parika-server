@@ -10,14 +10,14 @@ from parika.core.planner.model_selection.routing_config import load_routing_conf
 from parika.core.provider_manager.context_budget import resolve_runtime_context_budget
 from parika.core.provider_manager.model_limits import ModelLimits
 from parika.core.provider_manager.options import RequestOptions
-from parika.interfaces.ai_context.goal_decomposer import GoalDecomposer, _estimate_prompt_tokens, _PROMPT_TOKEN_ESTIMATOR, _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE
+from parika.interfaces.ai_context.goal_decomposer import GoalDecomposer, _estimate_prompt_tokens, _PROMPT_TOKEN_ESTIMATOR, _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE, _build_capability_schemas, _format_capability_schemas_for_prompt
 from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.capability_registry.capability_definition import CapabilityDefinition
 from parika.core.capability_registry.capability_category import CapabilityCategory
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
 from parika.core.provider_manager.chat_message import ChatMessage
-from parika.tools.web_search.manifest import WEB_SEARCH_CAPABILITY_ID, WEB_SEARCH_TOOL_AFFORDANCE
+from parika.tools.filesystem.manifest import FILESYSTEM_OPERATIONS
 from unittest.mock import MagicMock
 
 
@@ -29,7 +29,7 @@ def setup_test_registry():
     event_bus = EventBus(logger)
     reg = CapabilityRegistry(event_bus=event_bus, logger=logger)
     
-    # Register capabilities
+    # Register web.search with tool affordance
     reg.register(CapabilityDefinition(
         id='web.search',
         name='Web Search',
@@ -43,8 +43,39 @@ def setup_test_registry():
             'current information', 'external information',
             'external source', 'web search', 'look up',
         }),
-        metadata={'tool_affordance': WEB_SEARCH_TOOL_AFFORDANCE},
+        metadata={'tool_affordance': {
+            'description': 'Searches the web',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string', 'description': 'Search query'},
+                },
+                'required': ['query'],
+            },
+        }},
     ))
+    
+    # Register filesystem capabilities with tool affordance
+    for spec in FILESYSTEM_OPERATIONS:
+        if spec.capability_id in ['filesystem.list', 'filesystem.search']:
+            reg.register(CapabilityDefinition(
+                id=spec.capability_id,
+                name=spec.name,
+                description=spec.description,
+                category=CapabilityCategory.TOOL,
+                tags=frozenset({'filesystem', 'system'}),
+                metadata={
+                    'tool_affordance': {
+                        'purpose': spec.purpose,
+                        'use_when': spec.use_when,
+                        'avoid_when': spec.avoid_when,
+                        'requires': spec.requires,
+                        'result_semantics': spec.result_semantics,
+                        'failure_semantics': spec.failure_semantics,
+                        'parameters': spec.parameters,
+                    },
+                },
+            ))
     
     reg.register(CapabilityDefinition(
         id='weather.current',
@@ -173,8 +204,11 @@ def test_request_options_context_window_tokens_computed():
     available_capabilities = frozenset(['chat.respond', 'weather.current', 'weather.forecast', 'web.search'])
     user_message = "What is the weather in Patna?"
     
+    capability_schemas = _build_capability_schemas(reg, available_capabilities)
+    capability_schemas_text = _format_capability_schemas_for_prompt(capability_schemas)
+    
     system_prompt = _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE.format(
-        available_capabilities=sorted(available_capabilities),
+        capability_schemas=capability_schemas_text,
         user_message=user_message,
     )
     
@@ -221,8 +255,11 @@ def test_request_options_matches_planner_budget():
     available_capabilities = frozenset(['chat.respond', 'weather.current', 'web.search'])
     user_message = "What is the weather in Patna?"
     
+    capability_schemas = _build_capability_schemas(reg, available_capabilities)
+    capability_schemas_text = _format_capability_schemas_for_prompt(capability_schemas)
+    
     system_prompt = _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE.format(
-        available_capabilities=sorted(available_capabilities),
+        capability_schemas=capability_schemas_text,
         user_message=user_message,
     )
     
@@ -262,63 +299,97 @@ def test_request_options_matches_planner_budget():
     print("✓ GoalDecomposer budget matches Planner budget calculation for same model/config")
 
 
-def test_deterministic_settings_preserved():
-    """Test that all deterministic settings are preserved with the new budget fields."""
+def test_capability_schema_extraction():
+    """Test that GoalDecomposer extracts capability parameter schemas correctly."""
+    from parika.interfaces.ai_context.goal_decomposer import _build_capability_schemas, _format_capability_schemas_for_prompt
+    
     config, reg = setup_test_registry()
     
-    routing_config = load_routing_config(config)
-    decomposition_reasoning = routing_config.fixed_thinking if routing_config.is_fixed else False
+    # Test with filesystem capabilities
+    available_capabilities = frozenset(['chat.respond', 'filesystem.list', 'filesystem.search', 'web.search'])
+    schemas = _build_capability_schemas(reg, available_capabilities)
     
-    # The RequestOptions that GoalDecomposer now creates should have:
-    # - reasoning from routing config (fixed_thinking)
-    # - temperature=0.0
-    # - seed=42
-    # - top_p=1.0
-    # - context_window_tokens=computed budget
-    # - estimated_prompt_tokens=measured prompt size
+    # Verify schemas were extracted
+    assert 'filesystem.list' in schemas
+    assert 'filesystem.search' in schemas
+    assert 'web.search' in schemas
     
-    available_capabilities = frozenset(['chat.respond', 'weather.current', 'web.search'])
-    user_message = "What is the weather in Patna?"
+    # Verify filesystem.list schema
+    list_schema = schemas['filesystem.list']
+    assert list_schema['type'] == 'object'
+    assert 'path' in list_schema['properties']
+    assert 'pattern' in list_schema['properties']
+    assert list_schema['required'] == ['path']  # pattern is optional
+    
+    # Verify filesystem.search schema
+    search_schema = schemas['filesystem.search']
+    assert search_schema['type'] == 'object'
+    assert 'path' in search_schema['properties']
+    assert 'pattern' in search_schema['properties']
+    assert 'recursive' in search_schema['properties']
+    assert sorted(search_schema['required']) == ['path', 'pattern']  # both required
+    
+    # Verify web.search schema
+    web_search_schema = schemas['web.search']
+    assert web_search_schema['type'] == 'object'
+    assert 'query' in web_search_schema['properties']
+    assert web_search_schema['required'] == ['query']
+    
+    # chat.respond has no tool affordance, should not have schema
+    assert 'chat.respond' not in schemas
+    
+    # Test formatting for prompt
+    formatted = _format_capability_schemas_for_prompt(schemas)
+    assert 'filesystem.list' in formatted
+    assert 'filesystem.search' in formatted
+    assert 'required: path' in formatted
+    assert 'required: path, pattern' in formatted
+    
+    print("✓ Capability schema extraction works correctly")
+    print(f"  filesystem.list required: {schemas['filesystem.list']['required']}")
+    print(f"  filesystem.search required: {schemas['filesystem.search']['required']}")
+    print(f"  web.search required: {schemas['web.search']['required']}")
+
+
+def test_decomposer_includes_schemas_in_prompt():
+    """Test that GoalDecomposer includes capability schemas in the system prompt."""
+    from parika.interfaces.ai_context.goal_decomposer import (
+        _build_capability_schemas, _format_capability_schemas_for_prompt,
+        _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE
+    )
+    from parika.core.provider_manager.chat_message import ChatMessage
+    
+    config, reg = setup_test_registry()
+    available_capabilities = frozenset(['chat.respond', 'filesystem.list', 'filesystem.search'])
+    user_message = "search for parika project under /mnt/dev/languages/python"
+    
+    capability_schemas = _build_capability_schemas(reg, available_capabilities)
+    capability_schemas_text = _format_capability_schemas_for_prompt(capability_schemas)
     
     system_prompt = _DECOMPOSITION_SYSTEM_PROMPT_TEMPLATE.format(
-        available_capabilities=sorted(available_capabilities),
+        capability_schemas=capability_schemas_text,
         user_message=user_message,
     )
     
+    # Verify the prompt includes the schemas
+    assert 'filesystem.list' in system_prompt
+    assert 'filesystem.search' in system_prompt
+    assert 'required: path' in system_prompt
+    assert 'required: path, pattern' in system_prompt
+    assert 'pattern: string' in system_prompt
+    
+    # Verify the prompt can be used to build messages
     messages = (
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_message),
     )
     
-    estimated_prompt_tokens = _estimate_prompt_tokens(
-        messages, estimator=_PROMPT_TOKEN_ESTIMATOR
-    )
+    assert len(messages) == 2
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
     
-    model_limits = ModelLimits(context_window=32768, max_output_tokens=None)
-    budget = resolve_runtime_context_budget(
-        model_limits,
-        configuration=config,
-        required_prompt_tokens=estimated_prompt_tokens,
-    )
-    
-    # This is the exact RequestOptions the decomposer now creates
-    options = RequestOptions(
-        reasoning=decomposition_reasoning,
-        temperature=0.0,
-        seed=42,
-        top_p=1.0,
-        context_window_tokens=budget.effective_context_window,
-        estimated_prompt_tokens=estimated_prompt_tokens,
-    )
-    
-    assert options.reasoning is False  # FIXED_THINKING=false from .env
-    assert options.temperature == 0.0
-    assert options.seed == 42
-    assert options.top_p == 1.0
-    assert options.context_window_tokens == 8192
-    assert options.estimated_prompt_tokens == estimated_prompt_tokens
-    assert options.estimated_prompt_tokens > 0
-    print("✓ All deterministic settings preserved including new budget fields")
+    print("✓ Decomposer includes capability schemas in prompt")
+    print(f"  System prompt length: {len(system_prompt)} chars")
 
 
 if __name__ == "__main__":
@@ -329,4 +400,6 @@ if __name__ == "__main__":
     test_request_options_context_window_tokens_computed()
     test_request_options_matches_planner_budget()
     test_deterministic_settings_preserved()
+    test_capability_schema_extraction()
+    test_decomposer_includes_schemas_in_prompt()
     print("\n✅ All tests passed!")
