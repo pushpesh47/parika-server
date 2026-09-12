@@ -506,6 +506,7 @@ def build_default_runtime(
         logger=logger,
         tool_manager=tool_manager,
         provider_manager=provider_manager,
+        configuration=configuration,
     )
     task_manager = TaskManager(
         event_bus=event_bus,
