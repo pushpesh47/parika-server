@@ -51,21 +51,33 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 import asyncio
+import hashlib
+import json
 import re
 import time
 from dataclasses import asdict
 
+from parika.core.capability_catalog import CapabilityCatalog
+from parika.core.capability_registry.capability_category import CapabilityCategory
+from parika.core.capability_resolver import CapabilityResolver
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
+from parika.core.permission_manager.workspace_permission_manager import WorkspacePermissionManager
+from parika.core.policy_engine.policy_engine import PolicyEngine
+from parika.core.policy_engine.policy_effect import PolicyEffect
+from parika.core.policy_engine.request import PolicyEvaluationRequest
 from parika.core.planner.execution_plan import ExecutionPlan
 from parika.core.planner.goal import Goal
 from parika.core.planner.plan_step import PlanStep
 from parika.core.planner.planner import Planner
 from parika.core.provider_manager.chat_request import ChatRequest
 from parika.core.provider_manager.chat_message import ChatMessage
+from parika.core.provider_manager.provider_manager import ProviderManager
+from parika.core.resource_manager.resource_manager import ResourceManager
 from parika.core.task_manager.request import TaskRequest
 from parika.core.task_manager.task_manager import TaskManager
 from parika.core.tool_manager.request import ToolRequest
+from parika.core.tool_manager.tool_manager import ToolManager
 from parika.core.utilities.progress import NullProgressReporter, ProgressReporter
 from parika.core.forensic_log import (
     get_current_trace_id,
@@ -156,6 +168,11 @@ class Brain:
         configuration: "Configuration | None" = None,
         token_estimator: TokenEstimator | None = None,
         agent_orchestrator: "AgentOrchestrator | None" = None,
+        tool_manager: ToolManager | None = None,
+        provider_manager: ProviderManager | None = None,
+        capability_resolver: CapabilityResolver | None = None,
+        policy_engine: PolicyEngine | None = None,
+        resource_manager: ResourceManager | None = None,
     ) -> None:
         """
         Initialize the Brain.
@@ -218,6 +235,26 @@ class Brain:
             agent_orchestrator:
                 Optional AgentOrchestrator for assigning agents to goals.
                 If provided, agents are assigned before planning.
+
+            tool_manager:
+                Optional ToolManager for executing recovery actions
+                (e.g., filesystem.search). Required for Goal Recovery.
+
+            provider_manager:
+                Optional ProviderManager for LLM-guided recovery
+                reasoning. Required for Goal Recovery.
+
+            capability_resolver:
+                Optional CapabilityResolver for resolving recovery
+                capabilities. Required for Goal Recovery.
+
+            policy_engine:
+                Optional PolicyEngine for authorizing recovery
+                capabilities. Required for Goal Recovery.
+
+            resource_manager:
+                Optional ResourceManager for capability catalog context.
+                Required for Goal Recovery.
         """
 
         self._planner = planner
@@ -232,10 +269,21 @@ class Brain:
             token_estimator if token_estimator is not None else HeuristicTokenEstimator()
         )
         self._agent_orchestrator = agent_orchestrator
+        self._tool_manager = tool_manager
+        self._provider_manager = provider_manager
+        self._capability_resolver = capability_resolver
+        self._policy_engine = policy_engine
+        self._resource_manager = resource_manager
         self._max_concurrent_goals = configuration.get("concurrency.max_concurrent_goals", 4) if configuration is not None else 4
         self._execution_mode = (
             configuration.get("concurrency.execution_mode", "parallel") if configuration is not None else "parallel"
         )
+        self._max_recovery_attempts = configuration.get("recovery.max_attempts", 3) if configuration is not None else 3
+        
+        # Track recovery attempts per goal (goal_id -> attempt_count)
+        self._recovery_attempts: dict[str, int] = {}
+        # Track attempted inputs per goal to detect cycles
+        self._recovery_attempted_inputs: dict[str, set[str]] = {}
         
         # Store the last BrainResponse for UI Context projection
         self._last_response: BrainResponse | None = None
@@ -478,10 +526,474 @@ class Brain:
         return str(result)
 
     # ------------------------------------------------------------------
-    # Dependency Reference Resolution
+    # Goal Recovery
     # ------------------------------------------------------------------
 
-    _DEP_REF_PATTERN = re.compile(r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\.result([^}]*)\}\}')
+    def _is_recoverable_failure(self, failure: BaseException) -> bool:
+        """
+        Determine if a failure is recoverable through Goal Recovery.
+
+        Only treats tool-specific "not found" exceptions as recoverable,
+        by checking the exception type hierarchy. String matching is
+        avoided to prevent false positives (e.g., "user not found" in
+        database, "page not found" in web).
+        """
+        # Check for tool-specific not-found exception types
+        # These are wrapped in ToolExecutionError -> CapabilityExecutionError -> TaskExecutionError
+        # We need to unwrap to find the root cause
+        current = failure
+        while current is not None:
+            type_name = type(current).__name__
+            # Tool-specific not-found exceptions
+            recoverable_types = {
+                "FilesystemPathNotFoundError",
+                "LocationNotFoundError",
+                "MediaSourceNotFoundError",
+                "ExpenseNotFoundError",
+                "CodingIndexNotFoundError",
+                "UnknownTimezoneError",
+                "WebSearchProviderUnavailableError",
+            }
+            if type_name in recoverable_types:
+                return True
+            
+            # Check for base not-found exceptions
+            if "NotFoundError" in type_name and "Provider" not in type_name:
+                return True
+            
+            # Move to cause
+            current = getattr(current, "__cause__", None)
+        
+        return False
+
+    def _get_recovery_attempts(self, goal_id: str) -> int:
+        """Get the number of recovery attempts for a goal."""
+        return self._recovery_attempts.get(goal_id, 0)
+
+    def _increment_recovery_attempts(self, goal_id: str) -> int:
+        """Increment and return the recovery attempt count for a goal."""
+        count = self._recovery_attempts.get(goal_id, 0) + 1
+        self._recovery_attempts[goal_id] = count
+        return count
+
+    def _reset_recovery_attempts(self, goal_id: str) -> None:
+        """Reset recovery attempts for a goal (called on success)."""
+        self._recovery_attempts.pop(goal_id, None)
+        self._recovery_attempted_inputs.pop(goal_id, None)
+
+    def _get_workspace_root(self, path: str) -> str:
+        """
+        Resolve the workspace root for a given path using the existing
+        WorkspacePermissionManager logic.
+
+        This derives the workspace from the path itself, ensuring
+        recovery stays within the same project boundary as the original goal.
+        """
+        return str(WorkspacePermissionManager._resolve_workspace_key(path))
+
+    def _get_recovery_capabilities(self, failure_context: str = "") -> list[tuple[str, str, str]]:
+        """
+        Get capabilities suitable for recovery, filtered by policy and
+        ranked by relevance to the failure context.
+
+        Uses CapabilityCatalog for relevance ranking and PolicyEngine
+        for authorization. Does not expose arbitrary capabilities.
+        """
+        if self._tool_manager is None or self._capability_registry is None:
+            return []
+
+        # Get all enabled TOOL capabilities
+        all_definitions = self._capability_registry.find(
+            category=CapabilityCategory.TOOL,
+            enabled=True,
+        )
+
+        # Filter by PolicyEngine
+        allowed_cap_ids = []
+        for definition in all_definitions:
+            if self._policy_engine is None:
+                allowed_cap_ids.append(definition.id)
+                continue
+
+            policy_request = PolicyEvaluationRequest(
+                rules=(),
+                context={
+                    "capability_id": definition.id,
+                    "capability_category": CapabilityCategory.TOOL.value,
+                    "inputs": {"recovery": True, "failure_context": failure_context},
+                    "resource_snapshot": self._resource_manager.get_resource_snapshot() if self._resource_manager else None,
+                },
+                default_effect=PolicyEffect.ALLOW,
+            )
+            decision = self._policy_engine.evaluate(policy_request)
+            if decision.is_allowed:
+                allowed_cap_ids.append(definition.id)
+
+        if not allowed_cap_ids:
+            return []
+
+        # Rank by relevance using CapabilityCatalog
+        allowed_definitions = tuple(d for d in all_definitions if d.id in allowed_cap_ids)
+        if not allowed_definitions:
+            return []
+
+        catalog = CapabilityCatalog()
+        ranked = catalog.retrieve(allowed_definitions, text=f"Find missing resource: {failure_context}")
+
+        return [(d.id, d.name, d.description) for d in ranked]
+
+    def _build_recovery_prompt(
+        self,
+        goal: Goal,
+        failure: BaseException,
+        step: PlanStep,
+        recovery_capabilities: list[tuple[str, str, str]],
+    ) -> str:
+        """Build the prompt for LLM-guided recovery."""
+        original_inputs = dict(goal.inputs)
+        
+        capabilities_desc = []
+        for cap_id, cap_name, cap_desc in recovery_capabilities:
+            capabilities_desc.append(f"- {cap_id}: {cap_desc}")
+
+        return f"""GOAL RECOVERY NEEDED
+
+Original Goal: {goal.id} ({goal.capability_id})
+Original Inputs: {original_inputs}
+Failure: {type(failure).__name__}: {failure}
+
+Available Recovery Capabilities:
+{chr(10).join(capabilities_desc)}
+
+The original goal failed. Your task is to determine a recovery action using ONE of the available capabilities above.
+The recovery action should discover or locate the correct resource/input.
+
+Respond with a JSON object containing:
+{{
+  "recovery_capability": "capability_id",
+  "recovery_inputs": {{"key": "value"}},
+  "reasoning": "brief explanation"
+}}
+
+The recovery action will be executed and its result used to correct the original goal's inputs for retry.
+"""
+
+    async def _execute_recovery_action(
+        self,
+        goal: Goal,
+        failure: BaseException,
+        step: PlanStep,
+        progress: ProgressReporter,
+        failed_path_context: str = "",
+    ) -> dict[str, Any] | None:
+        """
+        Execute the full recovery sequence: LLM reasoning -> capability execution -> correction.
+
+        Returns corrected inputs for retrying the original goal, or None if recovery fails.
+        """
+        if self._provider_manager is None or self._tool_manager is None or self._capability_resolver is None:
+            self._logger.warning(
+                "Goal Recovery unavailable: required components not configured."
+            )
+            return None
+
+        # Get recovery capabilities filtered by policy and ranked by relevance
+        recovery_capabilities = self._get_recovery_capabilities(failed_path_context)
+
+        if not recovery_capabilities:
+            self._logger.warning("No recovery capabilities available for goal '%s'.", goal.id)
+            return None
+
+        # Build recovery prompt
+        recovery_prompt = self._build_recovery_prompt(goal, failure, step, recovery_capabilities)
+
+        # Invoke LLM to determine recovery action
+        recovery_plan = await self._invoke_llm_for_recovery(recovery_prompt, recovery_capabilities)
+
+        if not recovery_plan:
+            return None
+
+        # Execute the recovery capability
+        recovery_result = await self._execute_recovery_capability(recovery_plan, progress)
+
+        if not recovery_result:
+            return None
+
+        # Extract corrected inputs from recovery result via LLM reasoning
+        corrected_inputs = self._extract_corrected_inputs(
+            goal, failure, recovery_plan, recovery_result
+        )
+
+        return corrected_inputs
+
+    async def _invoke_llm_for_recovery(
+        self,
+        prompt: str,
+        recovery_capabilities: list[tuple[str, str, str]],
+    ) -> dict[str, Any] | None:
+        """
+        Invoke LLM to determine recovery action using the normal Brain
+        pipeline via a synthetic chat.respond Goal.
+        """
+        if self._provider_manager is None:
+            self._logger.warning("Goal Recovery unavailable: provider_manager not configured.")
+            return None
+
+        # Build capability list for LLM
+        capabilities_desc = []
+        for cap_id, cap_name, cap_desc in recovery_capabilities:
+            capabilities_desc.append(f"- {cap_id}: {cap_desc}")
+
+        system_prompt = (
+            "You are a recovery planner for an AI orchestration system. "
+            "A goal failed. Select ONE recovery capability and provide inputs to find the correct resource. "
+            "Respond ONLY with valid JSON as specified."
+        )
+        
+        recovery_prompt = f"""Available Recovery Capabilities:
+{chr(10).join(capabilities_desc)}
+
+{prompt}"""
+
+        # Create synthetic recovery reasoning Goal
+        recovery_goal = Goal(
+            id="recovery_reasoning",
+            capability_id="chat.respond",
+            inputs={"message": recovery_prompt},
+            metadata={"recovery_reasoning": True, "system_prompt": system_prompt},
+        )
+
+        try:
+            # Execute via normal Brain pipeline (uses Planner.plan + normal model selection)
+            request = BrainRequest(goals=(recovery_goal,))
+            response = self.handle(request)
+
+            if not response.succeeded or not response.results:
+                self._logger.warning("Recovery LLM reasoning failed: %s", response.results[0].failure if response.results else "no results")
+                return None
+
+            # Extract LLM response content
+            result = response.results[0]
+            if result.response and result.response.outputs:
+                content = result.response.outputs.get("result")
+                if hasattr(content, "content"):
+                    content = content.content
+                elif hasattr(content, "message") and hasattr(content.message, "content"):
+                    content = content.message.content
+                else:
+                    content = str(content)
+            else:
+                return None
+
+            # Parse JSON from response
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:-3].strip()
+            elif content.startswith("```"):
+                content = content[3:-3].strip()
+            
+            recovery_plan = json.loads(content)
+            
+            # Validate capability is in allowed list
+            allowed_cap_ids = {cap_id for cap_id, _, _ in recovery_capabilities}
+            if recovery_plan.get("recovery_capability") not in allowed_cap_ids:
+                self._logger.warning(
+                    "Recovery LLM selected unauthorized capability: %s",
+                    recovery_plan.get("recovery_capability")
+                )
+                return None
+
+            return recovery_plan
+
+        except Exception as e:
+            self._logger.exception("Failed to invoke LLM for recovery: %s", e)
+            return None
+
+    async def _execute_recovery_capability(
+        self,
+        recovery_plan: dict[str, Any],
+        progress: ProgressReporter,
+    ) -> Any | None:
+        """Execute a recovery capability via the normal public execution pipeline."""
+        capability_id = recovery_plan.get("recovery_capability")
+        inputs = recovery_plan.get("recovery_inputs", {})
+
+        if not capability_id or self._capability_resolver is None:
+            return None
+
+        try:
+            from parika.core.capability_resolver.capability_request import CapabilityRequest
+            from parika.core.capability_executor.request import CapabilityExecutionRequest
+            from parika.core.capability_executor.execution_target import ExecutionTarget
+            from parika.core.tool_manager.request import ToolRequest
+
+            # Resolve capability via public API
+            resolution = self._capability_resolver.resolve(
+                CapabilityRequest(capability_id=capability_id)
+            )
+
+            # Select tool via public ToolManager (same logic as Planner._select_tool)
+            tool = None
+            for t in self._tool_manager.get_all():
+                if t.enabled and capability_id in t.capabilities:
+                    tool = t
+                    break
+            
+            if tool is None:
+                self._logger.warning("No enabled tool found for capability: %s", capability_id)
+                return None
+
+            target = ExecutionTarget(
+                backend=resolution.execution_backend,
+                identifier=tool.id,
+            )
+
+            backend_request = ToolRequest(
+                arguments=inputs,
+                metadata={"recovery_action": True},
+            )
+
+            execution_request = CapabilityExecutionRequest(
+                resolution=resolution,
+                target=target,
+                backend_request=backend_request,
+                metadata={"recovery_action": True},
+            )
+
+            # Create and execute task
+            task = self._task_manager.create(
+                TaskRequest(
+                    capability_id=capability_id,
+                    inputs=inputs,
+                    metadata={"recovery_action": True},
+                ),
+            )
+
+            executed_task = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._task_manager.execute(task.id, execution_request),
+            )
+
+            if executed_task.response and executed_task.response.outputs:
+                return executed_task.response.outputs.get("result")
+            return None
+
+        except Exception as e:
+            self._logger.exception("Recovery capability execution failed: %s", e)
+            return None
+
+    def _extract_corrected_inputs(
+        self,
+        goal: Goal,
+        failure: BaseException,
+        recovery_plan: dict[str, Any],
+        recovery_result: Any,
+    ) -> dict[str, Any] | None:
+        """
+        Extract corrected inputs for the original goal from recovery result.
+
+        Uses LLM reasoning over the raw recovery result to determine
+        the corrected inputs, rather than hardcoding field extraction.
+        """
+        if not recovery_result:
+            return None
+
+        # Use LLM to reason about the recovery result and select corrected inputs
+        correction_prompt = f"""RECOVERY RESULT ANALYSIS
+
+Original Goal: {goal.id} ({goal.capability_id})
+Original Inputs: {dict(goal.inputs)}
+Original Failure: {type(failure).__name__}: {failure}
+Recovery Action: {recovery_plan.get('recovery_capability')} with inputs {recovery_plan.get('recovery_inputs')}
+Recovery Result: {recovery_result}
+
+The recovery action was executed to find the correct resource. Analyze the result and determine the corrected inputs for the original goal.
+
+Respond with a JSON object containing:
+{{
+  "corrected_inputs": {{"key": "value"}},
+  "reasoning": "brief explanation of why this correction is correct"
+}}
+
+If no valid correction can be determined, respond with:
+{{
+  "corrected_inputs": null,
+  "reasoning": "explanation"
+}}
+"""
+
+        try:
+            correction_goal = Goal(
+                id="recovery_correction",
+                capability_id="chat.respond",
+                inputs={"message": correction_prompt},
+                metadata={"recovery_correction": True},
+            )
+
+            request = BrainRequest(goals=(correction_goal,))
+            response = self.handle(request)
+
+            if not response.succeeded or not response.results:
+                return None
+
+            result = response.results[0]
+            if result.response and result.response.outputs:
+                content = result.response.outputs.get("result")
+                if hasattr(content, "content"):
+                    content = content.content
+                elif hasattr(content, "message") and hasattr(content.message, "content"):
+                    content = content.message.content
+                else:
+                    content = str(content)
+            else:
+                return None
+
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:-3].strip()
+            elif content.startswith("```"):
+                content = content[3:-3].strip()
+            
+            correction = json.loads(content)
+            corrected = correction.get("corrected_inputs")
+            
+            if corrected is None:
+                self._logger.info("Recovery LLM determined no valid correction: %s", correction.get("reasoning"))
+                return None
+
+            self._logger.info(
+                "Goal Recovery: LLM selected corrected inputs: %s",
+                corrected
+            )
+            return corrected
+
+        except Exception as e:
+            self._logger.exception("Failed to extract corrected inputs: %s", e)
+            return None
+
+    def _hash_inputs(self, inputs: dict[str, Any]) -> str:
+        """Create a hash of inputs for cycle detection."""
+        # Create deterministic string representation
+        serialized = json.dumps(inputs, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
+    def _check_recovery_cycle(self, goal_id: str, inputs: dict[str, Any]) -> bool:
+        """Check if these inputs have been attempted before for this goal."""
+        if goal_id not in self._recovery_attempted_inputs:
+            self._recovery_attempted_inputs[goal_id] = set()
+        
+        input_hash = self._hash_inputs(inputs)
+        if input_hash in self._recovery_attempted_inputs[goal_id]:
+            self._logger.warning(
+                "Goal Recovery: Cycle detected for goal '%s' - inputs already attempted",
+                goal_id
+            )
+            return True
+        
+        self._recovery_attempted_inputs[goal_id].add(input_hash)
+        return False
+
+    _DEP_REF_PATTERN = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\.result([^}]*)\}')
 
     def _resolve_dependency_references(
         self,
@@ -491,12 +1003,12 @@ class Brain:
         results: dict[str, GoalResult],
     ) -> dict[str, Any]:
         """
-        Resolve {{goal_id.result.path}} style references in goal inputs.
+        Resolve {goal_id.result.path} style references in goal inputs.
 
         Supports:
-        - {{goal_0.result.path}} -> scalar value
-        - {{goal_0.result.matches[0]}} -> indexed list access
-        - {{goal_0.result.some.nested.path}} -> nested dict access
+        - {goal_0.result.path} -> scalar value
+        - {goal_0.result.matches[0]} -> indexed list access
+        - {goal_0.result.some.nested.path} -> nested dict access
 
         Only resolves references to goals that are declared dependencies of the current goal.
 
@@ -554,13 +1066,13 @@ class Brain:
         return the resolved value directly (preserving type).
         Otherwise, substitute references within the string.
         """
-        # Check for unmatched braces - detect {{ without matching }}
-        open_braces = value.count('{{')
-        close_braces = value.count('}}')
+        # Check for unmatched braces - detect { without matching }
+        open_braces = value.count('{')
+        close_braces = value.count('}')
         if open_braces != close_braces:
             raise DependencyResolutionError(
                 f"Goal '{goal_id}': Unmatched braces in input '{value}'. "
-                f"Every '{{{{' must have a matching '}}}}'."
+                f"Every '{{' must have a matching '}}'."
             )
         
         # Find all references in the string
@@ -593,7 +1105,7 @@ class Brain:
         dep_results_map: dict[str, Any],
         declared_deps: set[str],
     ) -> Any:
-        """Resolve a single {{goal_id.result...}} reference."""
+        """Resolve a single {goal_id.result...} reference."""
         full_match = match.group(0)
         dep_goal_id = match.group(1)
         path_str = match.group(2)  # This is the path part like ".path" or ".matches[0]"
@@ -605,7 +1117,7 @@ class Brain:
         if not path_str:
             raise DependencyResolutionError(
                 f"Goal '{goal_id}': Empty dependency reference '{full_match}'. "
-                f"Must specify a result field, e.g. '{{{{{dep_goal_id}.result.path}}}}'."
+                f"Must specify a result field, e.g. '{{{dep_goal_id}.result.path}}'."
             )
         
         # Check if the dependency goal is declared
@@ -902,140 +1414,237 @@ class Brain:
         Create and execute a single Task for a planned Goal (async version).
 
         Execution failures are captured into the returned GoalResult
-        rather than raised.
+        rather than raised. Includes bounded Goal Recovery for recoverable failures.
         """
 
-        task = self._task_manager.create(
-            TaskRequest(
-                capability_id=goal.capability_id,
-                inputs=goal.inputs,
-                context_id=goal.context_id,
-                metadata=goal.metadata,
-            ),
-        )
+        # Recovery loop: initial attempt + max_recovery_attempts retries
+        max_attempts = 1 + self._max_recovery_attempts
+        current_inputs = dict(goal.inputs)
+        current_step = step
+        last_failure: BaseException | None = None
 
-        goal_progress = progress.child(EXECUTE_GOAL_SOURCE_ID, task_id=task.id)
-        goal_progress.started(message=f"Executing goal '{goal.id}'.")
+        # Extract failed path context for workspace boundary
+        failed_path_context = ""
+        for key, value in goal.inputs.items():
+            if isinstance(value, str) and ("path" in key.lower() or "file" in key.lower() or "url" in key.lower()):
+                failed_path_context = value
+                break
 
-        # FORENSIC: Log tool start
-        trace_id = get_current_trace_id()
-        start_time = time.perf_counter()
-        if trace_id:
-            backend_request = step.execution_request.backend_request
-            arguments = {}
-            if hasattr(backend_request, 'arguments'):
-                arguments = backend_request.arguments
-            elif hasattr(backend_request, 'messages'):
-                arguments = {"messages": [{"role": m.role, "content": m.content} for m in backend_request.messages]}
-            
-            log_tool_start(
-                trace_id=trace_id,
-                goal_id=goal.id,
-                task_id=task.id,
-                capability_id=goal.capability_id,
-                tool_id=step.execution_request.target.identifier,
-                arguments=arguments,
-                backend=step.execution_request.target.backend.value,
+        for attempt in range(max_attempts):
+            is_recovery_attempt = attempt > 0
+            if is_recovery_attempt:
+                # Check for cycle before attempting recovery
+                if self._check_recovery_cycle(goal.id, current_inputs):
+                    self._logger.warning(
+                        "Goal Recovery: Cycle detected, terminating recovery for goal '%s'",
+                        goal.id
+                    )
+                    break
+                
+                self._increment_recovery_attempts(goal.id)
+                self._logger.info(
+                    "Goal Recovery: Attempt %d/%d for goal '%s'",
+                    attempt, self._max_recovery_attempts, goal.id
+                )
+
+                # Update step with corrected inputs for retry
+                from parika.core.capability_executor.request import CapabilityExecutionRequest
+                from parika.core.tool_manager.request import ToolRequest
+
+                execution_request = current_step.execution_request
+                backend_request = execution_request.backend_request
+
+                if isinstance(backend_request, ToolRequest):
+                    new_backend_request = ToolRequest(
+                        arguments=current_inputs,
+                        metadata=backend_request.metadata,
+                    )
+                    current_step = PlanStep(
+                        goal_id=current_step.goal_id,
+                        execution_request=CapabilityExecutionRequest(
+                            resolution=execution_request.resolution,
+                            target=execution_request.target,
+                            backend_request=new_backend_request,
+                            metadata=execution_request.metadata,
+                        ),
+                        depends_on=current_step.depends_on,
+                    )
+
+            task = self._task_manager.create(
+                TaskRequest(
+                    capability_id=goal.capability_id,
+                    inputs=current_inputs,
+                    context_id=goal.context_id,
+                    metadata=goal.metadata,
+                ),
             )
 
-        try:
-            # Run synchronous execute in thread pool to avoid blocking event loop
-            executed_task = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._task_manager.execute(task.id, step.execution_request),
-            )
+            goal_progress = progress.child(EXECUTE_GOAL_SOURCE_ID, task_id=task.id)
+            attempt_msg = f" (recovery attempt {attempt})" if is_recovery_attempt else ""
+            goal_progress.started(message=f"Executing goal '{goal.id}'{attempt_msg}.")
 
-        except Exception as ex:
-            self._logger.exception(
-                "Execution failed for goal '%s' (task '%s').",
-                goal.id,
-                task.id,
-            )
-
-            goal_progress.failed(message=str(ex))
-
-            # FORENSIC: Log tool result (failure)
+            # FORENSIC: Log tool start
+            trace_id = get_current_trace_id()
+            start_time = time.perf_counter()
             if trace_id:
-                execution_time = time.perf_counter() - start_time
-                log_tool_result(
+                backend_request = current_step.execution_request.backend_request
+                arguments = {}
+                if hasattr(backend_request, 'arguments'):
+                    arguments = backend_request.arguments
+                elif hasattr(backend_request, 'messages'):
+                    arguments = {"messages": [{"role": m.role, "content": m.content} for m in backend_request.messages]}
+
+                log_tool_start(
                     trace_id=trace_id,
                     goal_id=goal.id,
                     task_id=task.id,
                     capability_id=goal.capability_id,
-                    tool_id=step.execution_request.target.identifier,
-                    success=False,
-                    result=None,
-                    exception=str(ex),
+                    tool_id=current_step.execution_request.target.identifier,
+                    arguments=arguments,
+                    backend=current_step.execution_request.target.backend.value,
+                )
+
+            try:
+                # Run synchronous execute in thread pool to avoid blocking event loop
+                executed_task = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._task_manager.execute(task.id, current_step.execution_request),
+                )
+
+            except Exception as ex:
+                self._logger.exception(
+                    "Execution failed for goal '%s' (task '%s')%s.",
+                    goal.id,
+                    task.id,
+                    " during recovery" if is_recovery_attempt else "",
+                )
+
+                goal_progress.failed(message=str(ex))
+
+                # FORENSIC: Log tool result (failure)
+                if trace_id:
+                    execution_time = time.perf_counter() - start_time
+                    log_tool_result(
+                        trace_id=trace_id,
+                        goal_id=goal.id,
+                        task_id=task.id,
+                        capability_id=goal.capability_id,
+                        tool_id=current_step.execution_request.target.identifier,
+                        success=False,
+                        result=None,
+                        exception=str(ex),
+                        execution_time=execution_time,
+                    )
+
+                last_failure = ex
+
+                # Check if this failure is recoverable and we have attempts remaining
+                if is_recovery_attempt or attempt < max_attempts - 1:
+                    if self._is_recoverable_failure(ex):
+                        self._logger.info(
+                            "Goal Recovery: Recoverable failure detected for goal '%s': %s",
+                            goal.id, ex
+                        )
+                        # Attempt recovery with workspace boundary enforcement
+                        corrected_inputs = await self._execute_recovery_action(
+                            goal, ex, current_step, progress, failed_path_context
+                        )
+                        if corrected_inputs:
+                            current_inputs = corrected_inputs
+                            continue  # Retry with corrected inputs
+                        else:
+                            self._logger.warning(
+                                "Goal Recovery: Recovery action failed or returned no correction for goal '%s'",
+                                goal.id
+                            )
+                    else:
+                        self._logger.debug(
+                            "Goal Recovery: Failure for goal '%s' is not recoverable: %s",
+                            goal.id, ex
+                        )
+
+                # No more recovery attempts or not recoverable - return failure
+                return GoalResult(
+                    goal_id=goal.id,
+                    capability_id=goal.capability_id,
+                    task_id=task.id,
+                    status=self._task_manager.get(task.id).status,
+                    failure=last_failure,
+                    depends_on=tuple(current_step.depends_on),
+                )
+
+            # Success!
+            goal_progress.completed()
+
+            # FORENSIC: Log tool result (success)
+            if trace_id:
+                execution_time = time.perf_counter() - start_time
+                result_data = None
+                if executed_task.response and executed_task.response.outputs:
+                    result_data = executed_task.response.outputs.get("result")
+
+                log_tool_result(
+                    trace_id=trace_id,
+                    goal_id=goal.id,
+                    task_id=executed_task.id,
+                    capability_id=goal.capability_id,
+                    tool_id=current_step.execution_request.target.identifier,
+                    success=True,
+                    result=result_data,
                     execution_time=execution_time,
                 )
+
+                # FORENSIC: Log task response wrapping
+                raw_backend = result_data
+                cap_exec_response = None
+                task_response_data = None
+                goal_result_response_type = None
+
+                if executed_task.response:
+                    cap_exec_response = {
+                        "backend_response": str(executed_task.response.outputs.get("result"))[:500] if executed_task.response.outputs else None,
+                        "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
+                        "duration_seconds": executed_task.response.duration_seconds,
+                    }
+                    task_response_data = {
+                        "outputs": dict(executed_task.response.outputs) if executed_task.response.outputs else {},
+                        "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
+                        "duration_seconds": executed_task.response.duration_seconds,
+                    }
+
+                if executed_task.response and executed_task.response.outputs:
+                    goal_result_response_type = type(executed_task.response.outputs.get("result")).__name__
+
+                log_task_response_wrapping(
+                    trace_id=trace_id,
+                    goal_id=goal.id,
+                    task_id=executed_task.id,
+                    capability_id=goal.capability_id,
+                    raw_backend_result=raw_backend,
+                    capability_execution_response=cap_exec_response,
+                    task_response=task_response_data,
+                    goal_result_response_type=goal_result_response_type,
+                )
+
+            # Reset recovery attempts on success
+            self._reset_recovery_attempts(goal.id)
 
             return GoalResult(
                 goal_id=goal.id,
                 capability_id=goal.capability_id,
-                task_id=task.id,
-                status=self._task_manager.get(task.id).status,
-                failure=ex,
-                depends_on=tuple(step.depends_on),
-            )
-
-        goal_progress.completed()
-
-        # FORENSIC: Log tool result (success)
-        if trace_id:
-            execution_time = time.perf_counter() - start_time
-            result_data = None
-            if executed_task.response and executed_task.response.outputs:
-                result_data = executed_task.response.outputs.get("result")
-            
-            log_tool_result(
-                trace_id=trace_id,
-                goal_id=goal.id,
                 task_id=executed_task.id,
-                capability_id=goal.capability_id,
-                tool_id=step.execution_request.target.identifier,
-                success=True,
-                result=result_data,
-                execution_time=execution_time,
-            )
-            
-            # FORENSIC: Log task response wrapping
-            raw_backend = result_data
-            cap_exec_response = None
-            task_response_data = None
-            goal_result_response_type = None
-            
-            if executed_task.response:
-                cap_exec_response = {
-                    "backend_response": str(executed_task.response.outputs.get("result"))[:500] if executed_task.response.outputs else None,
-                    "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
-                    "duration_seconds": executed_task.response.duration_seconds,
-                }
-                task_response_data = {
-                    "outputs": dict(executed_task.response.outputs) if executed_task.response.outputs else {},
-                    "metadata": dict(executed_task.response.metadata) if executed_task.response.metadata else {},
-                    "duration_seconds": executed_task.response.duration_seconds,
-                }
-            
-            if executed_task.response and executed_task.response.outputs:
-                goal_result_response_type = type(executed_task.response.outputs.get("result")).__name__
-            
-            log_task_response_wrapping(
-                trace_id=trace_id,
-                goal_id=goal.id,
-                task_id=executed_task.id,
-                capability_id=goal.capability_id,
-                raw_backend_result=raw_backend,
-                capability_execution_response=cap_exec_response,
-                task_response=task_response_data,
-                goal_result_response_type=goal_result_response_type,
+                status=executed_task.status,
+                response=executed_task.response,
+                depends_on=tuple(current_step.depends_on),
             )
 
+        # Should not reach here, but handle gracefully
         return GoalResult(
             goal_id=goal.id,
             capability_id=goal.capability_id,
-            task_id=executed_task.id,
-            status=executed_task.status,
-            response=executed_task.response,
+            task_id=None,
+            status=None,
+            failure=last_failure or RuntimeError("Goal execution failed after all recovery attempts"),
             depends_on=tuple(step.depends_on),
         )
 
@@ -1245,78 +1854,9 @@ class Brain:
                                 step = steps_by_goal[goal_id]
                                 # Create modified execution request with dependency results
                                 synthesis_step = self._create_synthesis_execution_request(step, goal, dep_results)
-                                # Execute the synthesis goal with modified request
-                                async def execute_synthesis():
-                                    task = self._task_manager.create(
-                                        TaskRequest(
-                                            capability_id=goal.capability_id,
-                                            inputs=goal.inputs,
-                                            context_id=goal.context_id,
-                                            metadata=goal.metadata,
-                                        ),
-                                    )
-                                    goal_progress = progress.child(EXECUTE_GOAL_SOURCE_ID, task_id=task.id)
-                                    goal_progress.started(message=f"Executing synthesis goal '{goal.id}'.")
-                                    try:
-                                        executed_task = await asyncio.get_event_loop().run_in_executor(
-                                            None,
-                                            lambda: self._task_manager.execute(task.id, synthesis_step.execution_request),
-                                        )
-                                    except Exception as ex:
-                                        self._logger.exception(
-                                            "Execution failed for synthesis goal '%s' (task '%s').",
-                                            goal.id,
-                                            task.id,
-                                        )
-                                        goal_progress.failed(message=str(ex))
-                                        return GoalResult(
-                                            goal_id=goal.id,
-                                            capability_id=goal.capability_id,
-                                            task_id=task.id,
-                                            status=self._task_manager.get(task.id).status,
-                                            failure=ex,
-                                            depends_on=tuple(step.depends_on),
-                                        )
-                                    goal_progress.completed()
-                                    
-                                    # FORENSIC: Log synthesis result
-                                    trace_id = get_current_trace_id()
-                                    if trace_id:
-                                        raw_response = None
-                                        response_type = None
-                                        tool_calls = 0
-                                        if executed_task.response and executed_task.response.outputs:
-                                            result_data = executed_task.response.outputs.get("result")
-                                            if hasattr(result_data, 'message'):
-                                                raw_response = result_data.message.content
-                                                response_type = type(result_data).__name__
-                                                if hasattr(result_data, 'tool_calls'):
-                                                    tool_calls = len(result_data.tool_calls) if result_data.tool_calls else 0
-                                            else:
-                                                raw_response = str(result_data)
-                                                response_type = type(result_data).__name__
-                                        
-                                        log_synthesis_result(
-                                            trace_id=trace_id,
-                                            synthesis_goal_id=goal.id,
-                                            model=synthesis_step.execution_request.target.model.id if synthesis_step.execution_request.target.model else None,
-                                            provider=synthesis_step.execution_request.target.identifier,
-                                            success=executed_task.status is not None,  # Approximate
-                                            response_type=response_type,
-                                            raw_response=raw_response,
-                                            tool_calls=tool_calls,
-                                            response_length=len(raw_response) if raw_response else 0,
-                                        )
-                                    
-                                    return GoalResult(
-                                        goal_id=goal.id,
-                                        capability_id=goal.capability_id,
-                                        task_id=executed_task.id,
-                                        status=executed_task.status,
-                                        response=executed_task.response,
-                                        depends_on=tuple(step.depends_on),
-                                    )
-                                running[goal_id] = asyncio.create_task(execute_synthesis())
+                                # Execute the synthesis goal with modified request (uses recovery-enabled _execute_goal_async)
+                                coro = self._execute_goal_async(goal, synthesis_step, progress)
+                                running[goal_id] = asyncio.create_task(coro)
                                 pending_goals.remove(goal_id)
                             else:
                                 # Regular goal: skip it

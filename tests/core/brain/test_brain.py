@@ -710,7 +710,7 @@ class TestExecutionProgressReporting:
 
 
 class TestDependencyReferenceResolution:
-    """Tests for {{goal_id.result.field}} reference resolution in goal inputs."""
+    """Tests for {goal_id.result.field} reference resolution in goal inputs."""
 
     def test_filesystem_search_to_list_reference(
         self,
@@ -719,7 +719,7 @@ class TestDependencyReferenceResolution:
         tool_manager: ToolManager,
     ) -> None:
         """
-        Test filesystem.search -> filesystem.list with {{goal_0.result.path}} reference.
+        Test filesystem.search -> filesystem.list with {goal_0.result.path} reference.
         
         This reproduces the original bug scenario where goal_0 searches for a project
         and goal_1 lists its contents using the search result path.
@@ -763,7 +763,7 @@ class TestDependencyReferenceResolution:
 
         goals = (
             Goal(id="goal_0", capability_id="filesystem.search", inputs={"path": "/mnt/dev/languages/python/parika", "pattern": "parika*"}),
-            Goal(id="goal_1", capability_id="filesystem.list", inputs={"path": "{{goal_0.result.path}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="filesystem.list", inputs={"path": "{goal_0.result.path}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -785,7 +785,7 @@ class TestDependencyReferenceResolution:
         capability_registry: CapabilityRegistry,
         tool_manager: ToolManager,
     ) -> None:
-        """Test reference to nested dict field: {{goal_0.result.metadata.owner}}"""
+        """Test reference to nested dict field: {goal_0.result.metadata.owner}"""
         driver_a = _ScriptedToolDriver()
         driver_a.succeed_with(ToolResponse(result={
             "metadata": {
@@ -814,7 +814,7 @@ class TestDependencyReferenceResolution:
 
         goals = (
             Goal(id="goal_0", capability_id="tool.a"),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"owner": "{{goal_0.result.metadata.owner}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"owner": "{goal_0.result.metadata.owner}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -829,7 +829,7 @@ class TestDependencyReferenceResolution:
         capability_registry: CapabilityRegistry,
         tool_manager: ToolManager,
     ) -> None:
-        """Test reference to list element: {{goal_0.result.matches[0]}}"""
+        """Test reference to list element: {goal_0.result.matches[0]}"""
         search_driver = _ScriptedToolDriver()
         search_driver.succeed_with(ToolResponse(result={
             "path": "/mnt/dev/languages/python/parika",
@@ -857,8 +857,8 @@ class TestDependencyReferenceResolution:
         )
 
         goals = (
-            Goal(id="goal_0", capability_id="filesystem.search", inputs={"path": "/mnt/dev/languages/python/parika", "pattern": "*"}),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"first_match": "{{goal_0.result.matches[0]}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_0", capability_id="filesystem.search", inputs={"path": "/mnt/dev/languages/python/parika", "pattern": "parika*"}),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"first_match": "{goal_0.result.matches[0]}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -907,7 +907,7 @@ class TestDependencyReferenceResolution:
         goals = (
             Goal(id="goal_a", capability_id="tool.a"),
             Goal(id="goal_b", capability_id="tool.b"),
-            Goal(id="goal_c", capability_id="tool.c", inputs={"a": "{{goal_a.result.value}}", "b": "{{goal_b.result.value}}"}, depends_on=("goal_a", "goal_b")),
+            Goal(id="goal_c", capability_id="tool.c", inputs={"a": "{goal_a.result.value}", "b": "{goal_b.result.value}"}, depends_on=("goal_a", "goal_b")),
         )
         request = BrainRequest(goals=goals)
 
@@ -946,7 +946,7 @@ class TestDependencyReferenceResolution:
 
         goals = (
             Goal(id="goal_0", capability_id="tool.a"),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{{goal_0.result.value}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{goal_0.result.value}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -987,7 +987,7 @@ class TestDependencyReferenceResolution:
 
         goals = (
             Goal(id="goal_0", capability_id="tool.a"),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{{goal_0.result.nonexistent}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{goal_0.result.nonexistent}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -1028,7 +1028,7 @@ class TestDependencyReferenceResolution:
 
         goals = (
             Goal(id="goal_0", capability_id="tool.a"),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{{goal_0.result"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{goal_0.result"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
@@ -1069,7 +1069,7 @@ class TestDependencyReferenceResolution:
         # goal_1 references goal_0 but does NOT declare depends_on
         goals = (
             Goal(id="goal_0", capability_id="tool.a"),
-            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{{goal_0.result.value}}"}, depends_on=()),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{goal_0.result.value}"}, depends_on=()),
         )
         request = BrainRequest(goals=goals)
 
@@ -1102,7 +1102,7 @@ class TestDependencyReferenceResolution:
 
         # goal_1 references goal_0 which doesn't exist - planner should catch this
         goals = (
-            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{{goal_0.result.value}}"}, depends_on=("goal_0",)),
+            Goal(id="goal_1", capability_id="tool.b", inputs={"value": "{goal_0.result.value}"}, depends_on=("goal_0",)),
         )
         request = BrainRequest(goals=goals)
 
