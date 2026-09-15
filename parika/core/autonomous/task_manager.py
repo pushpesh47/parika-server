@@ -220,8 +220,25 @@ class AutonomousTaskManager:
         for dep_task_id in depends_on:
             self._create_dependency(task.id, dep_task_id)
 
+        # For root tasks (no dependencies), immediately transition through SCHEDULED to READY
+        # so the executor can claim them. Dependent tasks remain WAITING_FOR_DEPENDENCY
+        # until _check_dependent_tasks promotes them.
+        if not depends_on:
+            # CREATED -> SCHEDULED
+            task.status = AutonomousTaskStatus.SCHEDULED
+            task.updated_at = datetime.now(UTC)
+            model = task.to_model()
+            self._repository.update(model)
+            
+            # SCHEDULED -> READY (no preconditions for root tasks)
+            task.status = AutonomousTaskStatus.READY
+            task.updated_at = datetime.now(UTC)
+            model = task.to_model()
+            self._repository.update(model)
+
         self._event_bus.publish("task.created", TaskCreatedEvent(
             event_id=self._generate_id(),
+            event_type="task.created",
             mission_id=mission_id,
             task_id=task.id,
             name=name,
@@ -237,7 +254,7 @@ class AutonomousTaskManager:
             execution_requirements=execution_requirements,
         ))
 
-        self._logger.info("Created autonomous task '%s' for mission '%s'", task.id, mission_id)
+        self._logger.info("Created autonomous task '%s' for mission '%s' (status: %s)", task.id, mission_id, task.status.value)
         return task
 
     def _create_dependency(self, task_id: str, depends_on_task_id: str) -> None:
