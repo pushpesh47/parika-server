@@ -58,9 +58,15 @@ class AutonomousTask:
     provider_request_type: str | None
     task_category: str | None
     execution_requirements: MappingProxyType[str, Any] | None
+    execution_plan: Any | None = None  # Optional ExecutionPlan for multi-step tasks
 
     @classmethod
     def from_model(cls, model: AutonomousTaskModel) -> "AutonomousTask":
+        execution_plan = None
+        if model.execution_plan:
+            from parika.core.planner.execution_plan import ExecutionPlan
+            execution_plan = ExecutionPlan.from_dict(model.execution_plan)
+        
         return cls(
             id=model.id,
             mission_id=model.mission_id,
@@ -88,9 +94,14 @@ class AutonomousTask:
             provider_request_type=model.provider_request_type,
             task_category=model.task_category,
             execution_requirements=MappingProxyType(model.execution_requirements) if model.execution_requirements else None,
+            execution_plan=execution_plan,
         )
 
     def to_model(self) -> AutonomousTaskModel:
+        execution_plan_dict = None
+        if self.execution_plan:
+            execution_plan_dict = self.execution_plan.to_dict()
+        
         return AutonomousTaskModel(
             id=self.id,
             mission_id=self.mission_id,
@@ -118,6 +129,7 @@ class AutonomousTask:
             provider_request_type=self.provider_request_type,
             task_category=self.task_category,
             execution_requirements=dict(self.execution_requirements) if self.execution_requirements else None,
+            execution_plan=execution_plan_dict,
         )
 
 
@@ -161,6 +173,7 @@ class AutonomousTaskManager:
         provider_request_type: str | None = None,
         task_category: str | None = None,
         execution_requirements: MappingProxyType[str, Any] | None = None,
+        execution_plan: Any | None = None,  # Optional ExecutionPlan
     ) -> AutonomousTask:
         """Create a new autonomous task."""
         now = datetime.now(UTC)
@@ -197,6 +210,7 @@ class AutonomousTaskManager:
             provider_request_type=provider_request_type,
             task_category=task_category,
             execution_requirements=execution_requirements,
+            execution_plan=execution_plan,
         )
 
         model = task.to_model()

@@ -1,7 +1,8 @@
 """
 PARIKA Runtime Registry
 
-Manages available runtimes and their lifecycle.
+Manages runtime/environment availability and health.
+Reports availability facts only - does not perform selection.
 """
 
 from __future__ import annotations
@@ -9,15 +10,15 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any
 
 from parika.core.agent_runtime.contracts import (
-    AgentRuntime,
+    RuntimeCapabilities,
     RuntimeConfig,
     RuntimeInfo,
     RuntimeStatus,
     RuntimeType,
-    RuntimeCapabilities,
 )
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
@@ -26,16 +27,22 @@ from parika.core.logger.logger import Logger
 @dataclass(slots=True, kw_only=True)
 class RegisteredRuntime:
     """Registered runtime entry."""
-    runtime: AgentRuntime
     info: RuntimeInfo
     config: RuntimeConfig
+    backend_instance: Any = None  # Optional backend instance for health checks
 
 
 class RuntimeRegistry:
     """
-    Registry for agent runtimes.
-
-    Manages runtime discovery, registration, and lifecycle.
+    Registry for execution environment availability.
+    
+    Reports runtime/environment availability as facts.
+    Does NOT perform runtime selection - that is done by ExecutionStrategyResolver.
+    
+    Manages:
+    - Runtime registration and health status
+    - Availability queries
+    - Statistics
     """
 
     def __init__(
@@ -60,38 +67,39 @@ class RuntimeRegistry:
 
     def register(
         self,
-        runtime: AgentRuntime,
+        runtime_type: RuntimeType,
         config: RuntimeConfig,
+        backend_instance: Any = None,
     ) -> RuntimeInfo:
-        """Register a runtime."""
+        """Register a runtime/environment."""
         with self._lock:
-            if runtime.runtime_id in self._runtimes:
-                raise ValueError(f"Runtime '{runtime.runtime_id}' already registered")
+            if config.runtime_id in self._runtimes:
+                raise ValueError(f"Runtime '{config.runtime_id}' already registered")
 
             info = RuntimeInfo(
-                runtime_id=runtime.runtime_id,
+                runtime_id=config.runtime_id,
                 name=config.name,
-                runtime_type=runtime.runtime_type,
+                runtime_type=runtime_type,
                 status=RuntimeStatus.STOPPED,
-                capabilities=runtime.capabilities,
+                capabilities=RuntimeCapabilities(),
                 config=config,
             )
 
             entry = RegisteredRuntime(
-                runtime=runtime,
                 info=info,
                 config=config,
+                backend_instance=backend_instance,
             )
 
-            self._runtimes[runtime.runtime_id] = entry
-            self._type_index.setdefault(runtime.runtime_type, set()).add(runtime.runtime_id)
-            self._status_index.setdefault(RuntimeStatus.STOPPED, set()).add(runtime.runtime_id)
+            self._runtimes[config.runtime_id] = entry
+            self._type_index.setdefault(runtime_type, set()).add(config.runtime_id)
+            self._status_index.setdefault(RuntimeStatus.STOPPED, set()).add(config.runtime_id)
 
-            self._logger.info("Registered runtime '%s' (%s)", config.name, runtime.runtime_type.value)
+            self._logger.info("Registered runtime '%s' (%s)", config.name, runtime_type.value)
             self._event_bus.publish("runtime.registered", {
-                "runtime_id": runtime.runtime_id,
+                "runtime_id": config.runtime_id,
                 "name": config.name,
-                "type": runtime.runtime_type.value,
+                "type": runtime_type.value,
             })
 
             return info
@@ -103,28 +111,24 @@ class RuntimeRegistry:
             if not entry:
                 raise ValueError(f"Runtime '{runtime_id}' not found")
 
-            # Stop if running
-            if entry.info.status == RuntimeStatus.RUNNING:
-                entry.runtime.stop()
-
-            self._type_index[entry.runtime.runtime_type].discard(runtime_id)
+            self._type_index[entry.info.runtime_type].discard(runtime_id)
             self._status_index[entry.info.status].discard(runtime_id)
             del self._runtimes[runtime_id]
 
             self._logger.info("Unregistered runtime '%s'", runtime_id)
             self._event_bus.publish("runtime.unregistered", {"runtime_id": runtime_id})
 
-    def get_runtime(self, runtime_id: str) -> AgentRuntime | None:
-        """Get a runtime by ID."""
-        with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            return entry.runtime if entry else None
-
     def get_info(self, runtime_id: str) -> RuntimeInfo | None:
         """Get runtime info by ID."""
         with self._lock:
             entry = self._runtimes.get(runtime_id)
             return entry.info if entry else None
+
+    def get_backend_instance(self, runtime_id: str) -> Any | None:
+        """Get the backend instance for a runtime."""
+        with self._lock:
+            entry = self._runtimes.get(runtime_id)
+            return entry.backend_instance if entry else None
 
     def list_runtimes(
         self,
@@ -183,111 +187,29 @@ class RuntimeRegistry:
 
             return updated_info
 
-    def start_runtime(self, runtime_id: str) -> RuntimeInfo | None:
-        """Start a runtime."""
+    def is_available(self, runtime_type: RuntimeType) -> bool:
+        """
+        Check if a runtime type is available (has at least one RUNNING instance).
+        
+        This is the primary query used by ExecutionStrategyResolver.
+        """
         with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if not entry:
-                return None
+            runtime_ids = self._type_index.get(runtime_type, set())
+            for rid in runtime_ids:
+                entry = self._runtimes.get(rid)
+                if entry and entry.info.status == RuntimeStatus.RUNNING:
+                    return True
+            return False
 
-        # Start outside lock
-        success = entry.runtime.start()
-
+    def get_available_runtimes(self, runtime_type: RuntimeType) -> list[RuntimeInfo]:
+        """Get all runtimes of a type that are RUNNING."""
         with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if not entry:
-                return None
-
-            if success:
-                entry.info = RuntimeInfo(
-                    runtime_id=entry.info.runtime_id,
-                    name=entry.info.name,
-                    runtime_type=entry.info.runtime_type,
-                    status=RuntimeStatus.RUNNING,
-                    capabilities=entry.info.capabilities,
-                    config=entry.info.config,
-                    started_at=datetime.now(UTC),
-                    last_heartbeat=datetime.now(UTC),
-                    active_agents=entry.info.active_agents,
-                )
-            else:
-                entry.info = RuntimeInfo(
-                    runtime_id=entry.info.runtime_id,
-                    name=entry.info.name,
-                    runtime_type=entry.info.runtime_type,
-                    status=RuntimeStatus.ERROR,
-                    capabilities=entry.info.capabilities,
-                    config=entry.info.config,
-                    error="Failed to start",
-                )
-
-            return entry.info
-
-    def stop_runtime(self, runtime_id: str) -> bool:
-        """Stop a runtime."""
-        with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if not entry:
-                return False
-
-        success = entry.runtime.stop()
-
-        with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if entry:
-                entry.info = RuntimeInfo(
-                    runtime_id=entry.info.runtime_id,
-                    name=entry.info.name,
-                    runtime_type=entry.info.runtime_type,
-                    status=RuntimeStatus.STOPPED if success else RuntimeStatus.ERROR,
-                    capabilities=entry.info.capabilities,
-                    config=entry.info.config,
-                    started_at=entry.info.started_at,
-                    error=None if success else "Failed to stop",
-                )
-
-        return success
-
-    def increment_active_agents(self, runtime_id: str) -> int:
-        """Increment active agent count."""
-        with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if not entry:
-                return 0
-            entry.info = RuntimeInfo(
-                runtime_id=entry.info.runtime_id,
-                name=entry.info.name,
-                runtime_type=entry.info.runtime_type,
-                status=entry.info.status,
-                capabilities=entry.info.capabilities,
-                config=entry.info.config,
-                started_at=entry.info.started_at,
-                last_heartbeat=entry.info.last_heartbeat,
-                active_agents=entry.info.active_agents + 1,
-                error=entry.info.error,
-            )
-            return entry.info.active_agents
-
-    def decrement_active_agents(self, runtime_id: str) -> int:
-        """Decrement active agent count."""
-        with self._lock:
-            entry = self._runtimes.get(runtime_id)
-            if not entry:
-                return 0
-            new_count = max(0, entry.info.active_agents - 1)
-            entry.info = RuntimeInfo(
-                runtime_id=entry.info.runtime_id,
-                name=entry.info.name,
-                runtime_type=entry.info.runtime_type,
-                status=entry.info.status,
-                capabilities=entry.info.capabilities,
-                config=entry.info.config,
-                started_at=entry.info.started_at,
-                last_heartbeat=entry.info.last_heartbeat,
-                active_agents=new_count,
-                error=entry.info.error,
-            )
-            return new_count
+            runtime_ids = self._type_index.get(runtime_type, set())
+            return [
+                self._runtimes[rid].info
+                for rid in runtime_ids
+                if rid in self._runtimes and self._runtimes[rid].info.status == RuntimeStatus.RUNNING
+            ]
 
     def get_stats(self) -> dict[str, Any]:
         """Get registry statistics."""

@@ -31,7 +31,6 @@ class AgentAssignment:
     agent_id: str
     task_id: str
     agent_profile_id: str
-    runtime: str
     capability_id: str
     skill_id: str | None = None
 
@@ -99,10 +98,10 @@ class MissionCoordinator:
                 - name, description
                 - capability_id
                 - agent_profile_id (optional)
-                - runtime_preference (optional)
                 - skill_id (optional)
                 - depends_on (optional list of task names/ids)
                 - inputs
+                - metadata (optional, can include execution_plan)
 
         Returns:
             MissionExecutionPlan with agent assignments
@@ -119,7 +118,6 @@ class MissionCoordinator:
         for task_def in tasks:
             # Determine agent profile
             agent_profile_id = task_def.get("agent_profile_id") or "agent.general"
-            runtime = task_def.get("runtime_preference") or "native"
             skill_id = task_def.get("skill_id")
 
             # Create the task
@@ -145,7 +143,6 @@ class MissionCoordinator:
                 agent_id="",  # Will be filled when spawned
                 task_id=task.id,
                 agent_profile_id=agent_profile_id,
-                runtime=runtime,
                 capability_id=task_def["capability_id"],
                 skill_id=skill_id,
             )
@@ -180,11 +177,8 @@ class MissionCoordinator:
         # Start mission
         self._mission_manager.start(mission_id)
 
-        # Spawn agents for each assignment
-        for assignment in plan.agent_assignments:
-            await self._spawn_agent_for_assignment(mission_id, assignment)
-
-        # Start mission execution - the AutonomousExecutor will pick up READY tasks
+        # Spawn agents for each assignment (on-demand when tasks are ready)
+        # Agents are spawned by AutonomousExecutor when task is claimed
         self._logger.info("Started execution of mission '%s'", mission_id)
 
         return plan
@@ -194,7 +188,7 @@ class MissionCoordinator:
         mission_id: str,
         assignment: AgentAssignment,
     ) -> str:
-        """Spawn an agent for a task assignment."""
+        """Spawn an agent for a task assignment (called at execution time)."""
         # Get the task
         task = self._task_manager.get(assignment.task_id)
         if not task:
@@ -205,7 +199,7 @@ class MissionCoordinator:
             mission_id=mission_id,
             task_id=assignment.task_id,
             agent_profile_id=assignment.agent_profile_id,
-            runtime=assignment.runtime,
+            skill_id=assignment.skill_id,
             metadata=MappingProxyType({
                 "assignment_capability": assignment.capability_id,
                 "assignment_skill": assignment.skill_id or "",
@@ -219,8 +213,8 @@ class MissionCoordinator:
         self._mission_agents[mission_id][assignment.task_id] = assignment
 
         self._logger.info(
-            "Spawned agent '%s' for task '%s' (profile: %s, runtime: %s)",
-            agent.id, assignment.task_id, assignment.agent_profile_id, assignment.runtime
+            "Spawned agent '%s' for task '%s' (profile: %s, skill: %s)",
+            agent.id, assignment.task_id, assignment.agent_profile_id, assignment.skill_id or "none"
         )
 
         return agent.id
@@ -319,7 +313,7 @@ class MissionCoordinator:
             if all_complete:
                 self._mission_manager.complete(mission_id, result)
         
-        # Phase 2: Publish agent message for task completion
+        # Publish agent message for task completion
         assignment = self._mission_agents.get(mission_id, {}).get(task_id)
         if assignment and assignment.agent_id:
             self._message_bus.send(
@@ -367,7 +361,6 @@ class MissionCoordinator:
                     "progress": task.progress,
                     "agent_id": assignment.agent_id,
                     "agent_profile": assignment.agent_profile_id,
-                    "runtime": assignment.runtime,
                     "capability": assignment.capability_id,
                     "skill": assignment.skill_id,
                 })

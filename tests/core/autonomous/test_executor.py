@@ -60,6 +60,7 @@ class TestExecutorLifecycle:
         mock_provider_manager = Mock()
         mock_resource_manager = Mock()
         mock_policy_engine = Mock()
+        mock_mission_manager = Mock()
         mock_authorization_boundary = Mock()
         mock_budget_enforcer = Mock()
         mock_agent_supervisor = Mock()
@@ -82,6 +83,7 @@ class TestExecutorLifecycle:
             provider_manager=mock_provider_manager,
             resource_manager=mock_resource_manager,
             policy_engine=mock_policy_engine,
+            mission_manager=mock_mission_manager,
             authorization_boundary=Mock(),
             budget_enforcer=Mock(),
             agent_supervisor=Mock(),
@@ -131,44 +133,68 @@ class TestTaskClaiming:
         from parika.core.autonomous import AutonomousTaskRepository
         from parika.core.autonomous.models import AutonomousTaskModel
         from parika.core.autonomous.contracts import AutonomousTaskStatus
+        from unittest.mock import MagicMock
 
-        mock_pool = Mock()
-        mock_session = Mock()
-        mock_pool.sync_pool = Mock()
-        mock_pool.sync_pool.__enter__ = Mock(return_value=mock_session)
-        mock_pool.sync_pool.__exit__ = Mock(return_value=None)
+        # Mock the PoolManager and its connection context manager
+        mock_pool = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
         
-        # Make session a context manager
-        mock_session.__enter__ = Mock(return_value=mock_session)
-        mock_session.__exit__ = Mock(return_value=None)
-
-        # Mock the session.execute to return a task
-        mock_task_model = AutonomousTaskModel(
-            id="task-123",
-            mission_id="mission-1",
-            name="Test Task",
-            description="Test",
-            capability_id="vision.provider_describe_image",
-            inputs={},
-            status="ready",
-            task_metadata={},
-        )
-
-        mock_result = Mock()
-        mock_result.scalar_one_or_none.return_value = mock_task_model
-        mock_session.execute = Mock(return_value=mock_result)
-        mock_session.commit = Mock()
+        # Set up the context manager chain: pool.connection() -> conn -> conn.cursor()
+        mock_pool.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_pool.connection.return_value.__exit__ = MagicMock(return_value=None)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+        
+        # Mock cursor.fetchone to return a task row
+        mock_row = {
+            "id": "task-123",
+            "mission_id": "mission-1",
+            "parent_task_id": None,
+            "agent_id": None,
+            "name": "Test Task",
+            "description": "Test",
+            "capability_id": "vision.provider_describe_image",
+            "inputs": {},
+            "status": "running",  # After claiming, status is RUNNING
+            "priority": 0,
+            "progress": 0.0,
+            "created_at": datetime.now(UTC),
+            "started_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "completed_at": None,
+            "deadline": None,
+            "max_retries": 3,
+            "retry_count": 0,
+            "resource_budget": {},
+            "checkpoint_id": None,
+            "result": None,
+            "failure": None,
+            "metadata": {},
+            "provider_request_type": None,
+            "task_category": None,
+            "execution_requirements": None,
+            "execution_plan": None,
+        }
+        mock_cursor.fetchone.return_value = mock_row
+        mock_conn.commit = MagicMock()
 
         from parika.core.database.pool import PoolManager
-        repo = AutonomousTaskRepository(PoolManager(), Mock())
-        repo._session = Mock(return_value=mock_session)
+        repo = AutonomousTaskRepository(mock_pool, Mock())
 
         claimed = repo.claim_ready_task("task-123")
 
         assert claimed is not None
         assert claimed.id == "task-123"
-        mock_session.execute.assert_called_once()
-        mock_session.commit.assert_called_once()
+        # Verify the UPDATE ... WHERE ... RETURNING pattern was used
+        mock_cursor.execute.assert_called_once()
+        call_args = mock_cursor.execute.call_args
+        assert "UPDATE execution.autonomous_task SET" in call_args[0][0]
+        assert "WHERE id = %s AND status = %s" in call_args[0][0]
+        assert "RETURNING *" in call_args[0][0]
+        assert call_args[0][1][3] == "task-123"
+        assert call_args[0][1][4] == AutonomousTaskStatus.READY.value
+        mock_conn.commit.assert_called_once()
 
 
 class TestToolExecutionPath:

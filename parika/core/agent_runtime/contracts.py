@@ -16,10 +16,15 @@ from uuid import uuid4
 
 
 class RuntimeType(StrEnum):
-    """Supported runtime types."""
+    """Supported runtime/environment types."""
     NATIVE = "native"
     HERMES = "hermes"
     REMOTE = "remote"
+    CONTAINER = "container"
+    GPU_WORKER = "gpu_worker"
+    SANDBOXED = "sandboxed"
+    DISTRIBUTED = "distributed"
+    EXTERNAL_AGENT = "external_agent"
 
 
 class RuntimeStatus(StrEnum):
@@ -85,10 +90,10 @@ class RuntimeInfo:
 
 class AgentRuntime(ABC):
     """
-    Abstract base class for agent runtimes.
-
-    All runtimes must implement this interface to be compatible
-    with PARIKA's autonomous execution system.
+    Abstract base class for agent runtimes (legacy - kept for compatibility).
+    
+    New architecture uses ExecutionBackend instead.
+    This is kept for backward compatibility during transition.
     """
 
     @property
@@ -117,32 +122,17 @@ class AgentRuntime(ABC):
 
     @abstractmethod
     async def discover(self) -> list[str]:
-        """
-        Discover available capabilities/skills in this runtime.
-
-        Returns:
-            List of capability/skill identifiers available
-        """
+        """Discover available capabilities/skills in this runtime."""
         pass
 
     @abstractmethod
     async def validate(self, config: RuntimeConfig) -> tuple[bool, str | None]:
-        """
-        Validate runtime configuration.
-
-        Returns:
-            Tuple of (is_valid, error_message)
-        """
+        """Validate runtime configuration."""
         pass
 
     @abstractmethod
     async def start(self) -> bool:
-        """
-        Start the runtime.
-
-        Returns:
-            True if started successfully
-        """
+        """Start the runtime."""
         pass
 
     @abstractmethod
@@ -155,20 +145,7 @@ class AgentRuntime(ABC):
         context: MappingProxyType[str, Any],
         skill_id: str | None = None,
     ) -> MappingProxyType[str, Any]:
-        """
-        Execute a capability in this runtime.
-
-        Args:
-            agent_id: Agent instance ID
-            task_id: Task ID
-            capability_id: Capability to execute
-            inputs: Input parameters
-            context: Execution context (permissions, budget, etc.)
-            skill_id: Optional skill to use
-
-        Returns:
-            Execution result
-        """
+        """Execute a capability in this runtime."""
         pass
 
     @abstractmethod

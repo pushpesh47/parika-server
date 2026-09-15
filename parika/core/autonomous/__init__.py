@@ -83,7 +83,7 @@ from .recovery_coordinator import RecoveryCoordinator, RecoveryResult, RecoveryP
 from .agent_supervisor import AgentInstance, AgentSupervisor
 from .world_state_manager import WorldState, WorldStateManager
 from .executor import AutonomousExecutor, ExecutorConfig
-from .runtime import AutonomousRuntime, build_autonomous_runtime
+from .runtime import AutonomousRuntime, build_autonomous_runtime, RuntimeLifecycleState
 from .authorization import (
     AutonomousAuthorizationBoundary,
     create_autonomous_authorization_boundary,
@@ -223,6 +223,7 @@ __all__ = [
     "WorldState",
     "WorldStateManager",
     "AutonomousRuntime",
+    "RuntimeLifecycleState",
     "build_autonomous_runtime",
     "AutonomousExecutor",
     "ExecutorConfig",

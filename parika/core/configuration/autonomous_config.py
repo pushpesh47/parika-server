@@ -87,6 +87,7 @@ class AutonomousWaitingSettings:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AutonomousSettings:
     """Complete autonomous runtime configuration."""
+    enabled: bool = False  # Feature flag - disabled by default
     skills: SkillSettings = field(default_factory=SkillSettings)
     hermes: HermesSettings = field(default_factory=HermesSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
@@ -166,6 +167,7 @@ def load_autonomous_settings(configuration: Configuration) -> AutonomousSettings
     )
 
     return AutonomousSettings(
+        enabled=bool(configuration.get("autonomous.enabled", False)),
         skills=skills,
         hermes=hermes,
         runtime=runtime,

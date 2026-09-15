@@ -34,7 +34,7 @@ class AgentInstance:
     parent_agent_id: str | None
     child_agent_ids: tuple[str, ...]
     status: AgentInstanceStatus
-    runtime: str
+    preferred_runtime: str | None  # Advisory only - actual runtime from ExecutionStrategy
     permission_context: MappingProxyType[str, Any]
     resource_budget: MappingProxyType[str, Any]
     created_at: datetime
@@ -54,9 +54,9 @@ class AgentInstance:
             task_id=model.task_id,
             agent_profile_id=model.agent_profile_id,
             parent_agent_id=model.parent_agent_id,
-            child_agent_ids=tuple(model.metadata.get("child_agent_ids", [])),
+            child_agent_ids=tuple(model.agent_metadata.get("child_agent_ids", [])),
             status=AgentInstanceStatus(model.status),
-            runtime=model.runtime,
+            preferred_runtime=model.agent_metadata.get("preferred_runtime"),
             permission_context=MappingProxyType(model.permission_context),
             resource_budget=MappingProxyType(model.resource_budget),
             created_at=model.created_at,
@@ -66,12 +66,14 @@ class AgentInstance:
             last_heartbeat=model.last_heartbeat,
             result=MappingProxyType(model.result) if model.result else None,
             failure=model.failure,
-            metadata=MappingProxyType(model.metadata),
+            metadata=MappingProxyType(model.agent_metadata),
         )
 
     def to_model(self) -> AgentInstanceModel:
         metadata = dict(self.metadata)
         metadata["child_agent_ids"] = list(self.child_agent_ids)
+        if self.preferred_runtime:
+            metadata["preferred_runtime"] = self.preferred_runtime
         return AgentInstanceModel(
             id=self.id,
             mission_id=self.mission_id,
@@ -79,7 +81,7 @@ class AgentInstance:
             agent_profile_id=self.agent_profile_id,
             parent_agent_id=self.parent_agent_id,
             status=self.status.value,
-            runtime=self.runtime,
+            runtime="native",  # Kept for DB compatibility - not used for runtime binding
             permission_context=dict(self.permission_context),
             resource_budget=dict(self.resource_budget),
             created_at=self.created_at,
@@ -91,6 +93,11 @@ class AgentInstance:
             failure=self.failure,
             metadata=metadata,
         )
+
+    def update_context(self, key: str, value: Any) -> None:
+        """Update agent context with new information (e.g., step results)."""
+        self.metadata = MappingProxyType({**dict(self.metadata), key: value})
+        self.updated_at = datetime.now(UTC)
 
 
 class AgentSupervisor:
@@ -119,7 +126,7 @@ class AgentSupervisor:
         agent_profile_id: str,
         *,
         parent_agent_id: str | None = None,
-        runtime: str = "native",
+        preferred_runtime: str | None = None,  # Advisory only
         permission_context: MappingProxyType[str, Any] | None = None,
         resource_budget: MappingProxyType[str, Any] | None = None,
         metadata: MappingProxyType[str, Any] | None = None,
@@ -135,7 +142,7 @@ class AgentSupervisor:
             parent_agent_id=parent_agent_id,
             child_agent_ids=(),
             status=AgentInstanceStatus.SPAWNED,
-            runtime=runtime,
+            preferred_runtime=preferred_runtime,
             permission_context=permission_context or MappingProxyType({}),
             resource_budget=resource_budget or MappingProxyType({}),
             created_at=now,
@@ -164,7 +171,7 @@ class AgentSupervisor:
             task_id=task_id,
             agent_id=agent.id,
             agent_profile_id=agent_profile_id,
-            runtime=runtime,
+            preferred_runtime=preferred_runtime or "native",
             permission_context=permission_context or MappingProxyType({}),
             resource_budget=resource_budget or MappingProxyType({}),
         ))

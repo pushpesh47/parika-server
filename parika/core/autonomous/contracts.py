@@ -289,7 +289,7 @@ class AgentInstanceContract:
     parent_agent_id: str | None
     child_agent_ids: tuple[str, ...]
     status: AgentInstanceStatus
-    runtime: str
+    preferred_runtime: str | None  # Advisory only - actual runtime from ExecutionStrategy
     permission_context: MappingProxyType[str, Any]
     resource_budget: MappingProxyType[str, Any]
     created_at: datetime
@@ -350,6 +350,19 @@ class ExecutionContract:
     result: MappingProxyType[str, Any] | None
     error: str | None
     metadata: MappingProxyType[str, Any]
+    
+    # New audit fields
+    selected_implementation_id: str | None = None
+    implementation_version: str | None = None
+    implementation_source: str | None = None
+    execution_backend: str | None = None
+    required_environment: str | None = None
+    actual_environment: str | None = None
+    step_index: int = 0
+    policy_decision_id: str | None = None
+    budget_allocation_id: str | None = None
+    fallback_from_execution_id: str | None = None
+    fallback_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

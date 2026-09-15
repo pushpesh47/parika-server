@@ -165,6 +165,7 @@ class RecoveryCoordinator:
             
             self._event_bus.publish("recovery.completed", RecoveryCompletedEvent(
                 event_id=self._generate_id(),
+                event_type="recovery.completed",
                 recovery_action="full_recovery",
                 restored_checkpoint_id=None,
             ))

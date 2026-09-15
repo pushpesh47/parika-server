@@ -42,6 +42,7 @@ class SelectionResult:
     """Result of implementation selection."""
     selected: CapabilityImplementation | None
     candidates: tuple[SelectionCandidate, ...]
+    fallback_candidates: tuple[CapabilityImplementation, ...]  # Ordered fallback implementations
     reason: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -65,6 +66,7 @@ class ImplementationResolver:
     2. Apply hard gates (security, policy, permission, compatibility, resources)
     3. Score remaining candidates by fitness factors
     4. Select best candidate
+    5. Provide ordered fallback candidates
     """
 
     def __init__(
@@ -128,7 +130,7 @@ class ImplementationResolver:
             preferred_runtime: Preferred runtime type
 
         Returns:
-            ImplementationResolution with selected implementation
+            ImplementationResolution with selected implementation and fallback chain
         """
         # First resolve the capability
         capability_resolution = self._capability_resolver.resolve(request)
@@ -176,9 +178,16 @@ class ImplementationResolver:
         # Select best
         best = max(scored, key=lambda c: c.fitness_score)
 
+        # Build fallback chain (remaining candidates in score order)
+        fallback_candidates = tuple(
+            c.implementation for c in scored 
+            if c.implementation.id != best.implementation.id
+        )
+
         selection_result = SelectionResult(
             selected=best.implementation,
             candidates=tuple(scored),
+            fallback_candidates=fallback_candidates,
             reason=f"Selected {best.implementation.id} with score {best.fitness_score:.3f}",
         )
 
@@ -195,13 +204,15 @@ class ImplementationResolver:
             "source": best.implementation.source.value,
             "score": best.fitness_score,
             "candidates_evaluated": len(scored),
+            "fallback_count": len(fallback_candidates),
         })
 
         self._logger.info(
-            "Resolved capability '%s' to implementation '%s' (score: %.3f)",
+            "Resolved capability '%s' to implementation '%s' (score: %.3f, fallbacks: %d)",
             request.capability_id,
             best.implementation.id,
             best.fitness_score,
+            len(fallback_candidates),
         )
 
         return resolution
@@ -454,6 +465,7 @@ class ImplementationResolver:
         agent_id: str | None = None,
         mission_id: str | None = None,
         task_id: str | None = None,
+        allowed_runtimes: tuple[str, ...] = (),
     ) -> ImplementationResolution | None:
         """
         Select a fallback implementation after a failure.
@@ -465,6 +477,7 @@ class ImplementationResolver:
             agent_id: Agent ID
             mission_id: Mission ID
             task_id: Task ID
+            allowed_runtimes: Allowed runtime types
 
         Returns:
             New ImplementationResolution or None if no fallback available
@@ -487,7 +500,7 @@ class ImplementationResolver:
             agent_id=agent_id,
             mission_id=mission_id,
             task_id=task_id,
-            allowed_runtimes=(),
+            allowed_runtimes=allowed_runtimes,
         )
 
         passed = [c for c in gated if c.hard_gate_passed]
@@ -506,6 +519,7 @@ class ImplementationResolver:
         selection_result = SelectionResult(
             selected=best.implementation,
             candidates=tuple(scored),
+            fallback_candidates=tuple(c.implementation for c in scored if c.implementation.id != best.implementation.id),
             reason=f"Fallback to {best.implementation.id} after {failed_implementation_id} failed",
         )
 
@@ -515,3 +529,57 @@ class ImplementationResolver:
             implementation=best.implementation,
             selection_result=selection_result,
         )
+
+    def get_fallback_chain(
+        self,
+        request: CapabilityRequest,
+        *,
+        context: MappingProxyType[str, Any] | None = None,
+        agent_id: str | None = None,
+        agent_profile_id: str | None = None,
+        mission_id: str | None = None,
+        task_id: str | None = None,
+        allowed_runtimes: tuple[str, ...] = (),
+        preferred_runtime: str | None = None,
+    ) -> tuple[CapabilityImplementation, ...]:
+        """
+        Get the complete ordered fallback chain for a capability request.
+        
+        Returns implementations in order of selection preference (best first).
+        """
+        # Get all implementations for this capability
+        candidates = self._implementation_registry.get_implementations_for_capability(
+            request.capability_id,
+        )
+
+        if not candidates:
+            return ()
+
+        # Apply hard gates
+        gated_candidates = self._apply_hard_gates(
+            candidates,
+            context=context or MappingProxyType({}),
+            agent_id=agent_id,
+            agent_profile_id=agent_profile_id,
+            mission_id=mission_id,
+            task_id=task_id,
+            allowed_runtimes=allowed_runtimes,
+        )
+
+        # Filter to only passed candidates
+        passed = [c for c in gated_candidates if c.hard_gate_passed]
+
+        if not passed:
+            return ()
+
+        # Score candidates
+        scored = self._score_candidates(
+            passed,
+            context=context or MappingProxyType({}),
+            preferred_runtime=preferred_runtime,
+        )
+
+        # Sort by fitness score descending
+        scored.sort(key=lambda c: c.fitness_score, reverse=True)
+
+        return tuple(c.implementation for c in scored)

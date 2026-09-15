@@ -136,6 +136,7 @@ class AutonomousTaskModel(Base):
     provider_request_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     execution_requirements: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    execution_plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     mission: Mapped["MissionModel"] = relationship("MissionModel", back_populates="tasks")
@@ -197,7 +198,7 @@ class AgentInstanceModel(Base):
     agent_profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
     parent_agent_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("execution.agent_instance.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=AgentInstanceStatus.SPAWNED.value)
-    runtime: Mapped[str] = mapped_column(String(64), nullable=False, default="native")
+    runtime: Mapped[str] = mapped_column(String(64), nullable=False, default="native")  # Kept for DB compatibility
     permission_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     resource_budget: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
@@ -261,6 +262,8 @@ class ExecutionModel(Base):
         Index("ix_execution_worker_id", "worker_id"),
         Index("ix_execution_status", "status"),
         Index("ix_execution_started_at", "started_at"),
+        Index("ix_execution_implementation_id", "selected_implementation_id"),
+        Index("ix_execution_agent_id", "agent_id"),
         {"schema": "execution"},
     )
 
@@ -277,10 +280,26 @@ class ExecutionModel(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
+    # New audit fields
+    selected_implementation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    implementation_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    implementation_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    required_environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actual_environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_decision_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    budget_allocation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fallback_from_execution_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("execution.execution.id", ondelete="SET NULL"), nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Relationships
     task: Mapped["AutonomousTaskModel"] = relationship("AutonomousTaskModel", back_populates="executions")
     worker: Mapped["WorkerModel"] = relationship("WorkerModel", foreign_keys="ExecutionModel.worker_id", remote_side="WorkerModel.id", uselist=False)
     checkpoint: Mapped["CheckpointModel | None"] = relationship("CheckpointModel", foreign_keys="ExecutionModel.checkpoint_id")
+    fallback_from: Mapped["ExecutionModel | None"] = relationship("ExecutionModel", remote_side=[id], back_populates="fallback_executions", foreign_keys="ExecutionModel.fallback_from_execution_id")
+    fallback_executions: Mapped[list["ExecutionModel"]] = relationship("ExecutionModel", back_populates="fallback_from", foreign_keys="ExecutionModel.fallback_from_execution_id")
 
 
 # ========================================================================
@@ -381,3 +400,36 @@ class AutonomousEventModel(Base):
     
     # Event payload
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+# ========================================================================
+# Agent Message Model (for inter-agent communication)
+# ========================================================================
+
+class AgentMessageModel(Base):
+    """Persistent Agent Message model for A2A communication."""
+    __tablename__ = "agent_message"
+    __table_args__ = (
+        Index("ix_agent_message_mission_id", "mission_id"),
+        Index("ix_agent_message_sender_id", "sender_agent_id"),
+        Index("ix_agent_message_recipient_id", "recipient_agent_id"),
+        Index("ix_agent_message_status", "status"),
+        Index("ix_agent_message_timestamp", "timestamp"),
+        {"schema": "execution"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    message_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    
+    # Correlation IDs
+    mission_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sender_agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recipient_agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    
+    # Message content
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")  # pending, delivered, read, failed
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")

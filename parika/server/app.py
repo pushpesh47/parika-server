@@ -97,7 +97,12 @@ def create_app(
         configuration.load()
         db_config = db_config_module.load_database_config(configuration)
         
-# Initialize PostgreSQL pools if database is enabled
+        # Check if autonomous runtime is enabled
+        from parika.core.configuration.autonomous_config import load_autonomous_settings
+        autonomous_settings = load_autonomous_settings(configuration)
+        autonomous_enabled = autonomous_settings.enabled
+        
+        # Initialize PostgreSQL pools if database is enabled
         sync_pool = None
         if db_config.enabled:
             # Initialize sync pool (needed by CoreExecutionOwner worker thread and API dependencies)
@@ -165,6 +170,39 @@ def create_app(
         else:
             raise RuntimeError("PostgreSQL is required for Weather cache")
 
+        # Initialize Autonomous Runtime if enabled
+        autonomous_runtime = None
+        if autonomous_enabled and sync_pool is not None:
+            try:
+                from parika.core.autonomous.runtime import build_autonomous_runtime
+                
+                autonomous_runtime = build_autonomous_runtime(
+                    sync_pool=sync_pool,
+                    event_bus=runtime.event_bus,
+                    logger=runtime.logger,
+                    service_container=runtime.service_container,
+                    capability_resolver=runtime.capability_resolver,
+                    planner=runtime.planner,
+                    capability_executor=runtime.capability_executor,
+                    tool_manager=runtime.tool_manager,
+                    provider_manager=runtime.provider_manager,
+                    resource_manager=runtime.resource_manager,
+                    policy_engine=runtime.policy_engine,
+                    permission_manager=runtime.permission_manager,
+                    workspace_permission_manager=runtime.workspace_permissions,
+                )
+                
+                # Start the autonomous runtime (async)
+                await autonomous_runtime.start(auto_recover=True)
+                
+                # Store autonomous runtime in app state for access by API routes
+                app.state.autonomous_runtime = autonomous_runtime
+                
+            except Exception as e:
+                # Log error but don't fail server startup
+                runtime.logger.get_logger(__name__).error("Failed to initialize Autonomous Runtime: %s", e)
+                autonomous_runtime = None
+        
         # Store references in app.state - but note that the actual Core resources
         # are owned by the CoreExecutionOwner's worker thread
         app.state.core_execution_owner = core_execution_owner
@@ -175,11 +213,19 @@ def create_app(
         app.state.server_settings = settings
         app.state.weather_cache = weather_cache  # Shared cache for Weather API
         app.state.sync_pool = sync_pool  # PostgreSQL sync pool for API dependencies
+        app.state.autonomous_runtime = autonomous_runtime
 
         try:
             yield
 
         finally:
+            # Shutdown Autonomous Runtime if it was started
+            if autonomous_runtime is not None:
+                try:
+                    await autonomous_runtime.stop()
+                except Exception as e:
+                    runtime.logger.get_logger(__name__).error("Error shutting down Autonomous Runtime: %s", e)
+            
             # Shutdown the CoreExecutionOwner and its worker thread
             core_execution_owner.shutdown()
             # Shutdown shared WeatherCache
@@ -190,6 +236,7 @@ def create_app(
             app.state.session_store = None
             app.state.weather_cache = None
             app.state.sync_pool = None
+            app.state.autonomous_runtime = None
 
     app = FastAPI(
         title="PARIKA Server",
@@ -203,6 +250,7 @@ def create_app(
     app.state.runtime = None
     app.state.router = None
     app.state.session_store = None
+    app.state.autonomous_runtime = None
 
     cors_settings = _peek_cors_settings()
 

@@ -2,7 +2,7 @@
 PARIKA Agent Selector
 
 Provides dynamic agent selection based on task requirements, capabilities,
-skills, runtime compatibility, and historical performance.
+skills, and historical performance.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from parika.core.implementation_registry.implementation_registry import Implemen
 from parika.core.implementation_registry.implementation_resolver import ImplementationResolver
 from parika.core.skill_system.skill_catalog import SkillCatalog
 from parika.core.skill_system.skill_registry import SkillRegistry
-from parika.core.agent_runtime.runtime_registry import RuntimeRegistry
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
 
@@ -47,7 +46,6 @@ class AgentCandidate:
     agent_id: str
     agent_profile_id: str
     specialization: str
-    runtime: str
     matched_skills: tuple[str, ...]
     matched_tools: tuple[str, ...]
     matched_capabilities: tuple[str, ...]
@@ -63,7 +61,6 @@ class AgentSelector:
     - Agent profiles and specializations
     - Skill compatibility
     - Tool availability
-    - Runtime compatibility
     - Historical performance (experience)
     - Current load
     """
@@ -80,7 +77,6 @@ class AgentSelector:
         implementation_resolver: ImplementationResolver,
         skill_registry: SkillRegistry,
         skill_catalog: SkillCatalog,
-        runtime_registry: RuntimeRegistry,
         event_bus: EventBus,
         logger: Logger,
     ) -> None:
@@ -93,7 +89,6 @@ class AgentSelector:
         self._implementation_resolver = implementation_resolver
         self._skill_registry = skill_registry
         self._skill_catalog = skill_catalog
-        self._runtime_registry = runtime_registry
         self._event_bus = event_bus
         self._logger = logger.get_logger(__name__)
 
@@ -148,10 +143,6 @@ class AgentSelector:
             if missing_tools:
                 continue
 
-            # Check runtime compatibility
-            if criteria.allowed_runtimes and criteria.preferred_runtime not in criteria.allowed_runtimes:
-                continue
-
             # Score this candidate
             score = self._score_candidate(
                 agent_profile,
@@ -166,7 +157,6 @@ class AgentSelector:
                 agent_id=agent_profile.id,
                 agent_profile_id=agent_profile.id,
                 specialization=agent_profile.specialization.value,
-                runtime=criteria.preferred_runtime or "native",
                 matched_skills=tuple(matched_preferred_skills),
                 matched_tools=tuple(set(criteria.required_tools) & set(agent_profile.allowed_capabilities)),
                 matched_capabilities=(criteria.capability_id,),
@@ -207,10 +197,6 @@ class AgentSelector:
         if criteria.agent_specialization and agent_profile.specialization.value == criteria.agent_specialization:
             score += 0.15
 
-        # Preferred runtime match
-        if criteria.preferred_runtime:
-            score += 0.1
-
         # Profile preference (preferred capabilities)
         if criteria.capability_id in agent_profile.preferred_capabilities:
             score += 0.1
@@ -225,17 +211,10 @@ class AgentSelector:
         """Find suitable implementation for agent + capability."""
         try:
             # Use implementation resolver to find best implementation
-            # This is a simplified version - would use actual resolver
             impls = self._implementation_registry.get_implementations_for_capability(
                 criteria.capability_id,
                 status="active",
             )
-
-            # Filter by runtime
-            if criteria.preferred_runtime:
-                impls = [i for i in impls if i.metadata.runtime_type == criteria.preferred_runtime]
-            elif criteria.allowed_runtimes:
-                impls = [i for i in impls if i.metadata.runtime_type in criteria.allowed_runtimes]
 
             # Filter by agent's allowed tools/skills
             filtered = []

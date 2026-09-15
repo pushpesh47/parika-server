@@ -11,7 +11,7 @@ from types import MappingProxyType
 from datetime import UTC, datetime
 
 from parika.core.autonomous.runtime import build_autonomous_runtime
-from parika.core.database.pool import PoolManager
+from psycopg_pool import ConnectionPool
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
 from parika.core.service_container.service_container import ServiceContainer
@@ -33,9 +33,7 @@ class TestPhase2Integration:
     @pytest.fixture
     def mock_services(self):
         """Create mock services for testing."""
-        pool_manager = Mock(spec=PoolManager)
-        pool_manager.get_sync_connection = Mock()
-        pool_manager.sync_pool = Mock()
+        sync_pool = Mock(spec=ConnectionPool)
         
         event_bus = Mock(spec=EventBus)
         event_bus.publish = Mock()
@@ -76,7 +74,7 @@ class TestPhase2Integration:
         workspace_permission_manager = Mock(spec=WorkspacePermissionManager)
         
         return {
-            'pool_manager': pool_manager,
+            'sync_pool': sync_pool,
             'event_bus': event_bus,
             'logger': logger,
             'service_container': service_container,
@@ -101,13 +99,15 @@ class TestPhase2Integration:
         from parika.core.implementation_registry.implementation_registry import ImplementationRegistry
         from parika.core.implementation_registry.implementation_resolver import ImplementationResolver
         from parika.core.agent_runtime.runtime_registry import RuntimeRegistry
-        from parika.core.agent_runtime.native_runtime import NativeRuntimeAdapter
-        from parika.core.agent_runtime.hermes_runtime import HermesRuntimeAdapter
+        from parika.core.agent_runtime.native_backend import NativeBackend
+        from parika.core.agent_runtime.hermes_backend import HermesBackend
         from parika.core.agent_communication.message_bus import MessageBus
         from parika.core.agent_communication.message_repository import AgentMessageRepository
         from parika.core.multi_agent.mission_coordinator import MissionCoordinator
         from parika.core.multi_agent.agent_selector import AgentSelector
         from parika.core.autonomous_waiting.wait_manager import WaitManager
+        from parika.core.autonomous.execution_strategy_resolver import ExecutionStrategyResolver
+        from parika.core.autonomous.dispatcher import ExecutionDispatcher
         
         # All imports succeed
         assert SkillRegistry is not None
@@ -117,13 +117,15 @@ class TestPhase2Integration:
         assert ImplementationRegistry is not None
         assert ImplementationResolver is not None
         assert RuntimeRegistry is not None
-        assert NativeRuntimeAdapter is not None
-        assert HermesRuntimeAdapter is not None
+        assert NativeBackend is not None
+        assert HermesBackend is not None
         assert MessageBus is not None
         assert AgentMessageRepository is not None
         assert MissionCoordinator is not None
         assert AgentSelector is not None
         assert WaitManager is not None
+        assert ExecutionStrategyResolver is not None
+        assert ExecutionDispatcher is not None
 
     def test_autonomous_runtime_dataclass_has_phase2_fields(self, mock_services):
         """Test that AutonomousRuntime dataclass includes Phase 2 fields."""
@@ -136,17 +138,13 @@ class TestPhase2Integration:
         phase2_fields = [
             'skill_registry', 'skill_catalog', 'skill_loader', 'security_scanner',
             'implementation_registry', 'implementation_resolver', 'runtime_registry',
-            'message_bus', 'wait_manager', 'mission_coordinator', 'agent_selector'
+            'native_backend', 'hermes_backend', 'remote_backend',
+            'message_bus', 'wait_manager_instance', 'mission_coordinator', 'agent_selector',
+            'execution_strategy_resolver', 'dispatcher',
         ]
         
         for field in phase2_fields:
             assert field in fields, f"Missing Phase 2 field: {field}"
-
-    def test_phase2_services_registered_in_container(self, mock_services):
-        """Test that Phase 2 services are registered in ServiceContainer when provided."""
-        # This is a structural test - the actual registration happens in build_autonomous_runtime
-        # We verify the service container registration calls would be made
-        pass
 
     def test_skill_loader_integration_exists(self, mock_services):
         """Test that SkillLoader is properly integrated."""
@@ -242,22 +240,62 @@ class TestPhase2Integration:
         
         required = ['agent_registry', 'agent_resolver', 'agent_orchestrator', 'capability_registry',
                    'capability_resolver', 'implementation_registry', 'implementation_resolver',
-                   'skill_registry', 'skill_catalog', 'runtime_registry', 'event_bus', 'logger']
+                   'skill_registry', 'skill_catalog', 'event_bus', 'logger']
         for req in required:
             assert req in params, f"AgentSelector missing parameter: {req}"
 
-    def test_hermes_runtime_adapter_uses_oneshot(self, mock_services):
-        """Test that HermesRuntimeAdapter uses --oneshot for execution."""
-        from parika.core.agent_runtime.hermes_runtime import HermesRuntimeAdapter
+    def test_hermes_backend_uses_oneshot(self, mock_services):
+        """Test that HermesBackend uses --oneshot for execution."""
+        from parika.core.agent_runtime.hermes_backend import HermesBackend
         import inspect
         
         # Check that execute method exists and has the right signature
-        sig = inspect.signature(HermesRuntimeAdapter.execute)
+        sig = inspect.signature(HermesBackend.execute)
         params = list(sig.parameters.keys())
         
-        required = ['agent_id', 'task_id', 'capability_id', 'inputs', 'context', 'skill_id']
+        required = ['strategy', 'inputs', 'context']
         for req in required:
-            assert req in params, f"HermesRuntimeAdapter.execute missing parameter: {req}"
+            assert req in params, f"HermesBackend.execute missing parameter: {req}"
+
+    def test_execution_strategy_resolver_exists(self, mock_services):
+        """Test that ExecutionStrategyResolver exists and has correct interface."""
+        from parika.core.autonomous.execution_strategy_resolver import ExecutionStrategyResolver
+        import inspect
+        
+        sig = inspect.signature(ExecutionStrategyResolver.__init__)
+        params = list(sig.parameters.keys())
+        
+        required = ['implementation_resolver', 'capability_registry', 'runtime_registry',
+                   'authorization_boundary', 'budget_enforcer', 'event_bus', 'logger']
+        for req in required:
+            assert req in params, f"ExecutionStrategyResolver missing parameter: {req}"
+
+    def test_dispatcher_exists(self, mock_services):
+        """Test that ExecutionDispatcher exists and has correct interface."""
+        from parika.core.autonomous.dispatcher import ExecutionDispatcher
+        import inspect
+        
+        sig = inspect.signature(ExecutionDispatcher.__init__)
+        params = list(sig.parameters.keys())
+        
+        required = ['backends', 'event_bus', 'logger']
+        for req in required:
+            assert req in params, f"ExecutionDispatcher missing parameter: {req}"
+
+    def test_autonomous_settings_has_enabled_flag(self, mock_services):
+        """Test that AutonomousSettings has enabled flag for feature toggle."""
+        from parika.core.configuration.autonomous_config import AutonomousSettings
+        
+        # Check that enabled field exists with default False
+        import inspect
+        sig = inspect.signature(AutonomousSettings.__init__)
+        params = list(sig.parameters.keys())
+        
+        assert 'enabled' in params, "AutonomousSettings missing 'enabled' parameter"
+        
+        # Check default value
+        param = sig.parameters['enabled']
+        assert param.default is False or param.default == False, "AutonomousSettings.enabled should default to False"
 
 
 if __name__ == "__main__":
