@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from parika.core.brain.brain_request import BrainRequest
@@ -50,7 +51,20 @@ from .chat_capability import (
     decompose_and_build_goals,
     discover_tool_specs,
 )
-from .ai_context.goal_decomposer import DecompositionError
+from .ai_context.goal_decomposer import (
+    DecompositionError,
+    DecompositionResult
+)
+from .ai_context.admission import (
+    ExecutionModeAdmission,
+    create_execution_mode_admission,
+)
+from .ai_context.goal_decomposer import ExecutionMode
+from parika.core.autonomous.execution_mode import (
+    AdmissionDecision,
+    AdmissionState,
+)
+from parika.core.autonomous.contracts import AutonomousTaskStatus
 from parika.core.forensic_log import (
     set_trace_context,
     get_current_trace_id,
@@ -499,6 +513,30 @@ class InterfaceSession:
             # Track the provider/model that successfully completed decomposition
             preferred_synthesis_provider_id = decomposition_result.successful_provider_id
             preferred_synthesis_model_id = decomposition_result.successful_model_id
+            
+            # ADMISSION: Determine execution mode
+            admission = create_execution_mode_admission(
+                runtime=self._runtime,
+                session=self,
+            )
+            admission_decision = admission.resolve(
+                proposed_semantic_mode=decomposition_result.proposed_semantic_mode,
+                confidence=decomposition_result.execution_mode_confidence,
+                reasons=decomposition_result.execution_mode_reasons,
+                goals=decomposition_result.goals,
+            )
+            
+            # If admitted to autonomous, use autonomous mission bridge
+            if admission_decision.admitted_mode is ExecutionMode.AUTONOMOUS:
+                return self._submit_autonomous(
+                    text=text,
+                    decomposition_result=decomposition_result,
+                    admission_decision=admission_decision,
+                    on_token=on_token,
+                    progress_trail=progress_trail,
+                )
+            # If admitted to normal, continue with normal execution below
+            
         except DecompositionError as ex:
             # Decomposition failed - return a failed ChatTurnResult
             self._logger.warning(f"Goal decomposition failed: {ex}")
@@ -652,8 +690,8 @@ class InterfaceSession:
                 response=final_response,
                 response_status=result.status.value,
                 request_id=brain_response.request_id,
-            )
-
+)
+        
         self._last_turn_diagnostics = _build_last_turn_diagnostics(
             context_bundle=context_bundle,
             advertised_tools=tools,
@@ -661,7 +699,7 @@ class InterfaceSession:
             conversation_tokens=_estimate_conversation_tokens(self._conversation_state.full_history),
             progress_trail=tuple(progress_trail),
         )
-
+        
         if result.succeeded and result.chat_response is not None:
             assistant_message = result.chat_response.message
             self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
@@ -687,6 +725,284 @@ class InterfaceSession:
                 self._state_manager._session_store.append_message(self.id, role="error", content=error_text)
 
         return result
+
+    def _resolve_dependency_references(
+        self,
+        inputs: dict[str, Any],
+        goal_id_to_task_id: dict[str, str],
+        all_goals: list[Goal],
+    ) -> dict[str, Any]:
+        """
+        Resolve dependency references in inputs from {{goal_X.result.field}} syntax to actual values.
+        For autonomous missions, we store the mapping and let the runtime resolve actual values
+        during task execution.
+        """
+        import re
+        from copy import deepcopy
+        
+        resolved_inputs = deepcopy(inputs)
+        
+        # Pattern to match {{goal_id.result.field}} or {{goal_id.result[index]}} or nested paths
+        pattern = r'\{\{([a-zA-Z0-9_]+)\.result\.([a-zA-Z0-9_.[\]]+)\}\}'
+        
+        def resolve_value(obj: Any) -> Any:
+            if isinstance(obj, str):
+                # Find all dependency references in the string
+                matches = re.findall(pattern, obj)
+                if matches:
+                    # Replace each reference with a placeholder - actual resolution happens at runtime
+                    # For now, we keep the reference as-is since the autonomous runtime will handle it
+                    pass
+                return obj
+            elif isinstance(obj, dict):
+                return {k: resolve_value(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [resolve_value(item) for item in obj]
+            else:
+                return obj
+        
+        # Apply resolution to all input values
+        for key, value in resolved_inputs.items():
+            resolved_inputs[key] = resolve_value(value)
+            
+        return resolved_inputs
+
+    def _submit_autonomous(
+        self,
+        text: str,
+        *,
+        decomposition_result: DecompositionResult,
+        admission_decision: AdmissionDecision,
+        on_token: Callable[[str], None] | None,
+        progress_trail: list[ProgressEvent],
+    ) -> ChatTurnResult:
+        """
+        Handle autonomous execution mission creation and monitoring.
+        
+        Creates an autonomous mission from the decomposition result, starts it,
+        and returns a ChatTurnResult indicating the mission has been launched.
+        The actual mission execution happens in the background via AutonomousRuntime.
+        
+        NOTE: Terminal chat.respond synthesis is NOT executed as an autonomous task.
+        chat.respond is explicitly unsupported for autonomous execution (see provider_factories.py).
+        Users must use mission.get_result to retrieve results, followed by a normal
+        chat turn for final synthesis if needed.
+        """
+        from parika.core.autonomous.mission_manager import Mission
+        from parika.core.autonomous.contracts import MissionStatus
+        
+        # Extract goals from decomposition result
+        goals = decomposition_result.goals
+        
+        mission = None
+        created_task_ids = []
+        mission_id = None
+        try:
+            # Create the autonomous mission through the mission manager
+            mission = self._runtime.autonomous_runtime.mission_manager.create(goal=text)
+            mission_id = mission.id
+        
+
+            
+            # Convert decomposition goals to autonomous tasks with explicit goal_id -> task_id mapping
+            goal_id_to_task_id = {}
+            autonomous_goals = [g for g in goals if g.capability_id != "chat.respond"]
+            
+            # First pass: create all non-chat.respond tasks WITHOUT dependencies
+            # We'll add dependencies in a second pass once all task IDs are known
+            task_creation_data = []
+            for goal in autonomous_goals:
+                task_inputs = dict(goal.inputs)
+                
+                # Resolve dependency references ({{goal_X.result.field}} syntax)
+                resolved_inputs = self._resolve_dependency_references(
+                    task_inputs, goal_id_to_task_id, goals
+                )
+                
+                task_creation_data.append({
+                    'goal': goal,
+                    'inputs': resolved_inputs,
+                })
+            
+            # Create tasks for non-chat.respond goals
+            for data in task_creation_data:
+                goal = data['goal']
+                resolved_inputs = data['inputs']
+                
+                # Create the autonomous task
+                task = self._runtime.autonomous_runtime.task_manager.create(
+                    mission_id=mission_id,
+                    name=goal.id,  # Use goal ID as task name for traceability
+                    description=f"Execute {goal.capability_id}",
+                    capability_id=goal.capability_id,
+                    inputs=resolved_inputs,
+                )
+                
+                # Store the mapping for dependency resolution
+                goal_id_to_task_id[goal.id] = task.id
+                created_task_ids.append(task.id)
+            
+            # Second pass: add dependencies for non-chat.respond tasks
+            # We need to use the TaskDependencyRepository directly since the task
+            # manager's create method expects dependencies at creation time
+            from parika.core.autonomous.repository import TaskDependencyRepository
+            from parika.core.autonomous.models import TaskDependencyModel
+            from parika.core.autonomous.contracts import DependencyStatus
+            from datetime import datetime, UTC
+            
+            dep_repo = TaskDependencyRepository(
+                self._runtime.autonomous_runtime.sync_pool,
+                self._runtime.logger
+            )
+            
+            for data in task_creation_data:
+                goal = data['goal']
+                task_id = goal_id_to_task_id[goal.id]
+                
+                if goal.depends_on:
+                    dep_task_ids = tuple(goal_id_to_task_id[dep_id] for dep_id in goal.depends_on if dep_id in goal_id_to_task_id)
+                    if dep_task_ids:
+                        task = self._runtime.autonomous_runtime.task_manager.get(task_id)
+                        if task:
+                            # Update task status to WAITING_FOR_DEPENDENCY since it has dependencies
+                            task.status = AutonomousTaskStatus.WAITING_FOR_DEPENDENCY
+                            task.updated_at = datetime.now(UTC)
+                            self._runtime.autonomous_runtime.task_manager.update(task)
+                            
+                            for dep_task_id in dep_task_ids:
+                                dep = TaskDependencyModel(
+                                    id=f"dep_{task.id}_{dep_task_id}",
+                                    task_id=task.id,
+                                    depends_on_task_id=dep_task_id,
+                                    status=DependencyStatus.WAITING.value,
+                                    created_at=datetime.now(UTC),
+                                )
+                                dep_repo.create(dep)
+            
+            # NOTE: chat.respond goals are NOT created as autonomous tasks.
+            # chat.respond is explicitly unsupported for autonomous execution.
+            # The terminal synthesis must happen in a normal chat turn after
+            # the user retrieves mission results via mission.get_result.
+            
+            # Start the mission
+            started_mission = self._runtime.autonomous_runtime.mission_manager.start(mission_id)
+            if started_mission is None:
+                raise RuntimeError(f"Failed to start mission {mission_id}: invalid state transition")
+            
+            # FORENSIC: Log mission creation
+            trace_id = get_current_trace_id()
+            if trace_id:
+                from parika.core.forensic_log import log_generic
+                log_generic(trace_id, "mission.created", {
+                    "mission_id": mission_id,
+                    "goal": text,
+                    "task_count": len(goal_id_to_task_id),
+                    "admission_reason": admission_decision.reason
+                })
+            
+            # Return a ChatTurnResult indicating the mission has been launched
+            # The actual result will be available via mission.get_result capability
+            from parika.core.brain.brain_response import BrainResponse, RequestStatus
+            from parika.core.brain.goal_result import GoalResult
+            from parika.core.provider_manager.chat_result import ChatResult, ChatMessage
+            
+            # Create a synthetic chat response indicating mission launched
+            launched_message = ChatResult(
+                message=ChatMessage(
+                    role="assistant",
+                    content=f"Autonomous mission '{mission_id[:8]}...' launched successfully with {len(goal_id_to_task_id)} tasks. "
+                           f"Use 'mission.get_result' with mission_id='{mission_id}' to check progress and retrieve results."
+                )
+            )
+            
+            # Create a synthetic brain response with the launched message
+            synthetic_response = BrainResponse(
+                request_id=decomposition_result.raw_response or "autonomous_launched",
+                plan_id=None,
+                results=(
+                    GoalResult(
+                        goal_id="mission_launched",
+                        capability_id="chat.respond",
+                        task_id=None,
+                        status=RequestStatus.COMPLETED,
+                        outputs={"result": launched_message},
+                    ),
+                ),
+            )
+            
+            chat_result = ChatTurnResult(brain_response=synthetic_response)
+            
+            # Update last turn diagnostics for autonomous launch
+            self._last_turn_diagnostics = _build_last_turn_diagnostics(
+                context_bundle=None,  # No context bundle for synthetic response
+                advertised_tools=(),
+                brain_response=synthetic_response,
+                conversation_tokens=0,
+                progress_trail=tuple(progress_trail),
+            )
+            
+            # Record in conversation history
+            assistant_message = synthetic_response.results[0].response
+            if assistant_message:
+                self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
+                self._history.append(
+                    HistoryEntry(
+                        role=HistoryRole.ASSISTANT,
+                        text=assistant_message.content,
+                    )
+                )
+                
+                if self._state_manager._session_store is not None:
+                    self._state_manager._session_store.append_message(
+                        self.id, role="assistant", content=assistant_message.content
+                    )
+            
+            return chat_result
+            
+        except Exception as ex:
+            # Handle any failure during mission/task creation
+            self._logger.error(f"Autonomous mission creation failed: {ex}", exc_info=True)
+            
+            # Return an error response
+            from parika.core.brain.brain_response import BrainResponse, RequestStatus
+            from parika.core.brain.goal_result import GoalResult
+            from parika.core.provider_manager.chat_result import ChatResult, ChatMessage
+            
+            error_message = ChatResult(
+                message=ChatMessage(
+                    role="assistant",
+                    content=f"Autonomous mission creation failed: {str(ex)}"
+                )
+            )
+            
+            error_response = BrainResponse(
+                request_id=decomposition_result.raw_response or "autonomous_failed",
+                plan_id=None,
+                results=(
+                    GoalResult(
+                        goal_id="mission_failed",
+                        capability_id="chat.respond",
+                        task_id=None,
+                        status=RequestStatus.FAILED,
+                        outputs={"result": error_message},
+                        failure=ex,
+                    ),
+                ),
+            )
+            
+            chat_result = ChatTurnResult(brain_response=error_response)
+            
+            # Record in conversation history
+            self._history.append(
+                HistoryEntry(role=HistoryRole.ERROR, text=f"Autonomous mission creation failed: {str(ex)}")
+            )
+            
+            if self._state_manager._session_store is not None:
+                self._state_manager._session_store.append_message(
+                    self.id, role="error", content=f"Autonomous mission creation failed: {str(ex)}"
+                )
+            
+            return chat_result
 
     def save(self) -> None:
         """

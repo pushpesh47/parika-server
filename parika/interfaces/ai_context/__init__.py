@@ -113,3 +113,15 @@ touched by any module in this package.
 """
 
 from __future__ import annotations
+
+from .admission import (
+    ExecutionModeAdmission,
+    create_execution_mode_admission,
+)
+from .goal_decomposer import (
+    DecompositionError,
+    DecompositionResult,
+    GoalDecomposer,
+    create_goal_decomposer,
+    ExecutionMode,
+)

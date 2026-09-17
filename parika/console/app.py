@@ -686,6 +686,42 @@ def main() -> int:
         workspace_permission_prompt=CliWorkspacePermissionPrompt()
     )
 
+    # Initialize Autonomous Runtime if enabled
+    autonomous_runtime = None
+    try:
+        from parika.core.configuration.autonomous_config import load_autonomous_settings
+        autonomous_settings = load_autonomous_settings(runtime.configuration)
+        if autonomous_settings.enabled:
+            from parika.core.autonomous.runtime import build_autonomous_runtime
+            from parika.core.database.pool import PoolManager
+            
+            sync_pool = PoolManager.get_sync_pool()
+            if sync_pool is not None:
+                autonomous_runtime = build_autonomous_runtime(
+                    sync_pool=sync_pool,
+                    event_bus=runtime.event_bus,
+                    logger=runtime.logger,
+                    service_container=runtime.service_container,
+                    capability_resolver=runtime.capability_resolver,
+                    planner=runtime.planner,
+                    capability_executor=runtime.capability_executor,
+                    tool_manager=runtime.tool_manager,
+                    provider_manager=runtime.provider_manager,
+                    resource_manager=runtime.resource_manager,
+                    policy_engine=runtime.policy_engine,
+                    permission_manager=runtime.permission_manager,
+                    workspace_permission_manager=runtime.workspace_permissions,
+                )
+                
+                # Start the autonomous runtime (sync version for console)
+                import asyncio
+                asyncio.run(autonomous_runtime.start(auto_recover=True))
+                
+                # Set autonomous runtime on the runtime object
+                runtime.autonomous_runtime = autonomous_runtime
+    except Exception as e:
+        runtime.logger.get_logger(__name__).error("Failed to initialize Autonomous Runtime: %s", e)
+
     history_file = runtime.configuration.get_project_root() / str(
         runtime.configuration.get(
             "interfaces.cli.history_file", "data/cli_history"

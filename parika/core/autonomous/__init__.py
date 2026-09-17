@@ -4,6 +4,14 @@ PARIKA Autonomous Execution Foundation
 Provides the core contracts and infrastructure for persistent autonomous execution.
 """
 
+from __future__ import annotations
+
+from .execution_mode import (
+    AdmissionDecision,
+    AdmissionState,
+    ExecutionMode,
+)
+
 from .contracts import (
     MissionStatus,
     AutonomousTaskStatus,
@@ -24,7 +32,6 @@ from .contracts import (
     validate_task_transition,
     validate_worker_transition,
     validate_execution_transition,
-    validate_checkpoint_transition,
 )
 
 from .models import (
@@ -246,4 +253,8 @@ __all__ = [
     "CheckpointRepository",
     "WorldStateRepository",
     "AutonomousEventRepository",
+    # Execution Mode (Added for Part 1)
+    "AdmissionDecision",
+    "AdmissionState",
+    "ExecutionMode",
 ]

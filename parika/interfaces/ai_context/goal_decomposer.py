@@ -45,12 +45,14 @@ from parika.core.planner.model_selection.selector import select_provider_model
 from parika.core.planner.model_selection.requirements import ExecutionRequirements, ThinkingMode, Requirement
 from parika.core.provider_manager.model_capability import ModelCapability
 from parika.core.provider_manager.tool_spec import ToolSpec
+from parika.core.autonomous.execution_mode import ExecutionMode
 from parika.core.forensic_log import (
     get_current_trace_id,
     log_decomposer_input,
     log_decomposition_provider_failure,
     log_decomposition_raw,
     log_decomposition_goals,
+    log_generic,
 )
 
 
@@ -182,8 +184,9 @@ Rules:
     - The referenced goal ID MUST match the dependency declared in depends_on
     - The referenced field MUST exist in the dependency's actual result structure
 
-Capability parameter schemas:
-{capability_schemas}
+Execution Mode Classification:
+- NORMAL: Bounded objectives with clear completion. User expects immediate interactive response. Examples: "Check if file exists", "Search web for X", "Analyze these 3 files and report findings", "Convert currency", "Audit project and report findings".
+- AUTONOMOUS: Open-ended/iterative objectives requiring persistence, continuation, background execution. User explicitly or implicitly requires continuation until success condition, checkpoint/restart, or background work. Examples: "Fix all issues until tests pass", "Keep working until clean", "Investigate and resolve", "Run overnight and save progress", "Do this in background while I work", "Audit project, fix issues, run tests until everything passes".
 
 Respond with ONLY a JSON object matching this schema:
 {{
@@ -193,7 +196,10 @@ Respond with ONLY a JSON object matching this schema:
     {{"id": "goal_2", "capability_id": "currency.convert", "inputs": {{"from": "USD", "to": "INR", "amount": 1}}, "depends_on": []}},
     {{"id": "goal_3", "capability_id": "web.search", "inputs": {{"query": "Jharkhand protest outcome"}}, "depends_on": []}},
     {{"id": "goal_4", "capability_id": "chat.respond", "inputs": {{"message": "Summarize all results: weather, currency, and web search"}}, "depends_on": ["goal_0", "goal_1", "goal_2", "goal_3"]}}
-  ]
+  ],
+  "execution_mode": "NORMAL",
+  "execution_mode_confidence": 0.95,
+  "execution_mode_reasons": ["bounded_objective", "clear_completion_criteria"]
 }}
 
 Example with dependency reference:
@@ -202,8 +208,27 @@ Example with dependency reference:
     {{"id": "goal_0", "capability_id": "filesystem.search", "inputs": {{"path": "/mnt/dev/languages/python/parika", "pattern": "parika*"}}, "depends_on": []}},
     {{"id": "goal_1", "capability_id": "filesystem.list", "inputs": {{"path": "{{goal_0.result.path}}"}}, "depends_on": ["goal_0"]}},
     {{"id": "goal_2", "capability_id": "chat.respond", "inputs": {{"message": "List the PARIKA project directory"}}, "depends_on": ["goal_0", "goal_1"]}}
-  ]
+  ],
+  "execution_mode": "NORMAL",
+  "execution_mode_confidence": 0.9,
+  "execution_mode_reasons": ["bounded_objective", "clear_completion_criteria"]
 }}
+
+Example AUTONOMOUS:
+{{
+  "goals": [
+    {{"id": "goal_0", "capability_id": "coding.analyze", "inputs": {{"path": "."}}, "depends_on": []}},
+    {{"id": "goal_1", "capability_id": "coding.execute_task", "inputs": {{"task": "fix all issues"}}, "depends_on": ["goal_0"]}},
+    {{"id": "goal_2", "capability_id": "shell.execute", "inputs": {{"command": "pytest"}}, "depends_on": ["goal_1"]}},
+    {{"id": "goal_3", "capability_id": "chat.respond", "inputs": {{"message": "Report final status"}}, "depends_on": ["goal_0", "goal_1", "goal_2"]}}
+  ],
+  "execution_mode": "AUTONOMOUS",
+  "execution_mode_confidence": 0.9,
+  "execution_mode_reasons": ["explicit_continue_until_criteria", "requires_persistence", "iterative_replanning"]
+}}
+
+Capability parameter schemas:
+{capability_schemas}
 
 User request: {user_message}
 """
@@ -219,6 +244,17 @@ class DecompositionResult:
     """Provider ID that successfully completed decomposition, if any"""
     successful_model_id: str | None = None
     """Model ID that successfully completed decomposition, if any"""
+    # Execution mode classification from LLM
+    proposed_semantic_mode: ExecutionMode = ExecutionMode.NORMAL
+    """Semantic execution mode proposed by LLM"""
+    execution_mode_confidence: float | None = None
+    """Confidence in execution mode classification (0.0-1.0), None if missing"""
+    execution_mode_reasons: tuple[str, ...] = ()
+    """Structured reasons for execution mode classification"""
+    # Forensic: raw LLM-provided fields
+    raw_execution_mode: str | None = None
+    raw_confidence: Any | None = None
+    raw_reasons: Any | None = None
 
 
 class DecompositionError(Exception):
@@ -434,9 +470,9 @@ class GoalDecomposer:
                         provider_id=provider_id,
                         model=model,
                         request=chat_request,
-                    )
-                    
-                    # Extract the response text
+)
+                     
+# Extract the response text
                     raw_response = self._extract_text_from_provider_response(response)
                     
                     # FORENSIC: Log raw decomposition output
@@ -445,8 +481,10 @@ class GoalDecomposer:
                             trace_id=trace_id,
                             raw_response=raw_response,
                         )
-
-                    goals = self._parse_decomposition(raw_response, available_capabilities, user_message)
+                    
+                    goals, proposed_mode, confidence, reasons, proposed_mode_raw, confidence_raw, reasons_raw = self._parse_decomposition(
+                        raw_response, available_capabilities, user_message
+                    )
                     
                     # Validate that decomposition meets structural contract
                     _validate_decomposition(goals, user_message, self._capability_registry)
@@ -465,12 +503,26 @@ class GoalDecomposer:
                             trace_id=trace_id,
                             goals=goal_list,
                         )
-
+                    
+                    # FORENSIC: Log admission decision fields
+                    if trace_id:
+                        log_generic(trace_id, "decomposition.proposed", {
+                            "proposed_mode": proposed_mode.value,
+                            "confidence": confidence,
+                            "reasons": list(reasons),
+                        })
+                    
                     return DecompositionResult(
                         goals=tuple(goals),
                         raw_response=raw_response,
                         successful_provider_id=provider_id,
                         successful_model_id=model.id,
+                        proposed_semantic_mode=proposed_mode,
+                        execution_mode_confidence=confidence,
+                        execution_mode_reasons=reasons,
+                        raw_execution_mode=proposed_mode_raw,
+                        raw_confidence=confidence_raw,
+                        raw_reasons=reasons_raw,
                     )
                     
                 except DecompositionError as ex:
@@ -559,6 +611,33 @@ class GoalDecomposer:
             
             goal_data_list = data.get("goals", [])
             
+            # Extract execution mode fields from LLM response
+            proposed_mode_raw = data.get("execution_mode")
+            confidence_raw = data.get("execution_mode_confidence")
+            reasons_raw = data.get("execution_mode_reasons")
+            
+            # Parse execution mode (normalize case for StrEnum)
+            proposed_mode = ExecutionMode.NORMAL
+            if proposed_mode_raw:
+                # Normalize to lowercase for StrEnum comparison
+                normalized_mode = proposed_mode_raw.lower() if isinstance(proposed_mode_raw, str) else proposed_mode_raw
+                if normalized_mode in ExecutionMode:
+                    # Use the enum member, not the raw string
+                    proposed_mode = ExecutionMode(normalized_mode)
+            
+            # Parse confidence
+            confidence = None
+            if confidence_raw is not None:
+                try:
+                    confidence = float(confidence_raw)
+                except (ValueError, TypeError):
+                    confidence = None
+            
+            # Parse reasons
+            reasons = ()
+            if reasons_raw and isinstance(reasons_raw, list):
+                reasons = tuple(str(r) for r in reasons_raw)
+            
             if not goal_data_list:
                 raise ValueError("No goals in decomposition")
             
@@ -595,7 +674,7 @@ class GoalDecomposer:
             if not goals:
                 raise ValueError("No valid goals after filtering")
             
-            return goals
+            return goals, proposed_mode, confidence, reasons, proposed_mode_raw, confidence_raw, reasons_raw
         
         except (json.JSONDecodeError, ValueError, KeyError) as ex:
             raise DecompositionError(f"Failed to parse decomposition response: {ex}") from ex

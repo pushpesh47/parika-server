@@ -37,6 +37,8 @@ directory = "data"
 # Autonomous Runtime
 [autonomous]
 enabled = true
+max_cpu_percent = 90.0
+max_memory_percent = 90.0
 
 [plugins]
 directory = "plugins"

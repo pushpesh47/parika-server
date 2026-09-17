@@ -166,6 +166,8 @@ from parika.modules.web_search.manifest import (
     WEB_SEARCH_MODULE_ID,
     create_web_search_module,
 )
+from parika.modules.autonomous.driver import load_autonomous_module
+from parika.modules.autonomous.manifest import AUTONOMOUS_MODULE_ID, create_autonomous_module
 from parika.providers.ollama.driver import (
     DEFAULT_BASE_URL,
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
@@ -212,7 +214,7 @@ from parika.providers.openai_compatible.exceptions import OpenAICompatibleError
 from parika.core.provider_manager.provider import Provider
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class ParikaRuntime:
     """
     Reusable, already-wired handle to the PARIKA Core.
@@ -258,6 +260,8 @@ class ParikaRuntime:
     agent_registry: AgentRegistry
     agent_resolver: AgentResolver
     agent_orchestrator: AgentOrchestrator
+
+    autonomous_runtime: "AutonomousRuntime | None" = None
 
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -993,6 +997,14 @@ def shutdown_runtime(runtime: ParikaRuntime) -> None:
     runtime.ui_context_projector.stop()
     runtime.module_manager.unload_all()
     runtime.memory_manager.shutdown()
+    
+    # Shutdown Autonomous Runtime if it was started
+    if runtime.autonomous_runtime is not None:
+        try:
+            import asyncio
+            asyncio.run(runtime.autonomous_runtime.stop())
+        except Exception as e:
+            runtime.logger.get_logger(__name__).error("Error shutting down Autonomous Runtime: %s", e)
 
 
 def _build_intelligence_foundation_stores(
@@ -1106,6 +1118,16 @@ def _register_modules(
         configuration=configuration,
     )
     module_manager.register(create_web_search_module(web_search_driver))
+
+    autonomous_driver = load_autonomous_module(
+        capability_registry=capability_registry,
+        tool_manager=tool_manager,
+        logger=logger,
+        health_manager=health_manager,
+        pool_manager=sync_pool,
+        event_bus=event_bus,
+    )
+    module_manager.register(create_autonomous_module(autonomous_driver))
 
     runtime_info_driver = RuntimeInfoModuleDriver(
         capability_registry=capability_registry,

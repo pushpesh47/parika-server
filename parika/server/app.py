@@ -195,6 +195,9 @@ def create_app(
                 # Start the autonomous runtime (async)
                 await autonomous_runtime.start(auto_recover=True)
                 
+                # Set autonomous runtime on the runtime object for access by chat execution path
+                runtime.autonomous_runtime = autonomous_runtime
+                
                 # Store autonomous runtime in app state for access by API routes
                 app.state.autonomous_runtime = autonomous_runtime
                 
