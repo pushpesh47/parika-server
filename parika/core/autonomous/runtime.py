@@ -400,7 +400,12 @@ def build_autonomous_runtime(
     configuration = Configuration()
     configuration.load()
     autonomous_settings = load_autonomous_settings(configuration)
-    
+
+    # Grant autonomous:execute permission if autonomous is enabled
+    if autonomous_settings.enabled:
+        if not permission_manager.contains("autonomous", "execute"):
+            permission_manager.grant("autonomous", "execute", reason="Autonomous execution enabled in configuration")
+
     # =========================================================================
     # REPOSITORIES
     # =========================================================================
