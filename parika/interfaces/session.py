@@ -535,6 +535,40 @@ class InterfaceSession:
                     on_token=on_token,
                     progress_trail=progress_trail,
                 )
+            # If autonomous was proposed but denied, explicitly fail
+            # (proposed mode was AUTONOMOUS but admission denied - do NOT fall through to normal Brain)
+            if (
+                decomposition_result.proposed_semantic_mode is ExecutionMode.AUTONOMOUS
+                and admission_decision.admitted_mode is ExecutionMode.NORMAL
+            ):
+                from parika.core.brain.brain_response import BrainResponse, RequestStatus
+                from parika.core.brain.goal_result import GoalResult
+                
+                brain_response = BrainResponse(
+                    request_id=uuid4().hex,
+                    plan_id=None,
+                    results=(
+                        GoalResult(
+                            goal_id="autonomous_admission_denied",
+                            capability_id="chat.respond",
+                            task_id=None,
+                            status=None,
+                            failure=Exception(
+                                f"Autonomous execution admission denied: "
+                                f"{admission_decision.reason}"
+                            ),
+                        ),
+                    ),
+                    planning_failure=None,
+                )
+                
+                chat_turn_result = ChatTurnResult(brain_response=brain_response)
+                return self._finalize_turn(
+                    chat_turn_result=chat_turn_result,
+                    progress_trail=progress_trail,
+                    context_bundle=None,
+                    tools=(),
+                )
             # If admitted to normal, continue with normal execution below
             
         except DecompositionError as ex:
@@ -560,7 +594,14 @@ class InterfaceSession:
                 planning_failure=ex,
             )
             
-            return ChatTurnResult(brain_response=brain_response)
+            chat_turn_result = ChatTurnResult(brain_response=brain_response)
+            
+            return self._finalize_turn(
+                chat_turn_result=chat_turn_result,
+                progress_trail=progress_trail,
+                context_bundle=None,
+                tools=(),
+            )
 
         # For goals that need context assembly (primarily chat.respond for final synthesis),
         # we still need to assemble context and inject it into the conversation
@@ -672,50 +713,74 @@ class InterfaceSession:
             BrainRequest(goals=tuple(enhanced_goals))
         )
 
-        result = ChatTurnResult(brain_response=brain_response)
+        chat_turn_result = ChatTurnResult(brain_response=brain_response)
 
+        return self._finalize_turn(
+            chat_turn_result=chat_turn_result,
+            progress_trail=progress_trail,
+            context_bundle=context_bundle,
+            tools=tools,
+        )
+
+    def _finalize_turn(
+        self,
+        chat_turn_result: ChatTurnResult,
+        progress_trail: list[ProgressEvent],
+        context_bundle: ContextBundle | None,
+        tools: tuple[ToolSpec, ...],
+    ) -> ChatTurnResult:
+        """
+        Centralized post-processing for all chat turn result paths.
+
+        Handles forensic logging, diagnostics building, and conversation
+        history recording for both successful and failed turns.
+        """
         # FORENSIC: Log final result
         trace_id = get_current_trace_id()
         if trace_id:
             used_tools = []
-            for goal_result in brain_response.results:
+            for goal_result in chat_turn_result.brain_response.results:
                 if goal_result.succeeded and goal_result.capability_id not in ["chat.respond"]:
                     used_tools.append(goal_result.capability_id)
             
-            final_response = result.chat_response.message.content if result.chat_response else (result.error_message or "")
+            final_response = (
+                chat_turn_result.chat_response.message.content
+                if chat_turn_result.chat_response is not None
+                else (chat_turn_result.error_message or "")
+            )
             log_final_result(
                 trace_id=trace_id,
-                success=result.succeeded,
+                success=chat_turn_result.succeeded,
                 used_tools=used_tools,
                 response=final_response,
-                response_status=result.status.value,
-                request_id=brain_response.request_id,
-)
+                response_status=chat_turn_result.status.value,
+                request_id=chat_turn_result.brain_response.request_id,
+            )
         
         self._last_turn_diagnostics = _build_last_turn_diagnostics(
             context_bundle=context_bundle,
             advertised_tools=tools,
-            brain_response=brain_response,
+            brain_response=chat_turn_result.brain_response,
             conversation_tokens=_estimate_conversation_tokens(self._conversation_state.full_history),
             progress_trail=tuple(progress_trail),
         )
         
-        if result.succeeded and result.chat_response is not None:
-            assistant_message = result.chat_response.message
+        if chat_turn_result.succeeded and chat_turn_result.chat_response is not None:
+            assistant_message = chat_turn_result.chat_response.message
             self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
             self._history.append(
                 HistoryEntry(
                     role=HistoryRole.ASSISTANT,
-                    text=result.chat_response.message.content,
+                    text=chat_turn_result.chat_response.message.content,
                 )
             )
 
             if self._state_manager._session_store is not None:
                 self._state_manager._session_store.append_message(
-                    self.id, role="assistant", content=result.chat_response.message.content
+                    self.id, role="assistant", content=chat_turn_result.chat_response.message.content
                 )
         else:
-            error_text = result.error_message or "The request failed."
+            error_text = chat_turn_result.error_message or "The request failed."
 
             self._history.append(
                 HistoryEntry(role=HistoryRole.ERROR, text=error_text)
@@ -724,7 +789,7 @@ class InterfaceSession:
             if self._state_manager._session_store is not None:
                 self._state_manager._session_store.append_message(self.id, role="error", content=error_text)
 
-        return result
+        return chat_turn_result
 
     def _resolve_dependency_references(
         self,
