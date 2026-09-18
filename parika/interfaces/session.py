@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+from types import MappingProxyType
 
 from parika.core.brain.brain_request import BrainRequest
 from parika.core.brain.brain_response import BrainResponse, RequestStatus
@@ -889,18 +890,45 @@ class InterfaceSession:
                     'inputs': resolved_inputs,
                 })
             
-            # Create tasks for non-chat.respond goals
+# Create tasks for non-chat.respond goals
             for data in task_creation_data:
                 goal = data['goal']
                 resolved_inputs = data['inputs']
                 
-                # Create the autonomous task
+                # Get default agent profile and allowed capabilities for autonomous execution
+                # Use agent.coding profile which has filesystem/shell capabilities needed for autonomous tasks
+                autonomous_agent_profile_id = self._runtime.configuration.get("multi_agent.default_agent_profile", "agent.coding")
+                agent_profile = self._runtime.agent_registry.get(autonomous_agent_profile_id)
+                allowed_capabilities = list(agent_profile.allowed_capabilities) if agent_profile else []
+                
+                # Ensure the task's capability is allowed
+                if goal.capability_id not in allowed_capabilities:
+                    allowed_capabilities.append(goal.capability_id)
+                
+                # Get default workspace
+                default_workspace = self._runtime.configuration.get("workspace.default_workspace", "data")
+                
+                # Build permission context for autonomous execution (use dict for JSON storage)
+                permission_context = {
+                    "workspace_path": default_workspace,
+                    "trusted_workspaces": [default_workspace],
+                    "allowed_capabilities": allowed_capabilities,
+                    "agent_profile_id": autonomous_agent_profile_id,
+                }
+                
+                # Store permission_context under the expected key in metadata
+                task_metadata = {
+                    "permission_context": permission_context,
+                }
+                
+                # Create the autonomous task with proper metadata
                 task = self._runtime.autonomous_runtime.task_manager.create(
                     mission_id=mission_id,
                     name=goal.id,  # Use goal ID as task name for traceability
                     description=f"Execute {goal.capability_id}",
                     capability_id=goal.capability_id,
                     inputs=resolved_inputs,
+                    metadata=MappingProxyType(task_metadata),
                 )
                 
                 # Store the mapping for dependency resolution
@@ -949,7 +977,12 @@ class InterfaceSession:
             # The terminal synthesis must happen in a normal chat turn after
             # the user retrieves mission results via mission.get_result.
             
-            # Start the mission
+            # Plan the mission (CREATED -> PLANNING)
+            planned_mission = self._runtime.autonomous_runtime.mission_manager.plan(mission_id)
+            if planned_mission is None:
+                raise RuntimeError(f"Failed to plan mission {mission_id}: invalid state transition")
+            
+            # Start the mission (PLANNING -> RUNNING)
             started_mission = self._runtime.autonomous_runtime.mission_manager.start(mission_id)
             if started_mission is None:
                 raise RuntimeError(f"Failed to start mission {mission_id}: invalid state transition")
@@ -981,6 +1014,8 @@ class InterfaceSession:
             )
             
             # Create a synthetic brain response with the launched message
+            from parika.core.task_manager.response import TaskResponse
+            from parika.core.task_manager.task_status import TaskStatus
             synthetic_response = BrainResponse(
                 request_id=decomposition_result.raw_response or "autonomous_launched",
                 plan_id=None,
@@ -989,8 +1024,8 @@ class InterfaceSession:
                         goal_id="mission_launched",
                         capability_id="chat.respond",
                         task_id=None,
-                        status=RequestStatus.COMPLETED,
-                        outputs={"result": launched_message},
+                        status=TaskStatus.COMPLETED,
+                        response=TaskResponse(outputs={"result": launched_message}),
                     ),
                 ),
             )
@@ -1009,17 +1044,25 @@ class InterfaceSession:
             # Record in conversation history
             assistant_message = synthetic_response.results[0].response
             if assistant_message:
+                # Extract text content from autonomous launch response structure:
+                # TaskResponse.outputs["result"] -> ChatResult -> message -> ChatMessage -> content
+                launch_chat_result = assistant_message.outputs.get("result")
+                if launch_chat_result is not None and hasattr(launch_chat_result, "message"):
+                    assistant_text = launch_chat_result.message.content
+                else:
+                    assistant_text = str(assistant_message.outputs)
+                
                 self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
                 self._history.append(
                     HistoryEntry(
                         role=HistoryRole.ASSISTANT,
-                        text=assistant_message.content,
+                        text=assistant_text,
                     )
                 )
                 
                 if self._state_manager._session_store is not None:
                     self._state_manager._session_store.append_message(
-                        self.id, role="assistant", content=assistant_message.content
+                        self.id, role="assistant", content=assistant_text
                     )
             
             return chat_result
@@ -1049,7 +1092,6 @@ class InterfaceSession:
                         capability_id="chat.respond",
                         task_id=None,
                         status=RequestStatus.FAILED,
-                        outputs={"result": error_message},
                         failure=ex,
                     ),
                 ),

@@ -16,6 +16,14 @@ public APIs and never executes capabilities or tools directly itself.
 
 from __future__ import annotations
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.capability_registry.capability_category import (
     CapabilityCategory,
 )
@@ -85,6 +93,7 @@ class WebSearchModuleDriver(ModuleDriver):
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
+        implementation_registry: ImplementationRegistry | None = None,
     ) -> None:
         """
         Initialize the WebSearchModuleDriver.
@@ -147,12 +156,19 @@ class WebSearchModuleDriver(ModuleDriver):
             backoff_seconds:
                 Default retry backoff applied to every default search
                 backend and to the page fetcher.
+
+            implementation_registry:
+                Optional ImplementationRegistry for registering native
+                capability implementations. When supplied, a
+                PARIKA_NATIVE implementation is registered for the
+                web.search capability.
         """
 
         self._capability_registry = capability_registry
         self._tool_manager = tool_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
+        self._implementation_registry = implementation_registry
 
         web_search_config = load_web_search_config(configuration)
         self._enabled = web_search_config.enabled
@@ -271,6 +287,24 @@ class WebSearchModuleDriver(ModuleDriver):
             self._tool_driver,
         )
 
+        # Register native implementation for web.search
+        if self._implementation_registry is not None:
+            impl = self._implementation_registry.register_implementation(
+                capability_id=WEB_SEARCH_CAPABILITY_ID,
+                source=ImplementationSource.PARIKA_NATIVE,
+                name="Native Web Search",
+                description="Native PARIKA implementation of web.search",
+                version="1.0.0",
+                metadata=ImplementationMetadata(
+                    runtime_type="native",
+                    tool_ids=(WEB_SEARCH_TOOL_ID,),
+                    tags=("native", "tool", "web", "search"),
+                ),
+            )
+            self._implementation_registry.update_implementation_status(
+                impl.id, ImplementationStatus.ACTIVE
+            )
+
         if self._health_manager is not None:
             self._health_manager.register(
                 MODULE_HEALTH_COMPONENT_ID,
@@ -283,9 +317,10 @@ class WebSearchModuleDriver(ModuleDriver):
         """
         Stop the module.
 
-        Unregisters the Web Search Tool and the `web.search`
-        Capability. A no-op when the module was disabled by
-        configuration, since `start()` never registered either.
+        Unregisters the Web Search Tool, the `web.search`
+        Capability, and the native implementation. A no-op when the
+        module was disabled by configuration, since `start()` never
+        registered anything.
         """
 
         if not self._enabled:
@@ -296,6 +331,14 @@ class WebSearchModuleDriver(ModuleDriver):
 
         self._tool_manager.unregister(WEB_SEARCH_TOOL_ID)
         self._capability_registry.unregister(WEB_SEARCH_CAPABILITY_ID)
+        # Unregister native implementation
+        if self._implementation_registry is not None:
+            impls = self._implementation_registry.get_implementations_for_capability(
+                WEB_SEARCH_CAPABILITY_ID,
+                source=ImplementationSource.PARIKA_NATIVE,
+            )
+            for impl in impls:
+                self._implementation_registry.unregister_implementation(impl.id)
 
         if self._search_result_cache is not None:
             self._search_result_cache.shutdown()

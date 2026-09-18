@@ -62,20 +62,29 @@ class ExperienceRecorder:
         self._event_bus.unsubscribe(TASK_COMPLETED_EVENT, self._on_task_completed)
         self._event_bus.unsubscribe(TASK_FAILED_EVENT, self._on_task_failed)
 
-    def _on_task_completed(self, event: TaskCompletedEvent) -> None:
-        task = event.task
-        latency_ms = (
-            task.response.duration_seconds * 1000.0
-            if task.response is not None and task.response.duration_seconds is not None
-            else None
-        )
-
+    def _on_task_completed(self, event: Any) -> None:
+        capability_id = getattr(event, 'capability_id', None)
+        task_id = getattr(event, 'task_id', None)
+        latency_ms: float | None = None
         provider_id: str | None = None
         model_id: str | None = None
 
-        if task.response is not None:
-            provider_id = task.response.metadata.get("provider_id")
-            model_id = task.response.metadata.get("model_id")
+        if hasattr(event, 'task'):
+            task = event.task
+            capability_id = task.request.capability_id if hasattr(task, 'request') else capability_id
+            task_id = task.id if hasattr(task, 'id') else task_id
+            if hasattr(task, 'response') and task.response is not None:
+                if task.response.duration_seconds is not None:
+                    latency_ms = task.response.duration_seconds * 1000.0
+                if hasattr(task.response, 'metadata'):
+                    provider_id = task.response.metadata.get("provider_id")
+                    model_id = task.response.metadata.get("model_id")
+        elif isinstance(event, dict):
+            capability_id = event.get("capability_id") or capability_id
+            task_id = event.get("task_id") or task_id
+
+        if not capability_id:
+            return
 
         # FORENSIC: Log experience registration
         trace_id = get_current_trace_id()
@@ -83,19 +92,19 @@ class ExperienceRecorder:
             from parika.core.forensic_log import log_experience_registration
             log_experience_registration(
                 trace_id=trace_id,
-                capability_id=task.request.capability_id,
+                capability_id=capability_id,
                 outcome="SUCCESS",
                 provider_id=provider_id,
                 model_id=model_id,
                 latency_ms=latency_ms,
                 task_succeeded=True,
-                task_id=task.id,
+                task_id=task_id,
             )
 
         self._experience_store.register(
             Experience(
                 experience_id=uuid4().hex,
-                capability_id=task.request.capability_id,
+                capability_id=capability_id,
                 outcome=ExperienceOutcome.SUCCESS,
                 created_at=datetime.now(UTC),
                 latency_ms=latency_ms,
@@ -105,7 +114,14 @@ class ExperienceRecorder:
         )
 
     def _on_task_failed(self, event: TaskFailedEvent) -> None:
-        task = event.task
+        # Handle both autonomous TaskFailedEvent (direct capability_id/task_id)
+        # and normal TaskFailedEvent (nested task.request.capability_id / task.id)
+        capability_id = getattr(event, 'capability_id', None)
+        task_id = getattr(event, 'task_id', None)
+        
+        if capability_id is None and hasattr(event, 'task'):
+            capability_id = event.task.request.capability_id
+            task_id = event.task.id
 
         # FORENSIC: Log experience registration
         trace_id = get_current_trace_id()
@@ -113,18 +129,18 @@ class ExperienceRecorder:
             from parika.core.forensic_log import log_experience_registration
             log_experience_registration(
                 trace_id=trace_id,
-                capability_id=task.request.capability_id,
+                capability_id=capability_id,
                 outcome="FAILURE",
                 provider_id=None,
                 model_id=None,
                 task_succeeded=False,
-                task_id=task.id,
+                task_id=task_id,
             )
 
         self._experience_store.register(
             Experience(
                 experience_id=uuid4().hex,
-                capability_id=task.request.capability_id,
+                capability_id=capability_id,
                 outcome=ExperienceOutcome.FAILURE,
                 created_at=datetime.now(UTC),
             )

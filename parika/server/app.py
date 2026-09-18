@@ -190,6 +190,8 @@ def create_app(
                     policy_engine=runtime.policy_engine,
                     permission_manager=runtime.permission_manager,
                     workspace_permission_manager=runtime.workspace_permissions,
+                    shared_implementation_registry=runtime.implementation_registry,
+                    shared_skill_registry=runtime.skill_registry,
                 )
                 
                 # Start the autonomous runtime (async)

@@ -16,6 +16,14 @@ public APIs and never executes capabilities or tools directly itself.
 
 from __future__ import annotations
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.capability_registry.capability_category import (
     CapabilityCategory,
 )
@@ -71,6 +79,7 @@ class CurrencyModuleDriver(ModuleDriver):
         configuration: Configuration | None = None,
         transport: HttpTransport | None = None,
         rate_backend: RateBackend | None = None,
+        implementation_registry: ImplementationRegistry | None = None,
     ) -> None:
         """
         Initialize the CurrencyModuleDriver.
@@ -106,12 +115,19 @@ class CurrencyModuleDriver(ModuleDriver):
                 When supplied, it is used exactly as given and
                 `configuration`'s `[currency]` provider selection is
                 not consulted at all.
+
+            implementation_registry:
+                Optional ImplementationRegistry for registering native
+                capability implementations. When supplied, a
+                PARIKA_NATIVE implementation is registered for each
+                currency capability.
         """
 
         self._capability_registry = capability_registry
         self._tool_manager = tool_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
+        self._implementation_registry = implementation_registry
 
         currency_config = load_currency_config(configuration)
         self._enabled = currency_config.enabled
@@ -194,6 +210,28 @@ class CurrencyModuleDriver(ModuleDriver):
             create_currency_convert_tool(), self._convert_driver
         )
 
+        # Register native implementations
+        if self._implementation_registry is not None:
+            for cap_id, tool_id, name in [
+                (CURRENCY_CAPABILITY_EXCHANGE_RATE, CURRENCY_TOOL_ID_EXCHANGE_RATE, "Currency Exchange Rate"),
+                (CURRENCY_CAPABILITY_CONVERT, CURRENCY_TOOL_ID_CONVERT, "Currency Convert"),
+            ]:
+                impl = self._implementation_registry.register_implementation(
+                    capability_id=cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                    name=f"Native {name}",
+                    description=f"Native PARIKA implementation of {cap_id}",
+                    version="1.0.0",
+                    metadata=ImplementationMetadata(
+                        runtime_type="native",
+                        tool_ids=(tool_id,),
+                        tags=("native", "tool", "currency"),
+                    ),
+                )
+                self._implementation_registry.update_implementation_status(
+                    impl.id, ImplementationStatus.ACTIVE
+                )
+
         if self._health_manager is not None:
             self._health_manager.register(
                 MODULE_HEALTH_COMPONENT_ID,
@@ -206,8 +244,9 @@ class CurrencyModuleDriver(ModuleDriver):
         """
         Stop the module.
 
-        Unregisters both Currency Tools and both Capabilities. A
-        no-op when the module was disabled by configuration.
+        Unregisters both Currency Tools, both Capabilities, and native
+        implementations. A no-op when the module was disabled by
+        configuration.
         """
 
         if not self._enabled:
@@ -220,6 +259,16 @@ class CurrencyModuleDriver(ModuleDriver):
         self._tool_manager.unregister(CURRENCY_TOOL_ID_CONVERT)
         self._capability_registry.unregister(CURRENCY_CAPABILITY_EXCHANGE_RATE)
         self._capability_registry.unregister(CURRENCY_CAPABILITY_CONVERT)
+
+        # Unregister native implementations
+        if self._implementation_registry is not None:
+            for cap_id in [CURRENCY_CAPABILITY_EXCHANGE_RATE, CURRENCY_CAPABILITY_CONVERT]:
+                impls = self._implementation_registry.get_implementations_for_capability(
+                    cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                )
+                for impl in impls:
+                    self._implementation_registry.unregister_implementation(impl.id)
 
         self._logger.info("Currency module stopped.")
 

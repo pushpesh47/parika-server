@@ -6,6 +6,8 @@ Tests cover:
 - Shutdown sequence (idempotent, handles partial init)
 - Rollback on startup failure
 - RecoveryCompletedEvent with correct event_type
+- ExecutionStrategyResolver backend mapping for PARIKA_NATIVE
+- RuntimeRegistry native runtime lifecycle
 """
 
 from datetime import UTC, datetime, timedelta
@@ -27,7 +29,26 @@ from parika.core.autonomous.models import (
     WorkerModel,
 )
 from parika.core.autonomous.events import RecoveryCompletedEvent
+from parika.core.autonomous.execution_strategy import ExecutionBackend, RuntimeType
+from parika.core.autonomous.execution_strategy_resolver import ExecutionStrategyResolver
+from parika.core.agent_runtime.runtime_registry import RuntimeRegistry
+from parika.core.agent_runtime.contracts import RuntimeConfig, RuntimeStatus
+from parika.core.brain.brain_response import RequestStatus
+from parika.core.capability_registry.capability_category import CapabilityCategory
+from parika.core.capability_registry.capability_definition import CapabilityDefinition
+from parika.core.capability_registry.capability_registry import CapabilityRegistry
 from parika.core.event_bus.event_bus import EventBus
+from parika.core.implementation_registry.implementation import (
+    CapabilityImplementation,
+    ImplementationMetadata,
+    ImplementationSource,
+    ImplementationStatus,
+)
+from parika.core.implementation_registry.implementation_resolver import (
+    ImplementationResolution,
+    ImplementationResolver,
+    SelectionResult,
+)
 from parika.core.logger.logger import Logger
 
 
@@ -181,6 +202,49 @@ class TestAutonomousRuntimeLifecycle:
         assert event.event_type == "recovery.completed"
 
     @pytest.mark.asyncio
+    async def test_mission_created_event_has_event_type(self):
+        """Test that MissionCreatedEvent is published with event_type."""
+        # This test verifies the fix for the missing event_type bug in MissionManager.create()
+        from parika.core.autonomous.mission_manager import MissionManager
+        from parika.core.autonomous.repository import MissionRepository
+        from parika.core.autonomous.events import MissionCreatedEvent
+        from parika.core.event_bus.event_bus import EventBus
+        from parika.core.logger.logger import Logger
+        
+        mock_repository = Mock(spec=MissionRepository)
+        mock_event_bus = Mock(spec=EventBus)
+        mock_logger = Mock(spec=Logger)
+        mock_logger.get_logger = Mock(return_value=Mock())
+        
+        mock_repository.create = Mock()
+        
+        manager = MissionManager(
+            repository=mock_repository,
+            event_bus=mock_event_bus,
+            logger=mock_logger,
+        )
+        
+        mission = manager.create(
+            goal="Test mission",
+            priority=5,
+        )
+        
+        # Verify mission.created event was published with MissionCreatedEvent
+        mock_event_bus.publish.assert_any_call("mission.created", ANY)
+        
+        # Get the event that was passed
+        calls = mock_event_bus.publish.call_args_list
+        mission_created_calls = [c for c in calls if c[0][0] == "mission.created"]
+        assert len(mission_created_calls) == 1
+        
+        event = mission_created_calls[0][0][1]
+        assert isinstance(event, MissionCreatedEvent)
+        assert event.event_type == "mission.created"
+        assert event.mission_id == mission.id
+        assert event.goal == "Test mission"
+        assert event.priority == 5
+
+    @pytest.mark.asyncio
     async def test_executor_dispatch_uses_dedicated_loop(self):
         """Test that executor dispatch uses dedicated event loop, not run_until_complete on main loop."""
         from parika.core.autonomous.executor import AutonomousExecutor, ExecutorConfig
@@ -283,6 +347,391 @@ class TestAutonomousRuntimeLifecycle:
             
         finally:
             executor.stop()
+
+
+class TestExecutionStrategyResolverBackendMapping:
+    """Tests for ExecutionStrategyResolver backend mapping logic."""
+    
+    def test_parika_native_tool_capability_maps_to_tool_backend(self):
+        """Test that PARIKA_NATIVE implementation with TOOL-category capability maps to TOOL backend."""
+        mock_capability_registry = Mock(spec=CapabilityRegistry)
+        mock_capability_registry.get = Mock(return_value=CapabilityDefinition(
+            id="filesystem.exists",
+            name="Filesystem Exists",
+            description="Check if path exists",
+            category=CapabilityCategory.TOOL,
+        ))
+        
+        resolver = ExecutionStrategyResolver(
+            implementation_resolver=Mock(),
+            capability_registry=mock_capability_registry,
+            runtime_registry=Mock(),
+            authorization_boundary=Mock(),
+            budget_enforcer=Mock(),
+            event_bus=Mock(),
+            logger=Mock(),
+        )
+        
+        impl = CapabilityImplementation.create(
+            capability_id="filesystem.exists",
+            source=ImplementationSource.PARIKA_NATIVE,
+            name="Native Filesystem Exists",
+            description="Native PARIKA implementation",
+            version="1.0.0",
+            metadata=ImplementationMetadata(
+                runtime_type="native",
+                tool_ids=("tool.filesystem_exists",),
+                tags=("native", "tool"),
+            ),
+        )
+        
+        backend = resolver._map_implementation_to_backend(impl)
+        
+        assert backend == ExecutionBackend.TOOL
+    
+    def test_parika_native_llm_capability_maps_to_provider_backend(self):
+        """Test that PARIKA_NATIVE implementation with non-TOOL capability maps to PROVIDER backend."""
+        mock_capability_registry = Mock(spec=CapabilityRegistry)
+        mock_capability_registry.get = Mock(return_value=CapabilityDefinition(
+            id="vision.describe_image",
+            name="Vision Describe Image",
+            description="Describe an image",
+            category=CapabilityCategory.VISION,
+        ))
+        
+        resolver = ExecutionStrategyResolver(
+            implementation_resolver=Mock(),
+            capability_registry=mock_capability_registry,
+            runtime_registry=Mock(),
+            authorization_boundary=Mock(),
+            budget_enforcer=Mock(),
+            event_bus=Mock(),
+            logger=Mock(),
+        )
+        
+        impl = CapabilityImplementation.create(
+            capability_id="vision.describe_image",
+            source=ImplementationSource.PARIKA_NATIVE,
+            name="Native Vision Describe",
+            description="Native PARIKA implementation",
+            version="1.0.0",
+            metadata=ImplementationMetadata(
+                runtime_type="native",
+                tool_ids=(),
+                tags=("native", "vision"),
+            ),
+        )
+        
+        backend = resolver._map_implementation_to_backend(impl)
+        
+        assert backend == ExecutionBackend.PROVIDER
+    
+    def test_parika_native_unknown_capability_defaults_to_tool(self):
+        """Test that PARIKA_NATIVE implementation with unknown capability defaults to TOOL backend."""
+        mock_capability_registry = Mock(spec=CapabilityRegistry)
+        mock_capability_registry.get = Mock(return_value=None)
+        
+        resolver = ExecutionStrategyResolver(
+            implementation_resolver=Mock(),
+            capability_registry=mock_capability_registry,
+            runtime_registry=Mock(),
+            authorization_boundary=Mock(),
+            budget_enforcer=Mock(),
+            event_bus=Mock(),
+            logger=Mock(),
+        )
+        
+        impl = CapabilityImplementation.create(
+            capability_id="unknown.capability",
+            source=ImplementationSource.PARIKA_NATIVE,
+            name="Native Unknown",
+            description="Native PARIKA implementation",
+            version="1.0.0",
+            metadata=ImplementationMetadata(
+                runtime_type="native",
+                tool_ids=("tool.unknown",),
+                tags=("native", "tool"),
+            ),
+        )
+        
+        backend = resolver._map_implementation_to_backend(impl)
+        
+        assert backend == ExecutionBackend.TOOL
+
+
+class TestRuntimeRegistryNativeLifecycle:
+    """Tests for RuntimeRegistry native runtime lifecycle."""
+    
+    def test_native_runtime_registered_then_running_is_available(self):
+        """Test that native runtime becomes available after being marked RUNNING."""
+        mock_event_bus = Mock()
+        mock_logger = Mock()
+        mock_logger.get_logger = Mock(return_value=Mock())
+        
+        registry = RuntimeRegistry(event_bus=mock_event_bus, logger=mock_logger)
+        
+        # Register native runtime (starts as STOPPED)
+        config = RuntimeConfig(
+            runtime_type=RuntimeType.NATIVE,
+            runtime_id="native",
+            name="PARIKA Native Runtime",
+        )
+        registry.register(runtime_type=RuntimeType.NATIVE, config=config)
+        
+        # Initially not available (STOPPED)
+        assert registry.is_available(RuntimeType.NATIVE) is False
+        
+        # Mark as RUNNING
+        registry.update_status("native", RuntimeStatus.RUNNING)
+        
+        # Now available
+        assert registry.is_available(RuntimeType.NATIVE) is True
+        
+        # Mark as STOPPED again
+        registry.update_status("native", RuntimeStatus.STOPPED)
+        
+        # No longer available
+        assert registry.is_available(RuntimeType.NATIVE) is False
+    
+    def test_multiple_native_runtimes_only_running_is_available(self):
+        """Test that only RUNNING runtimes are considered available."""
+        mock_event_bus = Mock()
+        mock_logger = Mock()
+        mock_logger.get_logger = Mock(return_value=Mock())
+        
+        registry = RuntimeRegistry(event_bus=mock_event_bus, logger=mock_logger)
+        
+        # Register two native runtimes
+        config1 = RuntimeConfig(runtime_type=RuntimeType.NATIVE, runtime_id="native-1", name="Native 1")
+        config2 = RuntimeConfig(runtime_type=RuntimeType.NATIVE, runtime_id="native-2", name="Native 2")
+        registry.register(runtime_type=RuntimeType.NATIVE, config=config1)
+        registry.register(runtime_type=RuntimeType.NATIVE, config=config2)
+        
+        # Neither available
+        assert registry.is_available(RuntimeType.NATIVE) is False
+        
+        # First becomes RUNNING
+        registry.update_status("native-1", RuntimeStatus.RUNNING)
+        assert registry.is_available(RuntimeType.NATIVE) is True
+        
+        # Second also RUNNING
+        registry.update_status("native-2", RuntimeStatus.RUNNING)
+        assert registry.is_available(RuntimeType.NATIVE) is True
+        
+        # First STOPPED, second still RUNNING
+        registry.update_status("native-1", RuntimeStatus.STOPPED)
+        assert registry.is_available(RuntimeType.NATIVE) is True
+        
+        # Both STOPPED
+        registry.update_status("native-2", RuntimeStatus.STOPPED)
+        assert registry.is_available(RuntimeType.NATIVE) is False
+
+
+class TestRequestStatusFix:
+    """Test that RequestStatus.COMPLETED is not used (regression for RequestStatus fix)."""
+    
+    def test_request_status_has_no_completed_member(self):
+        """Verify RequestStatus enum has no COMPLETED member."""
+        # This test ensures the enum only has the expected members
+        members = [m.value for m in RequestStatus]
+        assert "completed" not in members
+        assert "success" in members
+        assert "partial_success" in members
+        assert "failed" in members
+    
+    def test_request_status_success_is_used_for_completion(self):
+        """Verify SUCCESS is the correct status for completion."""
+        # The fix replaces COMPLETED with SUCCESS
+        assert RequestStatus.SUCCESS.value == "success"
+        # COMPLETED would have been incorrect - should use SUCCESS instead
+
+
+class TestWorkerManagerSpawnPersistenceOrder:
+    """Regression tests for WorkerManager.spawn() persistence order fix (FK violation)."""
+    
+    def test_spawn_persists_execution_before_worker(self):
+        """Test that WorkerManager.spawn() persists Execution before Worker to satisfy FK."""
+        from parika.core.autonomous.worker_manager import WorkerManager
+        from parika.core.autonomous.repository import WorkerRepository, ExecutionRepository
+        from parika.core.database.pool import PoolManager
+        
+        # Use real repositories with a test database
+        import os
+        # Check if test database env vars are set
+        if not all(os.environ.get(k) for k in ["PARIKA_TEST_DATABASE__HOST", "PARIKA_TEST_DATABASE__NAME", "PARIKA_TEST_DATABASE__USERNAME"]):
+            pytest.skip("Test database not configured")
+        
+        from parika.core.database.pool import PoolManager
+        from parika.core.logger.logger import Logger
+        from parika.core.configuration.configuration import Configuration
+        
+        config = Configuration()
+        config.load()
+        
+        pool_manager = PoolManager()
+        try:
+            sync_pool = pool_manager.get_sync_pool()
+        except RuntimeError:
+            pytest.skip("Test database not initialized")
+        
+        logger = Logger(config)
+        event_bus = Mock()
+        
+        worker_repo = WorkerRepository(pool_manager, logger)
+        execution_repo = ExecutionRepository(pool_manager, logger)
+        
+        manager = WorkerManager(
+            worker_repository=worker_repo,
+            execution_repository=execution_repo,
+            event_bus=event_bus,
+            logger=logger,
+        )
+        
+        task_id = "test-task-" + uuid4().hex[:8]
+        
+        # This should not raise FK violation
+        worker, execution = manager.spawn(task_id)
+        
+        # Verify both exist in DB
+        persisted_worker = worker_repo.get(worker.id)
+        persisted_execution = execution_repo.get(execution.id)
+        
+        assert persisted_worker is not None
+        assert persisted_execution is not None
+        
+        # Verify FK relationship
+        assert persisted_worker.execution_id == execution.id
+        assert persisted_execution.worker_id == worker.id
+        
+        # Verify correct statuses
+        assert persisted_worker.status == "spawned"
+        assert persisted_execution.status == "created"
+        
+        # Cleanup
+        execution_repo.delete(execution.id)
+        worker_repo.delete(worker.id)
+
+
+class TestAutonomousLaunchResponseExtraction:
+    """Regression test for TaskResponse content extraction in autonomous launch."""
+    
+    def test_task_response_content_extraction_from_autonomous_launch(self):
+        """Test that autonomous launch response correctly extracts text from TaskResponse structure."""
+        from parika.core.task_manager.response import TaskResponse
+        from parika.core.provider_manager.chat_result import ChatResult, ChatMessage
+        from parika.core.brain.goal_result import GoalResult
+        from parika.core.brain.brain_response import BrainResponse, RequestStatus
+        from parika.core.provider_manager.chat_result import ChatResult as ProviderChatResult
+        
+        # Build the exact structure created by _submit_autonomous()
+        launched_message = ProviderChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content="Test autonomous launch message"
+            )
+        )
+        
+        synthetic_response = BrainResponse(
+            request_id="autonomous_launched",
+            plan_id=None,
+            results=(
+                GoalResult(
+                    goal_id="mission_launched",
+                    capability_id="chat.respond",
+                    task_id=None,
+                    status=RequestStatus.SUCCESS,
+                    response=TaskResponse(outputs={"result": launched_message}),
+                ),
+            ),
+        )
+        
+        # This is the extraction logic from the fixed session.py
+        assistant_message = synthetic_response.results[0].response
+        assert isinstance(assistant_message, TaskResponse)
+        
+        chat_result = assistant_message.outputs.get("result")
+        assert chat_result is not None
+        assert hasattr(chat_result, "message")
+        
+        assistant_text = chat_result.message.content
+        
+        assert assistant_text == "Test autonomous launch message"
+        assert isinstance(assistant_text, str)
+
+
+class TestExecutionStepIndex:
+    """Regression tests for Execution.step_index fix (NOT NULL constraint)."""
+    
+    def test_execution_domain_model_has_step_index_default_zero(self):
+        """Test that Execution domain model defaults step_index to 0."""
+        from parika.core.autonomous.worker_manager import Execution
+        from datetime import datetime, UTC
+        
+        execution = Execution(
+            id="test-exec",
+            task_id="test-task",
+            worker_id="test-worker",
+            status="created",
+            attempt_number=1,
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            completed_at=None,
+            checkpoint_id=None,
+            result=None,
+            error=None,
+            metadata=MappingProxyType({}),
+        )
+        
+        assert execution.step_index == 0
+    
+    def test_execution_to_model_preserves_step_index(self):
+        """Test that Execution.to_model() includes step_index."""
+        from parika.core.autonomous.worker_manager import Execution
+        from datetime import datetime, UTC
+        
+        execution = Execution(
+            id="test-exec",
+            task_id="test-task",
+            worker_id="test-worker",
+            status="created",
+            attempt_number=1,
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            completed_at=None,
+            checkpoint_id=None,
+            result=None,
+            error=None,
+            metadata=MappingProxyType({}),
+            step_index=0,
+        )
+        
+        model = execution.to_model()
+        assert model.step_index == 0
+    
+    def test_execution_from_model_restores_step_index(self):
+        """Test that Execution.from_model() restores step_index."""
+        from parika.core.autonomous.worker_manager import Execution
+        from parika.core.autonomous.models import ExecutionModel
+        from datetime import datetime, UTC
+        
+        model = ExecutionModel(
+            id="test-exec",
+            task_id="test-task",
+            worker_id="test-worker",
+            status="created",
+            attempt_number=1,
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            completed_at=None,
+            checkpoint_id=None,
+            result=None,
+            error=None,
+            execution_metadata={},
+            step_index=0,
+        )
+        
+        execution = Execution.from_model(model)
+        assert execution.step_index == 0
 
 
 if __name__ == "__main__":

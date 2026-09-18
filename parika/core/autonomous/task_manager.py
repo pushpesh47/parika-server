@@ -324,6 +324,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.started", TaskStartedEvent(
             event_id=self._generate_id(),
+            event_type="task.started",
             mission_id=task.mission_id,
             task_id=task.id,
             agent_id=agent_id,
@@ -346,6 +347,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.progress", TaskProgressEvent(
             event_id=self._generate_id(),
+            event_type="task.progress",
             mission_id=task.mission_id,
             task_id=task.id,
             progress=task.progress,
@@ -366,7 +368,8 @@ class AutonomousTaskManager:
         task.status = AutonomousTaskStatus.COMPLETED
         task.completed_at = datetime.now(UTC)
         task.progress = 1.0
-        task.result = result
+        # Convert MappingProxyType to dict for JSON serialization
+        task.result = dict(result) if result else None
         task.updated_at = datetime.now(UTC)
 
         self.update(task)
@@ -376,10 +379,12 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.completed", TaskCompletedEvent(
             event_id=self._generate_id(),
+            event_type="task.completed",
             mission_id=task.mission_id,
             task_id=task.id,
             result=result,
             attempt_number=task.retry_count + 1,
+            capability_id=task.capability_id,
         ))
 
         # Phase 2: Also publish task.completed for WaitManager
@@ -422,6 +427,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.failed", TaskFailedEvent(
             event_id=self._generate_id(),
+            event_type="task.failed",
             mission_id=task.mission_id,
             task_id=task.id,
             failure=failure,
@@ -429,19 +435,8 @@ class AutonomousTaskManager:
             retry_eligible=retry_eligible,
             retry_count=task.retry_count,
             max_retries=task.max_retries,
+            capability_id=task.capability_id,
         ))
-
-        # Phase 2: Also publish task.failed for WaitManager
-        self._event_bus.publish("task.failed", {
-            "event_id": self._generate_id(),
-            "mission_id": task.mission_id,
-            "task_id": task.id,
-            "failure": failure,
-            "attempt_number": attempt_number or (task.retry_count),
-            "retry_eligible": retry_eligible,
-            "retry_count": task.retry_count,
-            "max_retries": task.max_retries,
-        })
 
         self._logger.error("Task '%s' failed: %s (retry eligible: %s)", task_id, failure, retry_eligible)
         return task
@@ -493,6 +488,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.cancelled", TaskCancelledEvent(
             event_id=self._generate_id(),
+            event_type="task.cancelled",
             mission_id=task.mission_id,
             task_id=task.id,
             reason=reason,
@@ -517,6 +513,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.paused", TaskPausedEvent(
             event_id=self._generate_id(),
+            event_type="task.paused",
             mission_id=task.mission_id,
             task_id=task.id,
             reason=reason,
@@ -540,6 +537,7 @@ class AutonomousTaskManager:
 
         self._event_bus.publish("task.resumed", TaskResumedEvent(
             event_id=self._generate_id(),
+            event_type="task.resumed",
             mission_id=task.mission_id,
             task_id=task.id,
             attempt_number=task.retry_count + 1,
@@ -573,6 +571,7 @@ class AutonomousTaskManager:
 
                     self._event_bus.publish("task.waiting_for_dependency", TaskWaitingForDependencyEvent(
                         event_id=self._generate_id(),
+                        event_type="task.waiting_for_dependency",
                         mission_id=task.mission_id,
                         task_id=task.id,
                         dependency_task_id=completed_task_id,

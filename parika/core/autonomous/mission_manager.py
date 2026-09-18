@@ -58,7 +58,7 @@ class Mission:
             completed_at=model.completed_at,
             deadline=model.deadline,
             progress=model.progress,
-            metadata=MappingProxyType(model.metadata),
+            metadata=MappingProxyType(model.mission_metadata),
             failure=model.failure,
             result=MappingProxyType(model.result) if model.result else None,
         )
@@ -130,6 +130,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.created", MissionCreatedEvent(
             event_id=self._generate_id(),
+            event_type="mission.created",
             mission_id=mission.id,
             goal=goal,
             priority=priority,
@@ -137,6 +138,27 @@ class MissionManager:
         ))
 
         self._logger.info("Created mission '%s': %s", mission.id, goal)
+        return mission
+
+    def plan(self, mission_id: str) -> Mission | None:
+        """Transition mission to PLANNING (CREATED -> PLANNING)."""
+        mission = self.get(mission_id)
+        if mission is None:
+            return None
+
+        if not validate_mission_transition(mission.status, MissionStatus.PLANNING):
+            self._logger.warning(
+                "Invalid mission transition from %s to PLANNING for mission %s",
+                mission.status, mission_id
+            )
+            return None
+
+        mission.status = MissionStatus.PLANNING
+        mission.updated_at = datetime.now(UTC)
+
+        self.update(mission)
+
+        self._logger.info("Planned mission '%s'", mission_id)
         return mission
 
     def get(self, mission_id: str) -> Mission | None:
@@ -176,6 +198,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.started", MissionStartedEvent(
             event_id=self._generate_id(),
+            event_type="mission.started",
             mission_id=mission.id,
         ))
 
@@ -195,6 +218,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.progress", MissionProgressEvent(
             event_id=self._generate_id(),
+            event_type="mission.progress",
             mission_id=mission.id,
             progress=mission.progress,
             message=message,
@@ -225,6 +249,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.completed", MissionCompletedEvent(
             event_id=self._generate_id(),
+            event_type="mission.completed",
             mission_id=mission.id,
             result=result,
         ))
@@ -254,6 +279,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.failed", MissionFailedEvent(
             event_id=self._generate_id(),
+            event_type="mission.failed",
             mission_id=mission.id,
             failure=failure,
             recoverable=recoverable,
@@ -283,6 +309,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.cancelled", MissionCancelledEvent(
             event_id=self._generate_id(),
+            event_type="mission.cancelled",
             mission_id=mission.id,
             reason=reason,
         ))
@@ -306,6 +333,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.paused", MissionPausedEvent(
             event_id=self._generate_id(),
+            event_type="mission.paused",
             mission_id=mission.id,
             reason=reason,
         ))
@@ -328,6 +356,7 @@ class MissionManager:
 
         self._event_bus.publish("mission.resumed", MissionResumedEvent(
             event_id=self._generate_id(),
+            event_type="mission.resumed",
             mission_id=mission.id,
         ))
 

@@ -269,7 +269,7 @@ class ExecutionModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_uuid)
     task_id: Mapped[str] = mapped_column(String(64), ForeignKey("execution.autonomous_task.id", ondelete="CASCADE"), nullable=False)
-    worker_id: Mapped[str] = mapped_column(String(64), ForeignKey("execution.worker.id", ondelete="CASCADE"), nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("execution.worker.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ExecutionStatus.CREATED.value)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

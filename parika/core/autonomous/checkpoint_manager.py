@@ -50,7 +50,7 @@ class Checkpoint:
             created_at=model.created_at,
             validated_at=model.validated_at,
             restored_at=model.restored_at,
-            metadata=MappingProxyType(model.metadata),
+            metadata=MappingProxyType(model.checkpoint_metadata),
         )
 
     def to_model(self) -> CheckpointModel:
@@ -128,6 +128,7 @@ class CheckpointManager:
 
         self._event_bus.publish("checkpoint.created", CheckpointCreatedEvent(
             event_id=self._generate_id(),
+            event_type="checkpoint.created",
             mission_id=mission_id,
             task_id=task_id,
             execution_id=execution_id,
@@ -200,6 +201,7 @@ class CheckpointManager:
 
         self._event_bus.publish("checkpoint.restored", CheckpointRestoredEvent(
             event_id=self._generate_id(),
+            event_type="checkpoint.restored",
             mission_id=checkpoint.mission_id,
             task_id=checkpoint.task_id,
             execution_id=checkpoint.execution_id,

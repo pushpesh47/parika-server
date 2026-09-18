@@ -55,7 +55,7 @@ class Worker:
             timeout_seconds=model.timeout_seconds,
             result=MappingProxyType(model.result) if model.result else None,
             error=model.error,
-            metadata=MappingProxyType(model.metadata),
+            metadata=MappingProxyType(model.worker_metadata),
         )
 
     def to_model(self) -> WorkerModel:
@@ -80,7 +80,7 @@ class Execution:
     """Execution attempt domain model."""
     id: str
     task_id: str
-    worker_id: str
+    worker_id: str | None
     status: str
     attempt_number: int
     started_at: datetime
@@ -90,6 +90,7 @@ class Execution:
     result: MappingProxyType[str, Any] | None
     error: str | None
     metadata: MappingProxyType[str, Any]
+    step_index: int = 0
 
     @classmethod
     def from_model(cls, model: ExecutionModel) -> "Execution":
@@ -105,7 +106,8 @@ class Execution:
             checkpoint_id=model.checkpoint_id,
             result=MappingProxyType(model.result) if model.result else None,
             error=model.error,
-            metadata=MappingProxyType(model.metadata),
+            metadata=MappingProxyType(model.execution_metadata),
+            step_index=model.step_index,
         )
 
     def to_model(self) -> ExecutionModel:
@@ -122,6 +124,7 @@ class Execution:
             result=dict(self.result) if self.result else None,
             error=self.error,
             metadata=dict(self.metadata),
+            step_index=self.step_index,
         )
 
 
@@ -164,7 +167,7 @@ class WorkerManager:
         execution = Execution(
             id=self._generate_id(),
             task_id=task_id,
-            worker_id="",  # Will be set after worker creation
+            worker_id=None,  # Will be set after worker creation (nullable FK)
             status="created",
             attempt_number=attempt_number,
             started_at=now,
@@ -192,15 +195,19 @@ class WorkerManager:
             metadata=metadata or MappingProxyType({}),
         )
 
-        # Update execution with worker ID
-        execution.worker_id = worker.id
-
-        # Persist
-        self._worker_repository.create(worker.to_model())
+        # Persist execution FIRST with NULL worker_id (Worker FK references it)
         self._execution_repository.create(execution.to_model())
+
+        # Persist worker SECOND (Execution now exists)
+        self._worker_repository.create(worker.to_model())
+
+        # Now update execution with worker ID and persist the update
+        execution.worker_id = worker.id
+        self._execution_repository.update(execution.to_model())
 
         self._event_bus.publish("worker.spawned", WorkerSpawnedEvent(
             event_id=self._generate_id(),
+            event_type="worker.spawned",
             task_id=task_id,
             worker_id=worker.id,
             execution_id=execution.id,
@@ -240,6 +247,7 @@ class WorkerManager:
 
         self._event_bus.publish("worker.started", WorkerStartedEvent(
             event_id=self._generate_id(),
+            event_type="worker.started",
             task_id=worker.task_id,
             worker_id=worker.id,
             execution_id=worker.execution_id,
@@ -269,6 +277,7 @@ class WorkerManager:
 
         self._event_bus.publish("worker.heartbeat", WorkerHeartbeatEvent(
             event_id=self._generate_id(),
+            event_type="worker.heartbeat",
             task_id=worker.task_id,
             worker_id=worker.id,
             status=worker.status,
@@ -294,7 +303,8 @@ class WorkerManager:
             return None
 
         worker.status = WorkerStatus.COMPLETED.value
-        worker.result = result
+        # Convert MappingProxyType to dict for JSON serialization
+        worker.result = dict(result) if result else None
         worker.last_activity = datetime.now(UTC)
         self._worker_repository.update(worker)
 
@@ -303,7 +313,8 @@ class WorkerManager:
         if execution:
             execution.status = "completed"
             execution.completed_at = datetime.now(UTC)
-            execution.result = result
+            # Convert MappingProxyType to dict for JSON serialization
+            execution.result = dict(result) if result else None
             execution.updated_at = datetime.now(UTC)
             self._execution_repository.update(execution)
 
@@ -341,6 +352,7 @@ class WorkerManager:
 
         self._event_bus.publish("worker.failed", WorkerFailedEvent(
             event_id=self._generate_id(),
+            event_type="worker.failed",
             task_id=worker.task_id,
             worker_id=worker.id,
             failure=error,
@@ -381,6 +393,7 @@ class WorkerManager:
 
         self._event_bus.publish("worker.cancelled", WorkerCancelledEvent(
             event_id=self._generate_id(),
+            event_type="worker.cancelled",
             task_id=worker.task_id,
             worker_id=worker.id,
             reason=reason,

@@ -51,6 +51,7 @@ from parika.core.resource_manager.resource_manager import ResourceManager
 from parika.core.policy_engine.policy_engine import PolicyEngine
 from parika.core.autonomous.mission_manager import MissionManager
 from parika.core.multi_agent.mission_coordinator import MissionCoordinator
+from parika.core.implementation_registry.implementation_resolver import ImplementationResolver
 from parika.core.event_bus.event_bus import EventBus
 from parika.core.logger.logger import Logger
 
@@ -99,6 +100,7 @@ class AutonomousExecutor:
         dispatcher: Optional[ExecutionDispatcher] = None,
         runtime_registry: Optional[Any] = None,  # RuntimeRegistry
         mission_coordinator: Optional[MissionCoordinator] = None,
+        implementation_resolver: Optional[ImplementationResolver] = None,
     ) -> None:
         self._task_repository = task_repository
         self._task_manager = task_manager
@@ -124,6 +126,7 @@ class AutonomousExecutor:
         self._dispatcher = dispatcher
         self._runtime_registry = runtime_registry
         self._mission_coordinator = mission_coordinator
+        self._implementation_resolver = implementation_resolver
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -423,6 +426,7 @@ class AutonomousExecutor:
         
         # All steps completed successfully
         self._task_manager.complete(task_id, MappingProxyType({"result": step_results}))
+        self._check_mission_completion(mission_id, MappingProxyType({"result": step_results}))
         if self._logger:
             self._logger.info("Multi-step task '%s' completed successfully", task_id)
 
@@ -567,8 +571,15 @@ class AutonomousExecutor:
                 return
 
             # 9. Success
-            self._worker_manager.complete(worker.id, MappingProxyType({"result": backend_result.result}))
-            self._task_manager.complete(task.id, MappingProxyType({"result": backend_result.result}))
+            # Extract actual result from ToolResponse if needed
+            actual_result = backend_result.result
+            if hasattr(actual_result, 'result'):
+                # ToolResponse has .result attribute with actual data
+                actual_result = actual_result.result
+            
+            self._worker_manager.complete(worker.id, MappingProxyType({"result": actual_result}))
+            self._task_manager.complete(task.id, MappingProxyType({"result": actual_result}))
+            self._check_mission_completion(task.mission_id, MappingProxyType({"result": actual_result}))
             
             if self._logger:
                 self._logger.info("Task '%s' completed successfully", task_id)
@@ -599,16 +610,8 @@ class AutonomousExecutor:
     ) -> BackendExecutionResult:
         """Dispatch execution to the appropriate backend."""
         if self._dispatcher:
-            # Use the executor's dedicated event loop
-            if self._loop is None:
-                raise RuntimeError("Executor event loop not initialized")
-            
-            # Submit coroutine to the executor's loop and wait for result
-            future = asyncio.run_coroutine_threadsafe(
-                self._dispatcher.dispatch(strategy, inputs, context),
-                self._loop
-            )
-            return future.result()
+            # We're already on the executor's event loop, so await directly
+            return await self._dispatcher.dispatch(strategy, inputs, context)
         else:
             # Fallback to legacy execution
             raise RuntimeError("No dispatcher available")
@@ -650,6 +653,27 @@ class AutonomousExecutor:
             if self._logger:
                 self._logger.info("Task '%s' failed permanently after %d retries", 
                                 task.id, updated_task.retry_count)
+            if task.mission_id and self._mission_manager:
+                self._mission_manager.fail(task.mission_id, f"Task {task.id} failed: {error}")
+
+    def _check_mission_completion(
+        self,
+        mission_id: str | None,
+        result: MappingProxyType[str, Any] | None = None,
+    ) -> None:
+        """Check if all tasks for a mission are complete, and complete the mission if so."""
+        if not mission_id or not self._mission_manager:
+            return
+
+        mission_tasks = self._task_repository.list_by_mission(mission_id)
+        if not mission_tasks:
+            return
+
+        from parika.core.autonomous.contracts import AutonomousTaskStatus
+        if all(t.status == AutonomousTaskStatus.COMPLETED.value for t in mission_tasks):
+            self._mission_manager.complete(mission_id, result)
+            if self._logger:
+                self._logger.info("Mission '%s' completed successfully", mission_id)
 
     def _handle_step_failure(self, task: AutonomousTask, step_index: int, error: str) -> None:
         """Handle failure of a multi-step task."""
@@ -678,8 +702,15 @@ class AutonomousExecutor:
             else:
                 result = self._execute_provider_capability(task, resolution, worker.id, execution.id)
 
-            self._worker_manager.complete(worker.id, MappingProxyType({"result": result}))
-            self._task_manager.complete(task.id, MappingProxyType({"result": result}))
+            # Extract actual result from ToolResponse if needed
+            actual_result = result
+            if hasattr(actual_result, 'result'):
+                # ToolResponse has .result attribute with actual data
+                actual_result = actual_result.result
+            
+            self._worker_manager.complete(worker.id, MappingProxyType({"result": actual_result}))
+            self._task_manager.complete(task.id, MappingProxyType({"result": actual_result}))
+            self._check_mission_completion(task.mission_id, MappingProxyType({"result": actual_result}))
             
             if self._logger:
                 self._logger.info("Task '%s' completed successfully (legacy)", task.id)

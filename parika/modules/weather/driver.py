@@ -16,6 +16,14 @@ public APIs and never executes capabilities or tools directly itself.
 
 from __future__ import annotations
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.capability_registry.capability_category import (
     CapabilityCategory,
 )
@@ -65,6 +73,7 @@ class WeatherModuleDriver(ModuleDriver):
         health_manager: HealthManager | None = None,
         configuration: Configuration | None = None,
         transport: HttpTransport | None = None,
+        implementation_registry: ImplementationRegistry | None = None,
     ) -> None:
         """
         Initialize the WeatherModuleDriver.
@@ -94,12 +103,19 @@ class WeatherModuleDriver(ModuleDriver):
             transport:
                 Optional HttpTransport override, primarily for tests.
                 Defaults to `UrllibHttpTransport`.
+
+            implementation_registry:
+                Optional ImplementationRegistry for registering native
+                capability implementations. When supplied, a
+                PARIKA_NATIVE implementation is registered for each
+                weather capability.
         """
 
         self._capability_registry = capability_registry
         self._tool_manager = tool_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
+        self._implementation_registry = implementation_registry
 
         weather_config = load_weather_config(configuration)
         self._enabled = weather_config.enabled
@@ -180,6 +196,28 @@ class WeatherModuleDriver(ModuleDriver):
             create_weather_forecast_tool(), self._forecast_driver
         )
 
+        # Register native implementations
+        if self._implementation_registry is not None:
+            for cap_id, tool_id, name in [
+                (WEATHER_CAPABILITY_CURRENT, WEATHER_TOOL_ID_CURRENT, "Weather Current"),
+                (WEATHER_CAPABILITY_FORECAST, WEATHER_TOOL_ID_FORECAST, "Weather Forecast"),
+            ]:
+                impl = self._implementation_registry.register_implementation(
+                    capability_id=cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                    name=f"Native {name}",
+                    description=f"Native PARIKA implementation of {cap_id}",
+                    version="1.0.0",
+                    metadata=ImplementationMetadata(
+                        runtime_type="native",
+                        tool_ids=(tool_id,),
+                        tags=("native", "tool", "weather"),
+                    ),
+                )
+                self._implementation_registry.update_implementation_status(
+                    impl.id, ImplementationStatus.ACTIVE
+                )
+
         if self._health_manager is not None:
             self._health_manager.register(
                 MODULE_HEALTH_COMPONENT_ID,
@@ -192,8 +230,9 @@ class WeatherModuleDriver(ModuleDriver):
         """
         Stop the module.
 
-        Unregisters both Weather Tools and both Capabilities. A no-op
-        when the module was disabled by configuration.
+        Unregisters both Weather Tools, both Capabilities, and native
+        implementations. A no-op when the module was disabled by
+        configuration.
         """
 
         if not self._enabled:
@@ -206,6 +245,16 @@ class WeatherModuleDriver(ModuleDriver):
         self._tool_manager.unregister(WEATHER_TOOL_ID_FORECAST)
         self._capability_registry.unregister(WEATHER_CAPABILITY_CURRENT)
         self._capability_registry.unregister(WEATHER_CAPABILITY_FORECAST)
+
+        # Unregister native implementations
+        if self._implementation_registry is not None:
+            for cap_id in [WEATHER_CAPABILITY_CURRENT, WEATHER_CAPABILITY_FORECAST]:
+                impls = self._implementation_registry.get_implementations_for_capability(
+                    cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                )
+                for impl in impls:
+                    self._implementation_registry.unregister_implementation(impl.id)
 
         self._logger.info("Weather module stopped.")
 

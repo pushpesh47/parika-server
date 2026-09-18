@@ -26,6 +26,8 @@ from parika.core.tool_manager.tool_manager import ToolManager
 from parika.core.provider_manager.provider_manager import ProviderManager
 from parika.core.resource_manager.resource_manager import ResourceManager
 from parika.core.policy_engine.policy_engine import PolicyEngine
+from parika.core.policy_engine.policy_rule import PolicyRule
+from parika.core.policy_engine.policy_effect import PolicyEffect
 from parika.core.permission_manager.permission_manager import PermissionManager
 from parika.core.permission_manager.workspace_permission_manager import WorkspacePermissionManager
 
@@ -68,7 +70,7 @@ from parika.core.implementation_registry.implementation_resolver import Implemen
 
 # Agent runtime
 from parika.core.agent_runtime.runtime_registry import RuntimeRegistry
-from parika.core.agent_runtime.contracts import RuntimeConfig, RuntimeCapabilities, RuntimeType
+from parika.core.agent_runtime.contracts import RuntimeConfig, RuntimeCapabilities, RuntimeType, RuntimeStatus
 from parika.core.agent_runtime.native_backend import NativeBackend
 from parika.core.agent_runtime.hermes_backend import HermesBackend
 from parika.core.agent_runtime.remote_backend import RemoteBackend
@@ -89,6 +91,80 @@ from parika.core.autonomous.execution_strategy_resolver import ExecutionStrategy
 from parika.core.autonomous.dispatcher import ExecutionDispatcher
 from parika.core.autonomous.executor import AutonomousExecutor
 from parika.core.autonomous.execution_backend import ExecutionBackend
+from parika.core.policy_engine.policy_context import PolicyContext
+
+
+def create_autonomous_policy_rules() -> tuple[PolicyRule, ...]:
+    """
+    Create default policy rules for autonomous execution.
+    
+    These rules allow autonomous execution when the capability is permitted
+    for the agent profile (via permission_context.allowed_capabilities).
+    This mirrors the check in _check_permission_manager but at the policy layer.
+    
+    The rules are evaluated by PolicyEngine with default_effect=DENY,
+    so a matching ALLOW rule is required for authorization to succeed.
+    """
+    
+    def allow_permitted_capabilities(context: PolicyContext) -> bool:
+        """Allow if capability is in agent's allowed_capabilities."""
+        # Check if this is an autonomous execution context
+        if not context.get("is_autonomous"):
+            return False
+        
+        capability_id = context.get("capability_id")
+        if not capability_id:
+            return False
+        
+        # Get allowed capabilities from permission_context
+        permission_context = context.get("permission_context", {})
+        allowed_capabilities = permission_context.get("allowed_capabilities", [])
+        
+        if not allowed_capabilities:
+            # No allowed capabilities specified - deny by default
+            return False
+        
+        # Check exact match or wildcard pattern
+        for pattern in allowed_capabilities:
+            if pattern.endswith("*") and capability_id.startswith(pattern[:-1]):
+                return True
+            if pattern == capability_id:
+                return True
+        
+        return False
+    
+    def deny_prohibited_capabilities(context: PolicyContext) -> bool:
+        """Deny if capability is in agent's prohibited_capabilities."""
+        if not context.get("is_autonomous"):
+            return False
+        
+        capability_id = context.get("capability_id")
+        if not capability_id:
+            return False
+        
+        permission_context = context.get("permission_context", {})
+        prohibited_capabilities = permission_context.get("prohibited_capabilities", [])
+        
+        return capability_id in prohibited_capabilities
+    
+    return (
+        # Higher priority DENY rule for prohibited capabilities
+        PolicyRule(
+            id="autonomous.prohibited_capabilities",
+            effect=PolicyEffect.DENY,
+            predicate=deny_prohibited_capabilities,
+            priority=100,
+            reason="Capability is prohibited for this agent profile",
+        ),
+        # ALLOW rule for permitted capabilities
+        PolicyRule(
+            id="autonomous.permitted_capabilities",
+            effect=PolicyEffect.ALLOW,
+            predicate=allow_permitted_capabilities,
+            priority=50,
+            reason="Capability is permitted for this agent profile",
+        ),
+    )
 
 
 class RuntimeLifecycleState(Enum):
@@ -253,6 +329,13 @@ class AutonomousRuntime:
                 await self.hermes_backend.health_check()
                 self._started_components.append("hermes_backend")
             
+            # Mark native runtime as RUNNING
+            try:
+                self.runtime_registry.update_status("native", RuntimeStatus.RUNNING)
+            except Exception as e:
+                if self.logger:
+                    self.logger.get_logger(__name__).warning("Failed to update native runtime status: %s", e)
+            
             self._lifecycle_state = RuntimeLifecycleState.STARTED
             
         except Exception as e:
@@ -337,6 +420,13 @@ class AutonomousRuntime:
             if self.logger:
                 self.logger.get_logger(__name__).error("Error stopping executor: %s", e)
         
+        # Mark native runtime as STOPPED
+        try:
+            self.runtime_registry.update_status("native", RuntimeStatus.STOPPED)
+        except Exception as e:
+            if self.logger:
+                self.logger.get_logger(__name__).warning("Failed to update native runtime status: %s", e)
+        
         self._lifecycle_state = RuntimeLifecycleState.STOPPED
         self._started_components = []
     
@@ -373,6 +463,9 @@ def build_autonomous_runtime(
     policy_engine: PolicyEngine,
     permission_manager,          # type: PermissionManager (untyped in signature)
     workspace_permission_manager, # type: WorkspacePermissionManager (untyped in signature)
+    # Optional shared components (for integration with main runtime)
+    shared_implementation_registry: ImplementationRegistry | None = None,
+    shared_skill_registry: SkillRegistry | None = None,
 ) -> AutonomousRuntime:
     """
     Build the complete autonomous runtime.
@@ -475,11 +568,13 @@ def build_autonomous_runtime(
     # =========================================================================
     # AUTHORIZATION & BUDGET
     # =========================================================================
+    autonomous_policy_rules = create_autonomous_policy_rules()
     authorization_boundary = create_autonomous_authorization_boundary(
         policy_engine=policy_engine,
         permission_manager=permission_manager,
         workspace_permission_manager=workspace_permission_manager,
         logger=logger,
+        policy_rules=autonomous_policy_rules,
     )
     budget_enforcer = BudgetEnforcer(
         resource_manager=resource_manager,
@@ -495,8 +590,13 @@ def build_autonomous_runtime(
         strict_mode=autonomous_settings.skills.strict_security_mode,
     )
     
-    skill_registry = SkillRegistry(event_bus=event_bus, logger=logger)
-    skill_registry.set_security_scanner(security_scanner)
+    # Use shared skill_registry if provided, otherwise create new one
+    if shared_skill_registry is not None:
+        skill_registry = shared_skill_registry
+        skill_registry.set_security_scanner(security_scanner)
+    else:
+        skill_registry = SkillRegistry(event_bus=event_bus, logger=logger)
+        skill_registry.set_security_scanner(security_scanner)
     
     skill_catalog = SkillCatalog(
         registry=skill_registry,
@@ -518,13 +618,17 @@ def build_autonomous_runtime(
     # =========================================================================
     # IMPLEMENTATION SYSTEM
     # =========================================================================
-    implementation_registry = ImplementationRegistry(
-        capability_registry=capability_resolver._capability_registry,
-        tool_manager=tool_manager,
-        skill_registry=skill_registry,
-        event_bus=event_bus,
-        logger=logger,
-    )
+    # Use shared implementation_registry if provided, otherwise create new one
+    if shared_implementation_registry is not None:
+        implementation_registry = shared_implementation_registry
+    else:
+        implementation_registry = ImplementationRegistry(
+            capability_registry=capability_resolver._capability_registry,
+            tool_manager=tool_manager,
+            skill_registry=skill_registry,
+            event_bus=event_bus,
+            logger=logger,
+        )
     
     implementation_resolver = ImplementationResolver(
         capability_registry=capability_resolver._capability_registry,
@@ -633,12 +737,15 @@ def build_autonomous_runtime(
     )
     
     # Dispatcher with all backends
+    # Native backend handles both TOOL and PROVIDER execution
     backends: dict[str, ExecutionBackend] = {
-        "native": native_backend,
-        "hermes": hermes_backend if hermes_backend else None,
-        "remote": remote_backend,
+        "tool": native_backend,
+        "provider": native_backend,
     }
-    backends = {k: v for k, v in backends.items() if v is not None}
+    if hermes_backend:
+        backends["hermes"] = hermes_backend
+    if remote_backend:
+        backends["remote"] = remote_backend
     
     dispatcher = ExecutionDispatcher(
         backends=backends,
@@ -720,6 +827,7 @@ def build_autonomous_runtime(
         dispatcher=dispatcher,
         runtime_registry=runtime_registry,
         mission_coordinator=mission_coordinator,
+        implementation_resolver=implementation_resolver,
     )
     
     # =========================================================================

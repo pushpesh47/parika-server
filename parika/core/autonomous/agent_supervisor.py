@@ -167,11 +167,12 @@ class AgentSupervisor:
 
         self._event_bus.publish("agent.spawned", AgentSpawnedEvent(
             event_id=self._generate_id(),
+            event_type="agent.spawned",
             mission_id=mission_id,
             task_id=task_id,
             agent_id=agent.id,
             agent_profile_id=agent_profile_id,
-            preferred_runtime=preferred_runtime or "native",
+            runtime=preferred_runtime or "native",
             permission_context=permission_context or MappingProxyType({}),
             resource_budget=resource_budget or MappingProxyType({}),
         ))
@@ -200,6 +201,7 @@ class AgentSupervisor:
 
         self._event_bus.publish("agent.started", AgentStartedEvent(
             event_id=self._generate_id(),
+            event_type="agent.started",
             mission_id=agent.mission_id,
             task_id=agent.task_id,
             agent_id=agent.id,
@@ -240,6 +242,7 @@ class AgentSupervisor:
 
         self._event_bus.publish("agent.completed", AgentCompletedEvent(
             event_id=self._generate_id(),
+            event_type="agent.completed",
             mission_id=agent.mission_id,
             task_id=agent.task_id,
             agent_id=agent.id,
@@ -266,6 +269,7 @@ class AgentSupervisor:
 
         self._event_bus.publish("agent.failed", AgentFailedEvent(
             event_id=self._generate_id(),
+            event_type="agent.failed",
             mission_id=agent.mission_id,
             task_id=agent.task_id,
             agent_id=agent.id,

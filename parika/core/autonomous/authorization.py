@@ -64,11 +64,13 @@ class AutonomousAuthorizationBoundary:
         permission_manager: PermissionManager,
         workspace_permission_manager: WorkspacePermissionManager,
         logger: Logger,
+        policy_rules: tuple[PolicyRule, ...] = (),
     ) -> None:
         self._policy_engine = policy_engine
         self._permission_manager = permission_manager
         self._workspace_permission_manager = workspace_permission_manager
         self._logger = logger.get_logger(__name__)
+        self._policy_rules = policy_rules
 
     def authorize(self, request: AutonomousAuthorizationRequest) -> AutonomousAuthorizationDecision:
         """
@@ -88,7 +90,7 @@ class AutonomousAuthorizationBoundary:
         # Step 2: Evaluate policy rules
         policy_request = PolicyEvaluationRequest(
             context=policy_context,
-            rules=(),  # Rules are loaded from configuration
+            rules=self._policy_rules,
             default_effect=PolicyEffect.DENY,  # Safe default for autonomous
         )
 
@@ -277,6 +279,7 @@ def create_autonomous_authorization_boundary(
     permission_manager: PermissionManager,
     workspace_permission_manager: WorkspacePermissionManager,
     logger: Logger,
+    policy_rules: tuple[PolicyRule, ...] = (),
 ) -> AutonomousAuthorizationBoundary:
     """Factory function to create the authorization boundary."""
     return AutonomousAuthorizationBoundary(
@@ -284,4 +287,5 @@ def create_autonomous_authorization_boundary(
         permission_manager=permission_manager,
         workspace_permission_manager=workspace_permission_manager,
         logger=logger,
+        policy_rules=policy_rules,
     )

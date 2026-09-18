@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
@@ -64,7 +65,7 @@ class MissionRepository:
             completed_at=row["completed_at"],
             deadline=row["deadline"],
             progress=row["progress"],
-            mission_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            mission_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
             failure=row["failure"],
             result=row["result"] if isinstance(row["result"], dict) else json.loads(row["result"]) if row["result"] else None,
         )
@@ -215,7 +216,7 @@ class AutonomousTaskRepository:
             name=row["name"],
             description=row["description"],
             capability_id=row["capability_id"],
-            inputs=row["inputs"] if isinstance(row["inputs"], dict) else json.loads(row["inputs"]),
+            inputs=row["inputs"] if isinstance(row["inputs"], dict) else (json.loads(row["inputs"]) if row["inputs"] else {}),
             status=row["status"],
             priority=row["priority"],
             progress=row["progress"],
@@ -226,11 +227,11 @@ class AutonomousTaskRepository:
             deadline=row["deadline"],
             max_retries=row["max_retries"],
             retry_count=row["retry_count"],
-            resource_budget=row["resource_budget"] if isinstance(row["resource_budget"], dict) else json.loads(row["resource_budget"]),
+            resource_budget=row["resource_budget"] if isinstance(row["resource_budget"], dict) else (json.loads(row["resource_budget"]) if row["resource_budget"] else {}),
             checkpoint_id=row["checkpoint_id"],
             result=row["result"] if isinstance(row["result"], dict) else json.loads(row["result"]) if row["result"] else None,
             failure=row["failure"],
-            task_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            task_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
             provider_request_type=row["provider_request_type"],
             task_category=row["task_category"],
             execution_requirements=row["execution_requirements"] if isinstance(row["execution_requirements"], dict) else json.loads(row["execution_requirements"]) if row["execution_requirements"] else None,
@@ -251,7 +252,7 @@ class AutonomousTaskRepository:
                         execution_requirements, execution_plan
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     """,
                     (
@@ -340,7 +341,7 @@ class AutonomousTaskRepository:
                         task.name,
                         task.description,
                         task.capability_id,
-                        json.dumps(task.inputs),
+                        json.dumps(dict(task.inputs)) if isinstance(task.inputs, MappingProxyType) else json.dumps(task.inputs),
                         task.status,
                         task.priority,
                         task.progress,
@@ -350,15 +351,15 @@ class AutonomousTaskRepository:
                         task.deadline,
                         task.max_retries,
                         task.retry_count,
-                        json.dumps(task.resource_budget),
+                        json.dumps(dict(task.resource_budget)) if isinstance(task.resource_budget, MappingProxyType) else json.dumps(task.resource_budget),
                         task.checkpoint_id,
                         json.dumps(task.result) if task.result else None,
                         task.failure,
-                        json.dumps(task.task_metadata),
+                        json.dumps(dict(task.task_metadata)) if isinstance(task.task_metadata, MappingProxyType) else json.dumps(task.task_metadata),
                         task.provider_request_type,
                         task.task_category,
-                        json.dumps(task.execution_requirements) if task.execution_requirements else None,
-                        json.dumps(task.execution_plan) if task.execution_plan else None,
+                        json.dumps(dict(task.execution_requirements)) if isinstance(task.execution_requirements, MappingProxyType) else (json.dumps(task.execution_requirements) if task.execution_requirements else None),
+                        json.dumps(dict(task.execution_plan)) if isinstance(task.execution_plan, MappingProxyType) else (json.dumps(task.execution_plan) if task.execution_plan else None),
                         task.id,
                     ),
                 )
@@ -605,8 +606,8 @@ class AgentInstanceRepository:
             parent_agent_id=row["parent_agent_id"],
             status=row["status"],
             runtime=row["runtime"],
-            permission_context=row["permission_context"] if isinstance(row["permission_context"], dict) else json.loads(row["permission_context"]),
-            resource_budget=row["resource_budget"] if isinstance(row["resource_budget"], dict) else json.loads(row["resource_budget"]),
+            permission_context=row["permission_context"] if isinstance(row["permission_context"], dict) else (json.loads(row["permission_context"]) if row["permission_context"] else {}),
+            resource_budget=row["resource_budget"] if isinstance(row["resource_budget"], dict) else (json.loads(row["resource_budget"]) if row["resource_budget"] else {}),
             created_at=row["created_at"],
             started_at=row["started_at"],
             updated_at=row["updated_at"],
@@ -614,7 +615,7 @@ class AgentInstanceRepository:
             last_heartbeat=row["last_heartbeat"],
             result=row["result"] if isinstance(row["result"], dict) else json.loads(row["result"]) if row["result"] else None,
             failure=row["failure"],
-            agent_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            agent_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
         )
 
     def create(self, agent: AgentInstanceModel) -> AgentInstanceModel:
@@ -798,7 +799,7 @@ class WorkerRepository:
             timeout_seconds=row["timeout_seconds"],
             result=row["result"] if isinstance(row["result"], dict) else json.loads(row["result"]) if row["result"] else None,
             error=row["error"],
-            worker_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            worker_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
         )
 
     def create(self, worker: WorkerModel) -> WorkerModel:
@@ -941,7 +942,7 @@ class ExecutionRepository:
             checkpoint_id=row["checkpoint_id"],
             result=row["result"] if isinstance(row["result"], dict) else json.loads(row["result"]) if row["result"] else None,
             error=row["error"],
-            execution_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            execution_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
             selected_implementation_id=row["selected_implementation_id"],
             implementation_version=row["implementation_version"],
             implementation_source=row["implementation_source"],
@@ -1116,11 +1117,11 @@ class CheckpointRepository:
             agent_id=row["agent_id"],
             version=row["version"],
             status=row["status"],
-            state_data=row["state_data"] if isinstance(row["state_data"], dict) else json.loads(row["state_data"]),
+            state_data=row["state_data"] if isinstance(row["state_data"], dict) else (json.loads(row["state_data"]) if row["state_data"] else {}),
             created_at=row["created_at"],
             validated_at=row["validated_at"],
             restored_at=row["restored_at"],
-            checkpoint_metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+            checkpoint_metadata=row["metadata"] if isinstance(row["metadata"], dict) else (json.loads(row["metadata"]) if row["metadata"] else {}),
         )
 
     def create(self, checkpoint: CheckpointModel) -> CheckpointModel:
@@ -1261,7 +1262,7 @@ class WorldStateRepository:
             pending_approvals=row["pending_approvals"],
             active_workers=row["active_workers"],
             crashed_workers=row["crashed_workers"],
-            resource_usage=row["resource_usage"] if isinstance(row["resource_usage"], dict) else json.loads(row["resource_usage"]),
+            resource_usage=row["resource_usage"] if isinstance(row["resource_usage"], dict) else (json.loads(row["resource_usage"]) if row["resource_usage"] else {}),
             updated_at=row["updated_at"],
         )
 
@@ -1332,7 +1333,7 @@ class AutonomousEventRepository:
             worker_id=row["worker_id"],
             parent_task_id=row["parent_task_id"],
             parent_agent_id=row["parent_agent_id"],
-            payload=row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"]),
+            payload=row["payload"] if isinstance(row["payload"], dict) else (json.loads(row["payload"]) if row["payload"] else {}),
         )
 
     def create(self, event: AutonomousEventModel) -> AutonomousEventModel:
@@ -1431,7 +1432,7 @@ class AgentMessageRepository:
             recipient_agent_id=row["recipient_agent_id"],
             task_id=row["task_id"],
             status=row["status"],
-            payload=row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"]),
+            payload=row["payload"] if isinstance(row["payload"], dict) else (json.loads(row["payload"]) if row["payload"] else {}),
             priority=row["priority"],
         )
 

@@ -24,6 +24,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.agent_orchestrator.agent_orchestrator import AgentOrchestrator
 from parika.core.agent_orchestrator.agent_profile import AgentProfile, AgentSpecialization
 from parika.core.agent_orchestrator.agent_registry import AgentRegistry
@@ -260,6 +268,9 @@ class ParikaRuntime:
     agent_registry: AgentRegistry
     agent_resolver: AgentResolver
     agent_orchestrator: AgentOrchestrator
+
+    implementation_registry: ImplementationRegistry
+    skill_registry: SkillRegistry
 
     autonomous_runtime: "AutonomousRuntime | None" = None
 
@@ -557,6 +568,38 @@ def build_default_runtime(
         event_bus=event_bus,
     )
 
+    # =========================================================================
+    # IMPLEMENTATION REGISTRY (for autonomous execution)
+    # =========================================================================
+    # Create skill registry and implementation registry early so modules can
+    # register native implementations during startup.
+    from parika.core.skill_system.skill_registry import SkillRegistry
+    from parika.core.skill_system.skill_security import SkillSecurityScanner
+    from parika.core.implementation_registry.implementation_registry import (
+        ImplementationRegistry,
+    )
+    from parika.core.implementation_registry.implementation import (
+        ImplementationSource,
+        ImplementationStatus,
+        ImplementationMetadata,
+    )
+
+    security_scanner = SkillSecurityScanner(
+        event_bus=event_bus,
+        logger=logger,
+        strict_mode=False,
+    )
+    skill_registry = SkillRegistry(event_bus=event_bus, logger=logger)
+    skill_registry.set_security_scanner(security_scanner)
+
+    implementation_registry = ImplementationRegistry(
+        capability_registry=capability_registry,
+        tool_manager=tool_manager,
+        skill_registry=skill_registry,
+        event_bus=event_bus,
+        logger=logger,
+    )
+
     brain = Brain(
         planner=planner,
         task_manager=task_manager,
@@ -629,6 +672,7 @@ def build_default_runtime(
         brain=brain,
         sync_pool=sync_pool,
         service_container=service_container,
+        implementation_registry=implementation_registry,
     )
 
     _register_ollama_provider(
@@ -696,6 +740,8 @@ def build_default_runtime(
         agent_registry=agent_registry,
         agent_resolver=agent_resolver,
         agent_orchestrator=agent_orchestrator,
+        implementation_registry=implementation_registry,
+        skill_registry=skill_registry,
     )
 
 
@@ -1086,6 +1132,7 @@ def _register_modules(
     brain: Brain,
     sync_pool,  # PostgreSQL sync pool
     service_container: ServiceContainer,
+    implementation_registry: ImplementationRegistry,
 ) -> None:
     """
     Register the built-in Web Search, Runtime Info, Filesystem, Shell,
@@ -1116,6 +1163,7 @@ def _register_modules(
         logger=logger,
         health_manager=health_manager,
         configuration=configuration,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_web_search_module(web_search_driver))
 
@@ -1144,6 +1192,7 @@ def _register_modules(
         health_manager=health_manager,
         configuration=configuration,
         permissions=workspace_permissions,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_filesystem_module(filesystem_driver))
 
@@ -1154,6 +1203,7 @@ def _register_modules(
         logger=logger,
         health_manager=health_manager,
         configuration=configuration,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_shell_module(shell_driver))
 
@@ -1163,6 +1213,7 @@ def _register_modules(
         logger=logger,
         health_manager=health_manager,
         configuration=configuration,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_weather_module(weather_driver))
 
@@ -1172,6 +1223,7 @@ def _register_modules(
         logger=logger,
         health_manager=health_manager,
         configuration=configuration,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_currency_module(currency_driver))
 
@@ -1181,6 +1233,7 @@ def _register_modules(
         logger=logger,
         health_manager=health_manager,
         configuration=configuration,
+        implementation_registry=implementation_registry,
     )
     module_manager.register(create_news_module(news_driver))
 

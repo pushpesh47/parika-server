@@ -197,6 +197,7 @@ class ExecutionStrategyResolver:
         # Import here to avoid circular dependency
         from parika.core.autonomous.execution_strategy import ExecutionBackend
         from parika.core.implementation_registry.implementation import ImplementationSource
+        from parika.core.capability_registry.capability_category import CapabilityCategory
         
         # Map by source first (most specific)
         if impl.source == ImplementationSource.HERMES:
@@ -218,8 +219,9 @@ class ExecutionStrategyResolver:
             capability_def = self._capability_registry.get(impl.capability_id)
             if capability_def:
                 # Check if it's a tool capability
-                # For now, default to PROVIDER for LLM, TOOL for deterministic
-                # This would be refined based on actual capability categories
+                if capability_def.category == CapabilityCategory.TOOL:
+                    return ExecutionBackend.TOOL
+                # Non-TOOL native capabilities (LLM, VISION, etc.) use PROVIDER
                 return ExecutionBackend.PROVIDER
             return ExecutionBackend.TOOL
 

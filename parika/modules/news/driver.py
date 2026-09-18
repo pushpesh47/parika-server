@@ -16,6 +16,14 @@ APIs and never executes capabilities or tools directly itself.
 
 from __future__ import annotations
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.capability_registry.capability_category import (
     CapabilityCategory,
 )
@@ -68,6 +76,7 @@ class NewsModuleDriver(ModuleDriver):
         health_manager: HealthManager | None = None,
         configuration: Configuration | None = None,
         transport: HttpTransport | None = None,
+        implementation_registry: ImplementationRegistry | None = None,
     ) -> None:
         """
         Initialize the NewsModuleDriver.
@@ -95,12 +104,19 @@ class NewsModuleDriver(ModuleDriver):
             transport:
                 Optional HttpTransport override, primarily for tests.
                 Defaults to `UrllibHttpTransport`.
+
+            implementation_registry:
+                Optional ImplementationRegistry for registering native
+                capability implementations. When supplied, a
+                PARIKA_NATIVE implementation is registered for each
+                news capability.
         """
 
         self._capability_registry = capability_registry
         self._tool_manager = tool_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
+        self._implementation_registry = implementation_registry
 
         news_config = load_news_config(configuration)
         self._enabled = news_config.enabled
@@ -184,6 +200,29 @@ class NewsModuleDriver(ModuleDriver):
         self._tool_manager.register(create_news_search_tool(), self._search_driver)
         self._tool_manager.register(create_news_topic_tool(), self._topic_driver)
 
+        # Register native implementations
+        if self._implementation_registry is not None:
+            for cap_id, tool_id, name in [
+                (NEWS_CAPABILITY_LATEST, NEWS_TOOL_ID_LATEST, "News Latest"),
+                (NEWS_CAPABILITY_SEARCH, NEWS_TOOL_ID_SEARCH, "News Search"),
+                (NEWS_CAPABILITY_TOPIC, NEWS_TOOL_ID_TOPIC, "News Topic"),
+            ]:
+                impl = self._implementation_registry.register_implementation(
+                    capability_id=cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                    name=f"Native {name}",
+                    description=f"Native PARIKA implementation of {cap_id}",
+                    version="1.0.0",
+                    metadata=ImplementationMetadata(
+                        runtime_type="native",
+                        tool_ids=(tool_id,),
+                        tags=("native", "tool", "news"),
+                    ),
+                )
+                self._implementation_registry.update_implementation_status(
+                    impl.id, ImplementationStatus.ACTIVE
+                )
+
         if self._health_manager is not None:
             self._health_manager.register(
                 MODULE_HEALTH_COMPONENT_ID,
@@ -196,8 +235,9 @@ class NewsModuleDriver(ModuleDriver):
         """
         Stop the module.
 
-        Unregisters every News Tool and Capability. A no-op when the
-        module was disabled by configuration.
+        Unregisters every News Tool, Capability, and native
+        implementation. A no-op when the module was disabled by
+        configuration.
         """
 
         if not self._enabled:
@@ -212,6 +252,16 @@ class NewsModuleDriver(ModuleDriver):
         self._capability_registry.unregister(NEWS_CAPABILITY_LATEST)
         self._capability_registry.unregister(NEWS_CAPABILITY_SEARCH)
         self._capability_registry.unregister(NEWS_CAPABILITY_TOPIC)
+
+        # Unregister native implementations
+        if self._implementation_registry is not None:
+            for cap_id in [NEWS_CAPABILITY_LATEST, NEWS_CAPABILITY_SEARCH, NEWS_CAPABILITY_TOPIC]:
+                impls = self._implementation_registry.get_implementations_for_capability(
+                    cap_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                )
+                for impl in impls:
+                    self._implementation_registry.unregister_implementation(impl.id)
 
         self._logger.info("News module stopped.")
 

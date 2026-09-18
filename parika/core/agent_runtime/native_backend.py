@@ -147,7 +147,7 @@ class NativeBackend(ExecutionBackend):
 
         # Execute via CapabilityExecutor
         response = await asyncio.get_event_loop().run_in_executor(
-            None, self._capability_executor.execute, execution_request, context.task_id
+            None, lambda: self._capability_executor.execute(execution_request, task_id=context.task_id)
         )
 
         return response.backend_response

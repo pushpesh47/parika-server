@@ -21,6 +21,14 @@ command.
 
 from __future__ import annotations
 
+from parika.core.implementation_registry.implementation_registry import (
+    ImplementationRegistry,
+)
+from parika.core.implementation_registry.implementation import (
+    ImplementationSource,
+    ImplementationStatus,
+    ImplementationMetadata,
+)
 from parika.core.capability_registry.capability_category import (
     CapabilityCategory,
 )
@@ -68,6 +76,7 @@ class ShellModuleDriver(ModuleDriver):
         logger: Logger,
         health_manager: HealthManager | None = None,
         configuration: Configuration | None = None,
+        implementation_registry: ImplementationRegistry | None = None,
     ) -> None:
         """
         Initialize the ShellModuleDriver.
@@ -100,12 +109,19 @@ class ShellModuleDriver(ModuleDriver):
                 `parika.tools.shell.config`). When omitted (`None`),
                 `enabled` defaults to `False`, so the module registers
                 nothing.
+
+            implementation_registry:
+                Optional ImplementationRegistry for registering native
+                capability implementations. When supplied, a
+                PARIKA_NATIVE implementation is registered for each
+                shell capability.
         """
 
         self._capability_registry = capability_registry
         self._tool_manager = tool_manager
         self._health_manager = health_manager
         self._logger = logger.get_logger(__name__)
+        self._implementation_registry = implementation_registry
 
         shell_config = load_shell_config(configuration)
         self._enabled = shell_config.enabled
@@ -161,6 +177,24 @@ class ShellModuleDriver(ModuleDriver):
                 self._tool_drivers[spec.operation],
             )
 
+            # Register native implementation for this capability
+            if self._implementation_registry is not None:
+                impl = self._implementation_registry.register_implementation(
+                    capability_id=spec.capability_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                    name=f"Native {spec.name}",
+                    description=f"Native PARIKA implementation of {spec.capability_id}",
+                    version="1.0.0",
+                    metadata=ImplementationMetadata(
+                        runtime_type="native",
+                        tool_ids=(spec.tool_id,),
+                        tags=("native", "tool", "shell"),
+                    ),
+                )
+                self._implementation_registry.update_implementation_status(
+                    impl.id, ImplementationStatus.ACTIVE
+                )
+
         if self._health_manager is not None:
             self._health_manager.register(
                 MODULE_HEALTH_COMPONENT_ID,
@@ -173,9 +207,9 @@ class ShellModuleDriver(ModuleDriver):
         """
         Stop the module.
 
-        Unregisters every Shell Tool and `shell.*` Capability. A no-op
-        when the module was disabled by configuration, since start()
-        never registered anything.
+        Unregisters every Shell Tool, `shell.*` Capability, and native
+        implementation. A no-op when the module was disabled by
+        configuration, since start() never registered anything.
         """
 
         if not self._enabled:
@@ -187,6 +221,14 @@ class ShellModuleDriver(ModuleDriver):
         for spec in SHELL_OPERATIONS:
             self._tool_manager.unregister(spec.tool_id)
             self._capability_registry.unregister(spec.capability_id)
+            # Unregister native implementation
+            if self._implementation_registry is not None:
+                impls = self._implementation_registry.get_implementations_for_capability(
+                    spec.capability_id,
+                    source=ImplementationSource.PARIKA_NATIVE,
+                )
+                for impl in impls:
+                    self._implementation_registry.unregister_implementation(impl.id)
 
         self._logger.info("Shell module stopped.")
 

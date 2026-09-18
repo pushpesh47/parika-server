@@ -37,6 +37,17 @@ class AutonomousEvent:
     # Additional context
     metadata: MappingProxyType[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-like access for consumer compatibility."""
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        """Dict-like indexing for consumer compatibility."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key) from None
+
 
 # ========================================================================
 # Mission Events
@@ -132,6 +143,7 @@ class TaskCompletedEvent(AutonomousEvent):
     """Task has completed successfully."""
     result: MappingProxyType[str, Any] | None = None
     attempt_number: int
+    capability_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -142,6 +154,11 @@ class TaskFailedEvent(AutonomousEvent):
     retry_eligible: bool = False
     retry_count: int = 0
     max_retries: int = 0
+    capability_id: str | None = None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-like access for WaitManager compatibility."""
+        return getattr(self, key, default)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
