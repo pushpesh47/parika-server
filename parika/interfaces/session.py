@@ -998,74 +998,240 @@ class InterfaceSession:
                     "admission_reason": admission_decision.reason
                 })
             
-            # Return a ChatTurnResult indicating the mission has been launched
-            # The actual result will be available via mission.get_result capability
+            # Wait for autonomous execution to reach a terminal state
+            from parika.core.autonomous.contracts import MissionStatus
             from parika.core.brain.brain_response import BrainResponse, RequestStatus
             from parika.core.brain.goal_result import GoalResult
             from parika.core.provider_manager.chat_result import ChatResult, ChatMessage
-            
-            # Create a synthetic chat response indicating mission launched
-            launched_message = ChatResult(
-                message=ChatMessage(
-                    role="assistant",
-                    content=f"Autonomous mission '{mission_id[:8]}...' launched successfully with {len(goal_id_to_task_id)} tasks. "
-                           f"Use 'mission.get_result' with mission_id='{mission_id}' to check progress and retrieve results."
-                )
-            )
-            
-            # Create a synthetic brain response with the launched message
             from parika.core.task_manager.response import TaskResponse
             from parika.core.task_manager.task_status import TaskStatus
-            synthetic_response = BrainResponse(
-                request_id=decomposition_result.raw_response or "autonomous_launched",
-                plan_id=None,
-                results=(
+
+            completed_mission = self._runtime.autonomous_runtime.mission_manager.wait_for_completion(
+                mission_id, timeout=30.0
+            )
+
+            if completed_mission is not None and completed_mission.status == MissionStatus.COMPLETED:
+                # Retrieve all tasks for the completed mission
+                mission_tasks = self._runtime.autonomous_runtime.task_repository.list_by_mission(mission_id)
+                task_by_id = {t.id: t for t in mission_tasks}
+
+                task_goal_results = []
+                dep_results = {}
+                summary_parts = []
+
+                for goal in autonomous_goals:
+                    task_id = goal_id_to_task_id.get(goal.id)
+                    task = task_by_id.get(task_id)
+                    if not task:
+                        continue
+
+                    task_succeeded = (task.status == AutonomousTaskStatus.COMPLETED.value)
+                    task_output = task.result if isinstance(task.result, dict) else ({"result": task.result} if task.result is not None else {})
+
+                    task_goal_results.append(
+                        GoalResult(
+                            goal_id=goal.id,
+                            capability_id=goal.capability_id,
+                            task_id=task.id,
+                            status=TaskStatus.COMPLETED if task_succeeded else TaskStatus.FAILED,
+                            response=TaskResponse(outputs=task_output) if task_succeeded else None,
+                            failure=Exception(task.failure) if task.failure else None,
+                        )
+                    )
+
+                    dep_results[goal.id] = {
+                        "status": "success" if task_succeeded else "failed",
+                        "result": task.result,
+                        "capability_id": goal.capability_id,
+                        "inputs": task.inputs,
+                    }
+
+                    # Format human-readable summary of the task result
+                    raw_res = task.result.get("result") if isinstance(task.result, dict) else task.result
+                    if goal.capability_id == "filesystem.exists":
+                        path = task.inputs.get("path", "")
+                        if isinstance(raw_res, dict):
+                            exists_val = raw_res.get("exists", True)
+                        else:
+                            exists_val = bool(raw_res)
+                        if exists_val:
+                            summary_parts.append(f"The path '{path}' exists.")
+                        else:
+                            summary_parts.append(f"The path '{path}' does not exist.")
+                    else:
+                        summary_parts.append(f"Task '{goal.capability_id}' produced: {raw_res}.")
+
+                chat_respond_goals = [g for g in goals if g.capability_id == "chat.respond"]
+                synthesis_goal_id = chat_respond_goals[0].id if chat_respond_goals else "synthesis"
+
+                final_chat_result = None
+                try:
+                    context_messages, context_bundle = assemble_context_messages(
+                        self._runtime,
+                        text=text,
+                        session_id=self.id,
+                        conversation_message_count=len(self._conversation_state.full_history),
+                    )
+                    session_token_budget = load_context_engine_config(self._runtime.configuration).usable_tokens
+                    already_used_tokens = context_bundle.estimated_tokens if context_bundle is not None else 0
+                    session_messages = assemble_session_retrieval_messages(
+                        text=text,
+                        session_store=self._state_manager._session_store,
+                        current_session_id=self.id,
+                        token_budget=max(0, session_token_budget - already_used_tokens),
+                    )
+                    injected_messages = context_messages + session_messages
+                    effective_messages = assemble_conversation_messages(
+                        self._conversation_state.full_history, injected_messages
+                    )
+
+                    dep_summary_lines = []
+                    for g_id, d_info in dep_results.items():
+                        st = d_info["status"]
+                        res = d_info.get("result")
+                        cap = d_info.get("capability_id")
+                        dep_summary_lines.append(f"✓ {g_id} ({cap}): {st.upper()} - {res}")
+                    dep_summary_text = "\n".join(dep_summary_lines)
+
+                    system_message = ChatMessage(
+                        role="system",
+                        content=(
+                            "DEPENDENCY RESULTS FOR SYNTHESIS:\n"
+                            "The following are the results from the autonomous tasks this synthesis depends on.\n"
+                            "Use these results to synthesize a final response. State clearly that the autonomous task has completed and what result it produced.\n\n"
+                            f"{dep_summary_text}"
+                        ),
+                    )
+                    synth_messages = list(effective_messages)
+                    if len(synth_messages) >= 2:
+                        synth_messages.insert(-1, system_message)
+                    else:
+                        synth_messages.insert(0, system_message)
+
+                    enhanced_synth_goal = build_chat_goal(
+                        messages=tuple(synth_messages),
+                        tools=(),
+                        on_token=on_token,
+                        latest_message=text,
+                        runtime=self._runtime,
+                    )
+                    synth_metadata = dict(enhanced_synth_goal.metadata)
+                    synth_metadata[TERMINAL_SYNTHESIS_GOAL_METADATA_KEY] = True
+                    if preferred_synthesis_provider_id is not None:
+                        synth_metadata["preferred_synthesis_provider_id"] = preferred_synthesis_provider_id
+                    if preferred_synthesis_model_id is not None:
+                        synth_metadata["preferred_synthesis_model_id"] = preferred_synthesis_model_id
+
+                    synthesis_goal = Goal(
+                        id=synthesis_goal_id,
+                        capability_id="chat.respond",
+                        inputs=enhanced_synth_goal.inputs,
+                        depends_on=(),
+                        provider_request_builder=enhanced_synth_goal.provider_request_builder,
+                        metadata=synth_metadata,
+                    )
+                    plan = self._runtime.planner.plan((synthesis_goal,))
+                    exec_resp = self._runtime.capability_executor.execute(
+                        plan.steps[0].execution_request
+                    )
+                    backend_resp = exec_resp.backend_response
+                    if isinstance(backend_resp, ChatResult):
+                        final_chat_result = backend_resp
+                except Exception as synth_ex:
+                    self._logger.warning("Synthesis via provider failed: %s, falling back to deterministic synthesis", synth_ex)
+
+                if final_chat_result is None:
+                    fallback_content = "The autonomous task has completed successfully. " + " ".join(summary_parts)
+                    if on_token:
+                        on_token(fallback_content)
+                    final_chat_result = ChatResult(
+                        message=ChatMessage(
+                            role="assistant",
+                            content=fallback_content,
+                        )
+                    )
+
+                task_goal_results.append(
                     GoalResult(
-                        goal_id="mission_launched",
+                        goal_id=synthesis_goal_id,
                         capability_id="chat.respond",
                         task_id=None,
                         status=TaskStatus.COMPLETED,
-                        response=TaskResponse(outputs={"result": launched_message}),
-                    ),
-                ),
-            )
-            
-            chat_result = ChatTurnResult(brain_response=synthetic_response)
-            
-            # Update last turn diagnostics for autonomous launch
-            self._last_turn_diagnostics = _build_last_turn_diagnostics(
-                context_bundle=None,  # No context bundle for synthetic response
-                advertised_tools=(),
-                brain_response=synthetic_response,
-                conversation_tokens=0,
-                progress_trail=tuple(progress_trail),
-            )
-            
-            # Record in conversation history
-            assistant_message = synthetic_response.results[0].response
-            if assistant_message:
-                # Extract text content from autonomous launch response structure:
-                # TaskResponse.outputs["result"] -> ChatResult -> message -> ChatMessage -> content
-                launch_chat_result = assistant_message.outputs.get("result")
-                if launch_chat_result is not None and hasattr(launch_chat_result, "message"):
-                    assistant_text = launch_chat_result.message.content
-                else:
-                    assistant_text = str(assistant_message.outputs)
-                
-                self._conversation_state = self._conversation_state.append_assistant_message(assistant_message)
-                self._history.append(
-                    HistoryEntry(
-                        role=HistoryRole.ASSISTANT,
-                        text=assistant_text,
+                        response=TaskResponse(outputs={"result": final_chat_result}),
                     )
                 )
-                
-                if self._state_manager._session_store is not None:
-                    self._state_manager._session_store.append_message(
-                        self.id, role="assistant", content=assistant_text
-                    )
-            
-            return chat_result
+
+                completed_response = BrainResponse(
+                    request_id=decomposition_result.raw_response or uuid4().hex,
+                    plan_id=None,
+                    results=tuple(task_goal_results),
+                    synthesis_goal_id=synthesis_goal_id,
+                )
+                chat_result = ChatTurnResult(brain_response=completed_response)
+                return self._finalize_turn(
+                    chat_turn_result=chat_result,
+                    progress_trail=progress_trail,
+                    context_bundle=None,
+                    tools=(),
+                )
+
+            elif completed_mission is not None and completed_mission.status == MissionStatus.FAILED:
+                fail_reason = completed_mission.failure or "Autonomous execution failed"
+                fail_content = f"The autonomous task failed: {fail_reason}"
+                if on_token:
+                    on_token(fail_content)
+                fail_chat_result = ChatResult(message=ChatMessage(role="assistant", content=fail_content))
+                failed_response = BrainResponse(
+                    request_id=decomposition_result.raw_response or uuid4().hex,
+                    plan_id=None,
+                    results=(
+                        GoalResult(
+                            goal_id="mission_failed",
+                            capability_id="chat.respond",
+                            task_id=None,
+                            status=TaskStatus.FAILED,
+                            response=TaskResponse(outputs={"result": fail_chat_result}),
+                            failure=Exception(fail_reason),
+                        ),
+                    ),
+                )
+                chat_result = ChatTurnResult(brain_response=failed_response)
+                return self._finalize_turn(
+                    chat_turn_result=chat_result,
+                    progress_trail=progress_trail,
+                    context_bundle=None,
+                    tools=(),
+                )
+
+            else:
+                # Timed out or still running
+                timeout_content = (
+                    f"Autonomous mission '{mission_id[:8]}...' launched and is executing in the background with {len(goal_id_to_task_id)} tasks. "
+                    f"Use 'mission.get_result' with mission_id='{mission_id}' to check progress and retrieve results."
+                )
+                if on_token:
+                    on_token(timeout_content)
+                timeout_chat_result = ChatResult(message=ChatMessage(role="assistant", content=timeout_content))
+                timeout_response = BrainResponse(
+                    request_id=decomposition_result.raw_response or "autonomous_launched",
+                    plan_id=None,
+                    results=(
+                        GoalResult(
+                            goal_id="mission_launched",
+                            capability_id="chat.respond",
+                            task_id=None,
+                            status=TaskStatus.COMPLETED,
+                            response=TaskResponse(outputs={"result": timeout_chat_result}),
+                        ),
+                    ),
+                )
+                chat_result = ChatTurnResult(brain_response=timeout_response)
+                return self._finalize_turn(
+                    chat_turn_result=chat_result,
+                    progress_trail=progress_trail,
+                    context_bundle=None,
+                    tools=(),
+                )
             
         except Exception as ex:
             # Handle any failure during mission/task creation

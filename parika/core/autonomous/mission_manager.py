@@ -6,6 +6,7 @@ Manages the lifecycle of autonomous missions.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -58,7 +59,7 @@ class Mission:
             completed_at=model.completed_at,
             deadline=model.deadline,
             progress=model.progress,
-            metadata=MappingProxyType(model.mission_metadata),
+            metadata=MappingProxyType(model.mission_metadata or {}),
             failure=model.failure,
             result=MappingProxyType(model.result) if model.result else None,
         )
@@ -371,6 +372,57 @@ class MissionManager:
         """List missions by status."""
         models = self._repository.list_by_status(status.value)
         return [Mission.from_model(m) for m in models]
+
+    def wait_for_completion(self, mission_id: str, timeout: float = 30.0) -> Mission | None:
+        """
+        Wait for a mission to reach a terminal state (COMPLETED, FAILED, CANCELLED).
+
+        Uses EventBus event subscriptions with a threading.Event to wake up synchronously
+        the moment the mission finishes, avoiding arbitrary sleeps or polling.
+
+        Args:
+            mission_id: The ID of the mission to wait for.
+            timeout: Maximum seconds to wait.
+
+        Returns:
+            The terminal Mission domain model, or None if timeout exceeded or not found.
+        """
+        mission = self.get(mission_id)
+        if mission is None:
+            return None
+
+        terminal_statuses = {
+            MissionStatus.COMPLETED,
+            MissionStatus.FAILED,
+            MissionStatus.CANCELLED,
+        }
+        if mission.status in terminal_statuses:
+            return mission
+
+        completion_event = threading.Event()
+
+        def _on_terminal_event(event: Any) -> None:
+            ev_mission_id = getattr(event, "mission_id", None)
+            if ev_mission_id is None and isinstance(event, dict):
+                ev_mission_id = event.get("mission_id")
+            if ev_mission_id == mission_id:
+                completion_event.set()
+
+        events_to_listen = ("mission.completed", "mission.failed", "mission.cancelled")
+        for ev_name in events_to_listen:
+            self._event_bus.subscribe(ev_name, _on_terminal_event)
+
+        try:
+            # Re-check in case mission completed between initial get and subscription
+            mission = self.get(mission_id)
+            if mission and mission.status in terminal_statuses:
+                return mission
+
+            completion_event.wait(timeout=timeout)
+            return self.get(mission_id)
+        finally:
+            for ev_name in events_to_listen:
+                self._event_bus.unsubscribe(ev_name, _on_terminal_event)
 
     def _generate_id(self) -> str:
         from uuid import uuid4

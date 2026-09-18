@@ -734,5 +734,287 @@ class TestExecutionStepIndex:
         assert execution.step_index == 0
 
 
+class TestMissionManagerWaitForCompletion:
+    """Unit tests for MissionManager.wait_for_completion()."""
+
+    def test_wait_for_completion_immediate_when_already_completed(self):
+        """Test wait_for_completion returns immediately if mission is already terminal."""
+        from unittest.mock import Mock
+        from datetime import datetime, UTC
+        from parika.core.autonomous.mission_manager import MissionManager
+        from parika.core.autonomous.contracts import MissionStatus
+        from parika.core.autonomous.models import MissionModel
+
+        mock_repo = Mock()
+        mock_event_bus = Mock()
+        mock_logger = Mock()
+        mock_logger.get_logger = Mock(return_value=Mock())
+
+        completed_model = MissionModel(
+            id="m_done",
+            goal="test",
+            status="completed",
+            priority=0,
+            created_at=datetime.now(UTC),
+            result={"result": True},
+        )
+        mock_repo.get = Mock(return_value=completed_model)
+
+        manager = MissionManager(
+            repository=mock_repo,
+            event_bus=mock_event_bus,
+            logger=mock_logger,
+        )
+
+        result = manager.wait_for_completion("m_done", timeout=1.0)
+        assert result is not None
+        assert result.status == MissionStatus.COMPLETED
+        assert result.result == {"result": True}
+        assert not mock_event_bus.subscribe.called
+
+    def test_wait_for_completion_wakes_on_completed_event(self):
+        """Test wait_for_completion blocks and wakes when mission.completed is published."""
+        import threading
+        import time
+        from unittest.mock import Mock
+        from datetime import datetime, UTC
+        from parika.core.autonomous.mission_manager import MissionManager
+        from parika.core.autonomous.contracts import MissionStatus
+        from parika.core.autonomous.models import MissionModel
+        from parika.core.autonomous.events import MissionCompletedEvent
+        from parika.core.event_bus.event_bus import EventBus
+
+        mock_repo = Mock()
+        logger_mock = Mock()
+        logger_mock.get_logger = Mock(return_value=Mock())
+        real_event_bus = EventBus(logger=logger_mock)
+
+        running_model = MissionModel(
+            id="m_run",
+            goal="test",
+            status="running",
+            priority=0,
+            created_at=datetime.now(UTC),
+        )
+        completed_model = MissionModel(
+            id="m_run",
+            goal="test",
+            status="completed",
+            priority=0,
+            created_at=datetime.now(UTC),
+            result={"result": True},
+        )
+
+        mock_repo.get = Mock(side_effect=[running_model, running_model, completed_model])
+
+        manager = MissionManager(
+            repository=mock_repo,
+            event_bus=real_event_bus,
+            logger=logger_mock,
+        )
+
+        def publish_completed():
+            time.sleep(0.05)
+            real_event_bus.publish("mission.completed", MissionCompletedEvent(
+                event_id="e1",
+                event_type="mission.completed",
+                mission_id="m_run",
+            ))
+
+        thread = threading.Thread(target=publish_completed)
+        thread.start()
+
+        start_time = time.monotonic()
+        result = manager.wait_for_completion("m_run", timeout=2.0)
+        elapsed = time.monotonic() - start_time
+        thread.join()
+
+        assert result is not None
+        assert result.status == MissionStatus.COMPLETED
+        assert elapsed < 1.0
+
+    def test_wait_for_completion_timeout_returns_current(self):
+        """Test wait_for_completion returns current status on timeout."""
+        from unittest.mock import Mock
+        from datetime import datetime, UTC
+        from parika.core.autonomous.mission_manager import MissionManager
+        from parika.core.autonomous.contracts import MissionStatus
+        from parika.core.autonomous.models import MissionModel
+        from parika.core.event_bus.event_bus import EventBus
+
+        mock_repo = Mock()
+        logger_mock = Mock()
+        logger_mock.get_logger = Mock(return_value=Mock())
+        real_event_bus = EventBus(logger=logger_mock)
+
+        running_model = MissionModel(
+            id="m_slow",
+            goal="test",
+            status="running",
+            priority=0,
+            created_at=datetime.now(UTC),
+        )
+        mock_repo.get = Mock(return_value=running_model)
+
+        manager = MissionManager(
+            repository=mock_repo,
+            event_bus=real_event_bus,
+            logger=logger_mock,
+        )
+
+        result = manager.wait_for_completion("m_slow", timeout=0.05)
+        assert result is not None
+        assert result.status == MissionStatus.RUNNING
+
+
+class TestAutonomousSubmissionExecutionAndDelivery:
+    """Unit tests for InterfaceSession._submit_autonomous completion wait and result delivery."""
+
+    def test_submit_autonomous_waits_and_returns_actual_result(self):
+        """Test that _submit_autonomous waits for completion and returns the actual result."""
+        from unittest.mock import Mock, patch
+        from types import MappingProxyType
+        from datetime import datetime, UTC
+        from parika.interfaces.session import InterfaceSession
+        from parika.core.autonomous.contracts import MissionStatus, AutonomousTaskStatus
+        from parika.core.autonomous.mission_manager import Mission
+        from parika.core.autonomous.models import AutonomousTaskModel
+        from parika.core.planner.goal import Goal
+        from parika.interfaces.ai_context.goal_decomposer import DecompositionResult, ExecutionMode
+        from parika.core.autonomous.execution_mode import AdmissionDecision, AdmissionState
+
+        # Mock runtime
+        mock_runtime = Mock()
+        mock_runtime.event_bus = Mock()
+        mock_runtime.logger = Mock()
+        mock_runtime.logger.get_logger = Mock(return_value=Mock())
+        mock_runtime.configuration = Mock()
+        mock_runtime.configuration.get = Mock(side_effect=lambda key, default=None: default)
+        mock_runtime.agent_registry = Mock()
+        mock_runtime.agent_registry.get = Mock(return_value=None)
+        mock_runtime.brain = Mock()
+        mock_runtime.planner = Mock()
+        mock_runtime.capability_executor = Mock()
+
+        # Mock autonomous runtime
+        mock_autonomous = Mock()
+        mock_mission_manager = Mock()
+        mock_task_manager = Mock()
+        mock_task_repo = Mock()
+        mock_autonomous.mission_manager = mock_mission_manager
+        mock_autonomous.task_manager = mock_task_manager
+        mock_autonomous.task_repository = mock_task_repo
+        mock_autonomous.sync_pool = Mock()
+        mock_runtime.autonomous_runtime = mock_autonomous
+
+        # Mission creation & wait mocks
+        created_mission = Mission(
+            id="test_mission_123456",
+            goal="check path exists",
+            status=MissionStatus.CREATED,
+            priority=0,
+            created_at=datetime.now(UTC),
+            started_at=None,
+            updated_at=datetime.now(UTC),
+            completed_at=None,
+            deadline=None,
+            progress=0.0,
+            metadata=MappingProxyType({}),
+            failure=None,
+            result=None,
+        )
+        completed_mission = Mission(
+            id="test_mission_123456",
+            goal="check path exists",
+            status=MissionStatus.COMPLETED,
+            priority=0,
+            created_at=datetime.now(UTC),
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            deadline=None,
+            progress=1.0,
+            metadata=MappingProxyType({}),
+            failure=None,
+            result=MappingProxyType({"result": {"path": "/mnt/dev/languages/python/parika", "exists": True}}),
+        )
+
+        mock_mission_manager.create = Mock(return_value=created_mission)
+        mock_mission_manager.plan = Mock(return_value=created_mission)
+        mock_mission_manager.start = Mock(return_value=created_mission)
+        mock_mission_manager.wait_for_completion = Mock(return_value=completed_mission)
+
+        # Task manager & repo mocks
+        created_task = Mock()
+        created_task.id = "task_999"
+        mock_task_manager.create = Mock(return_value=created_task)
+
+        completed_task_model = AutonomousTaskModel(
+            id="task_999",
+            mission_id="test_mission_123456",
+            name="goal_0",
+            description="Execute filesystem.exists",
+            capability_id="filesystem.exists",
+            inputs={"path": "/mnt/dev/languages/python/parika"},
+            status=AutonomousTaskStatus.COMPLETED.value,
+            priority=0,
+            progress=1.0,
+            retry_count=0,
+            max_retries=3,
+            resource_budget={},
+            task_metadata={},
+            result={"result": {"path": "/mnt/dev/languages/python/parika", "exists": True}},
+        )
+        mock_task_repo.list_by_mission = Mock(return_value=[completed_task_model])
+
+        goals = (
+            Goal(
+                id="goal_0",
+                capability_id="filesystem.exists",
+                inputs=MappingProxyType({"path": "/mnt/dev/languages/python/parika"}),
+                depends_on=(),
+            ),
+            Goal(
+                id="goal_1",
+                capability_id="chat.respond",
+                inputs=MappingProxyType({}),
+                depends_on=("goal_0",),
+            ),
+        )
+        decomp_result = DecompositionResult(
+            goals=goals,
+            proposed_semantic_mode=ExecutionMode.AUTONOMOUS,
+            execution_mode_confidence=1.0,
+            execution_mode_reasons=("Autonomous check requested",),
+            raw_response="test_raw",
+        )
+        admission_decision = AdmissionDecision(
+            proposed_semantic_mode=ExecutionMode.AUTONOMOUS,
+            admitted_mode=ExecutionMode.AUTONOMOUS,
+            admission_state=AdmissionState.ADMITTED,
+            reason="Approved",
+        )
+
+        session = InterfaceSession(mock_runtime, session_store=None)
+
+        # Execute _submit_autonomous
+        result = session._submit_autonomous(
+            text="Check whether /mnt/dev/languages/python/parika exists",
+            decomposition_result=decomp_result,
+            admission_decision=admission_decision,
+            on_token=None,
+            progress_trail=[],
+        )
+
+        # Verification:
+        mock_mission_manager.wait_for_completion.assert_called_once_with("test_mission_123456", timeout=30.0)
+        assert result.succeeded
+        assert result.chat_response is not None
+        content = result.chat_response.message.content
+        assert "/mnt/dev/languages/python/parika" in content
+        assert "exists" in content
+        assert "Use 'mission.get_result'" not in content
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -288,6 +288,7 @@ def build_default_runtime(
     data_directory: Path | None = None,
     workspace_permission_prompt: WorkspacePermissionPrompt | None = None,
     sync_pool=None,  # PostgreSQL sync pool from CoreExecutionOwner
+    start_autonomous: bool = False,
 ) -> ParikaRuntime:
     """
     Construct the default PARIKA runtime.
@@ -712,7 +713,7 @@ def build_default_runtime(
         logger=logger,
     )
 
-    return ParikaRuntime(
+    runtime = ParikaRuntime(
         configuration=configuration,
         logger=logger,
         event_bus=event_bus,
@@ -743,6 +744,37 @@ def build_default_runtime(
         implementation_registry=implementation_registry,
         skill_registry=skill_registry,
     )
+
+    if start_autonomous:
+        try:
+            from parika.core.configuration.autonomous_config import load_autonomous_settings
+            autonomous_settings = load_autonomous_settings(configuration)
+            if autonomous_settings.enabled and sync_pool is not None:
+                from parika.core.autonomous.runtime import build_autonomous_runtime
+                autonomous_runtime = build_autonomous_runtime(
+                    sync_pool=sync_pool,
+                    event_bus=event_bus,
+                    logger=logger,
+                    service_container=service_container,
+                    capability_resolver=capability_resolver,
+                    planner=planner,
+                    capability_executor=capability_executor,
+                    tool_manager=tool_manager,
+                    provider_manager=provider_manager,
+                    resource_manager=resource_manager,
+                    policy_engine=policy_engine,
+                    permission_manager=permission_manager,
+                    workspace_permission_manager=workspace_permissions,
+                    shared_implementation_registry=implementation_registry,
+                    shared_skill_registry=skill_registry,
+                )
+                import asyncio
+                asyncio.run(autonomous_runtime.start(auto_recover=True))
+                runtime.autonomous_runtime = autonomous_runtime
+        except Exception as e:
+            logger.get_logger(__name__).error("Failed to initialize Autonomous Runtime: %s", e)
+
+    return runtime
 
 
 def _register_initial_agents(
