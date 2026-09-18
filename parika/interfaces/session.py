@@ -860,6 +860,11 @@ class InterfaceSession:
         # Extract goals from decomposition result
         goals = decomposition_result.goals
         
+        # Track the provider/model that successfully completed decomposition,
+        # so synthesis can try it first if the user follows up for results.
+        preferred_synthesis_provider_id = decomposition_result.successful_provider_id
+        preferred_synthesis_model_id = decomposition_result.successful_model_id
+        
         mission = None
         created_task_ids = []
         mission_id = None
